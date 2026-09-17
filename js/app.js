@@ -608,7 +608,7 @@ function authShell(title, sub, body, alt = "") {
     <div class="auth-wrap">
       <div class="auth-box">
         <div class="auth-head">
-          <div class="auth-mark"></div>
+          <img class="auth-mark" src="https://qspfphnailbelqmmzjbk.supabase.co/storage/v1/object/public/app-assets/favicon.png" alt="">
           <h1>${esc(title)}</h1>
           <p class="sub" style="margin-bottom:0">${esc(sub)}</p>
         </div>
@@ -1022,7 +1022,7 @@ function renderShell() {
   app.innerHTML = `
     <div class="shell">
       <nav class="sidebar" aria-label="Hoofdmenu">
-        <div class="brand"><div class="brand-mark"></div><span class="brand-name">Dart League</span></div>
+        <div class="brand"><img class="brand-mark" src="https://qspfphnailbelqmmzjbk.supabase.co/storage/v1/object/public/app-assets/favicon.png" alt=""><span class="brand-name">Dart League</span></div>
         ${links}
         ${orgLink}
       </nav>

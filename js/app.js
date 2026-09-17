@@ -237,6 +237,44 @@ function tournamentCard(t) {
     </div>`;
 }
 
+// Groepeert platte standenregels (zie db.standingsForLeague) per divisie,
+// gesorteerd op divisieniveau en daarbinnen op punten/legssaldo.
+function groupStandingsByDivision(rows) {
+  const groups = new Map();
+  for (const r of rows) {
+    const key = r.divisionId || "none";
+    if (!groups.has(key)) {
+      groups.set(key, { name: r.divisionName || "Geen divisie", rank: r.divisionRank, rows: [] });
+    }
+    groups.get(key).rows.push(r);
+  }
+  const list = [...groups.values()];
+  list.forEach((g) => g.rows.sort((a, b) =>
+    b.points - a.points || (b.legsFor - b.legsAgainst) - (a.legsFor - a.legsAgainst)
+  ));
+  list.sort((a, b) => a.rank - b.rank);
+  return list;
+}
+
+function divisionStandingsCard(group) {
+  return `
+    <div class="card">
+      <h2 style="margin-bottom:12px">${esc(group.name)}</h2>
+      ${group.rows.length ? group.rows.map((r, i) => `
+        <div class="row" style="padding:7px 0;${i > 0 ? "border-top:1px solid var(--line)" : ""}">
+          <span class="muted" style="width:18px;font-size:13px">${i + 1}</span>
+          ${avatar(r.player, "sm")}
+          <div class="row-main">
+            <div class="row-title">${esc(r.player?.display_name || "?")}</div>
+            <div class="row-sub">${r.played} gespeeld &middot; ${r.wins}W-${r.losses}V &middot; legs ${r.legsFor}-${r.legsAgainst}</div>
+          </div>
+          <div style="font-weight:700;flex-shrink:0">${r.points} pt</div>
+          ${i === 0 ? `<span style="width:16px;height:16px;color:var(--accent);flex-shrink:0">${icon.trophy}</span>` : ""}
+        </div>`).join("")
+        : `<p class="muted" style="font-size:13.5px;margin:0">Nog geen spelers in deze divisie.</p>`}
+    </div>`;
+}
+
 function sectionHead(title, linkLabel, route) {
   return `
     <div class="section">
@@ -307,6 +345,84 @@ const db = {
   async setLeagueStatus(id, status) {
     const { error } = await sb.from("leagues").update({ status }).eq("id", id);
     if (error) throw error;
+  },
+
+  async divisionsForLeague(leagueId) {
+    const { data, error } = await sb
+      .from("league_divisions")
+      .select("*")
+      .eq("league_id", leagueId)
+      .order("rank");
+    if (error) throw error;
+    return data || [];
+  },
+
+  async createDivision(fields) {
+    const { error } = await sb.from("league_divisions").insert(fields);
+    if (error) throw error;
+  },
+
+  async leagueMembers(leagueId) {
+    const { data, error } = await sb
+      .from("league_players")
+      .select("*, player:player_id(*), division:division_id(*)")
+      .eq("league_id", leagueId);
+    if (error) throw error;
+    return data || [];
+  },
+
+  // Voegt een speler toe aan de league, of wijzigt zijn divisie als hij al
+  // lid is (league_id + player_id is uniek).
+  async assignPlayerToLeague(leagueId, playerId, divisionId) {
+    const { error } = await sb.from("league_players")
+      .upsert(
+        { league_id: leagueId, player_id: playerId, division_id: divisionId },
+        { onConflict: "league_id,player_id" }
+      );
+    if (error) throw error;
+  },
+
+  // Stand per divisie. Haalt bevestigde wedstrijden op via een
+  // security-definer functie (RLS laat een speler anders alleen zijn eigen
+  // wedstrijden zien) en telt punten/legs in de app zelf op.
+  async standingsForLeague(leagueId) {
+    const [{ data: matches, error: e1 }, members] = await Promise.all([
+      sb.rpc("league_confirmed_matches", { p_league_id: leagueId }),
+      this.leagueMembers(leagueId),
+    ]);
+    if (e1) throw e1;
+
+    const stats = {};
+    for (const m of matches || []) {
+      for (const side of ["a", "b"]) {
+        const pid = side === "a" ? m.player_a_id : m.player_b_id;
+        const legsFor = side === "a" ? m.player_a_legs : m.player_b_legs;
+        const legsAgainst = side === "a" ? m.player_b_legs : m.player_a_legs;
+        const s = stats[pid] || (stats[pid] = { played: 0, wins: 0, losses: 0, legsFor: 0, legsAgainst: 0 });
+        s.played += 1;
+        s.legsFor += legsFor;
+        s.legsAgainst += legsAgainst;
+        if (m.winner_id === pid) s.wins += 1; else s.losses += 1;
+      }
+    }
+
+    return members.map((mem) => {
+      const s = stats[mem.player_id] || { played: 0, wins: 0, losses: 0, legsFor: 0, legsAgainst: 0 };
+      return {
+        divisionId: mem.division_id,
+        divisionName: mem.division?.name || null,
+        divisionRank: mem.division?.rank ?? Infinity,
+        player: mem.player,
+        ...s,
+        points: s.wins * 2,
+      };
+    });
+  },
+
+  async promoteDivisionWinners(leagueId) {
+    const { data, error } = await sb.rpc("promote_division_winners", { p_league_id: leagueId });
+    if (error) throw error;
+    return data || [];
   },
 
   async tournaments() {
@@ -915,7 +1031,12 @@ async function viewLeagues() {
 }
 
 async function viewLeagueDetail(id) {
-  const [league, matches] = await Promise.all([db.league(id), db.matchesForLeague(id)]);
+  const [league, matches, standings] = await Promise.all([
+    db.league(id), db.matchesForLeague(id), db.standingsForLeague(id),
+  ]);
+  const isOrg = state.profile?.role === "organizer";
+  const groups = groupStandingsByDivision(standings);
+
   setView(`
     <button class="linkbtn" onclick="go('leagues')" style="display:flex;align-items:center;gap:4px;margin-bottom:12px">
       <span style="width:16px;height:16px;display:inline-flex">${icon.back}</span> Leagues
@@ -924,10 +1045,73 @@ async function viewLeagueDetail(id) {
     <p class="sub">${esc([league.season, `${league.game_type} · best of legs`].filter(Boolean).join(" · "))}</p>
     <div style="margin-bottom:24px">${badge(league.status)}</div>
 
+    ${sectionHead("Stand")}
+    ${groups.length ? groups.map(divisionStandingsCard).join("")
+      : emptyView("Nog geen indeling", "Er zijn nog geen spelers ingedeeld in deze league.", "league")}
+
+    ${isOrg ? `
+      ${sectionHead("Divisies en spelers")}
+      <div class="chips" style="margin-bottom:14px">
+        <button class="chip" onclick="openDivisionDialog('${esc(id)}')">${icon.plus} Nieuwe divisie</button>
+        <button class="chip" onclick="openAssignPlayerDialog('${esc(id)}')">${icon.plus} Speler indelen</button>
+        ${league.status === "finished" ? `
+          <button class="chip" onclick="promoteWinners('${esc(id)}')">${icon.trophy} Promoveer kampioenen</button>` : ""}
+      </div>
+    ` : ""}
+
     ${sectionHead("Wedstrijden")}
     ${matches.length ? matches.map(matchCard).join("")
       : emptyView("Nog geen wedstrijden", "Er is nog niets ingepland voor deze league.", "match")}
   `);
+}
+
+function openDivisionDialog(leagueId) {
+  openModal("Nieuwe divisie", `
+    <div class="field"><label for="dn">Naam</label><input id="dn" required placeholder="Bijv. 1e divisie"></div>
+    <div class="field"><label for="dr">Niveau <span class="muted" style="font-weight:400">(1 = hoogste)</span></label>
+      <input id="dr" type="number" min="1" value="1" required></div>`,
+    async (bg) => {
+      const name = bg.querySelector("#dn").value.trim();
+      const rank = parseInt(bg.querySelector("#dr").value, 10);
+      if (!name) throw new Error("Vul een naam in.");
+      if (isNaN(rank) || rank < 1) throw new Error("Kies een geldig niveau.");
+      await db.createDivision({ league_id: leagueId, name, rank });
+      toast("Divisie aangemaakt");
+      router();
+    }, "Divisie aanmaken");
+}
+
+async function openAssignPlayerDialog(leagueId) {
+  const [players, divisions] = await Promise.all([db.players(), db.divisionsForLeague(leagueId)]);
+  if (!players.length) return toast("Er zijn nog geen spelers.");
+  const opts = (list, val, lab) => list.map((x) => `<option value="${esc(x[val])}">${esc(x[lab])}</option>`).join("");
+
+  openModal("Speler indelen", `
+    <div class="field"><label for="ap">Speler</label><select id="ap">${opts(players, "id", "display_name")}</select></div>
+    <div class="field"><label for="ad">Divisie</label>
+      <select id="ad">
+        <option value="">Geen divisie</option>
+        ${opts(divisions, "id", "name")}
+      </select>
+    </div>`, async (bg) => {
+    const playerId = bg.querySelector("#ap").value;
+    const divisionId = bg.querySelector("#ad").value || null;
+    await db.assignPlayerToLeague(leagueId, playerId, divisionId);
+    toast("Speler ingedeeld");
+    router();
+  }, "Opslaan");
+}
+
+async function promoteWinners(leagueId) {
+  try {
+    const promoted = await db.promoteDivisionWinners(leagueId);
+    if (!promoted.length) {
+      toast("Niemand om te promoveren: geen wedstrijden gespeeld, of iedereen zit al in de hoogste divisie.");
+    } else {
+      toast(`${promoted.length} speler(s) gepromoveerd: ${promoted.map((p) => p.display_name).join(", ")}`);
+    }
+    router();
+  } catch (e) { toast(errText(e)); }
 }
 
 async function viewTournaments() {
@@ -1352,6 +1536,8 @@ async function openMatchDialog() {
 
   openModal("Nieuwe wedstrijd", `
     <div class="field"><label for="ml">League</label><select id="ml">${opts(leagues, "id", "name")}</select></div>
+    <div class="field"><label for="mdiv">Divisie <span class="muted" style="font-weight:400">(optioneel)</span></label>
+      <select id="mdiv"><option value="">Geen divisie</option></select></div>
     <div class="field"><label for="ma">Speler A</label><select id="ma">${opts(players, "id", "display_name")}</select></div>
     <div class="field"><label for="mb">Speler B</label><select id="mb">${opts(players, "id", "display_name")}</select></div>
     <div class="field"><label for="md">Wanneer</label><input id="md" type="datetime-local"></div>`,
@@ -1362,6 +1548,7 @@ async function openMatchDialog() {
       const d = bg.querySelector("#md").value;
       await db.createMatch({
         league_id: bg.querySelector("#ml").value,
+        division_id: bg.querySelector("#mdiv").value || null,
         player_a_id: a,
         player_b_id: b,
         scheduled_at: d ? new Date(d).toISOString() : null,
@@ -1374,6 +1561,17 @@ async function openMatchDialog() {
   // Speler B standaard op de tweede speler zetten
   const sel = document.querySelector("#mb");
   if (sel && players[1]) sel.value = players[1].id;
+
+  // Divisies horen bij een league; laad ze opnieuw zodra een andere league
+  // gekozen wordt.
+  const leagueSel = document.querySelector("#ml");
+  const divSel = document.querySelector("#mdiv");
+  const loadDivisions = async () => {
+    const divisions = await db.divisionsForLeague(leagueSel.value);
+    divSel.innerHTML = `<option value="">Geen divisie</option>${opts(divisions, "id", "name")}`;
+  };
+  leagueSel.onchange = loadDivisions;
+  loadDivisions();
 }
 
 async function openResultDialog(matchId) {

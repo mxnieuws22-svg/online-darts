@@ -14,6 +14,7 @@
 --   6. Row Level Security (RLS)
 --   7. Uitslagen: doorgeven, bevestigen en afkeuren
 --   8. Divisies binnen een league
+--   9. Spelersgegevens voor de initiële indeling
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
@@ -1054,6 +1055,69 @@ end;
 $$;
 
 grant execute on function public.promote_division_winners(uuid) to authenticated;
+
+
+-- ----------------------------------------------------------------------------
+-- 9. Spelersgegevens voor de initiële indeling
+-- ----------------------------------------------------------------------------
+-- Na het aanmaken van een account vult een speler eenmalig voornaam,
+-- achternaam, platform (Scolia/DartCounter), nickname op dat platform en
+-- zijn zelf opgegeven 3-darts gemiddelde in. Dit is bedoeld voor de
+-- organisator om spelers voor het eerst in een divisie in te delen, en is
+-- daarom - anders dan profiles - NIET zichtbaar voor andere spelers.
+
+create table if not exists public.player_onboarding (
+  player_id         uuid primary key references public.profiles (id) on delete cascade,
+  first_name        text not null,
+  last_name         text not null,
+  platform          text not null check (platform in ('scolia', 'dartcounter')),
+  platform_nickname text not null,
+  reported_average  numeric(5,2) not null check (reported_average >= 0),
+  created_at        timestamptz not null default now(),
+  updated_at        timestamptz not null default now()
+);
+
+comment on table public.player_onboarding is
+  'Eenmalig ingevulde spelersgegevens (voor-/achternaam, platform, nickname, zelf opgegeven gemiddelde). Alleen zichtbaar voor de speler zelf en de organisator; gebruikt voor de initiële divisie-indeling.';
+
+alter table public.player_onboarding enable row level security;
+
+drop policy if exists "player_onboarding_select_own_or_organizer" on public.player_onboarding;
+create policy "player_onboarding_select_own_or_organizer"
+  on public.player_onboarding for select
+  to authenticated
+  using (player_id = auth.uid() or public.is_organizer());
+
+drop policy if exists "player_onboarding_insert_own" on public.player_onboarding;
+create policy "player_onboarding_insert_own"
+  on public.player_onboarding for insert
+  to authenticated
+  with check (player_id = auth.uid());
+
+drop policy if exists "player_onboarding_update_own_or_organizer" on public.player_onboarding;
+create policy "player_onboarding_update_own_or_organizer"
+  on public.player_onboarding for update
+  to authenticated
+  using (player_id = auth.uid() or public.is_organizer())
+  with check (player_id = auth.uid() or public.is_organizer());
+
+-- updated_at automatisch bijwerken bij elke wijziging.
+create or replace function public.touch_player_onboarding_updated_at()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  new.updated_at := now();
+  return new;
+end;
+$$;
+
+drop trigger if exists on_player_onboarding_update on public.player_onboarding;
+create trigger on_player_onboarding_update
+  before update on public.player_onboarding
+  for each row
+  execute function public.touch_player_onboarding_updated_at();
 
 
 -- ----------------------------------------------------------------------------

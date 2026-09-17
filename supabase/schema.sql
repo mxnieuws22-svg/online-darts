@@ -15,6 +15,7 @@
 --   7. Uitslagen: doorgeven, bevestigen en afkeuren
 --   8. Divisies binnen een league
 --   9. Spelersgegevens voor de initiële indeling
+--  10. Prijsclaim-systeem voor divisiewinnaars (LWPrints)
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
@@ -1525,6 +1526,435 @@ create trigger on_player_onboarding_update
   before update on public.player_onboarding
   for each row
   execute function public.touch_player_onboarding_updated_at();
+
+
+-- ----------------------------------------------------------------------------
+-- 10. Prijsclaim-systeem voor divisiewinnaars (LWPrints)
+-- ----------------------------------------------------------------------------
+-- Aan het einde van een afgeronde league (status 'finished') bepaalt de
+-- organisator de winnaar (positie 1, alleen divisies waarin gespeeld is) van
+-- elke divisie via determine_division_winners(). Dat is een permanente,
+-- "bevroren" historie (naam/rank/league/season worden gekopieerd) die niet
+-- verandert door latere promotie/degradatie. Elke winnaar krijgt meteen een
+-- prize_claims-rij (status 'available') en een prize_notifications-rij.
+--
+-- De winnaar claimt zijn prijs via start_prize_claim() (available ->
+-- claim_started, bij het openen van het formulier) en submit_prize_claim()
+-- (vult/corrigeert zijn gegevens in, zet naar 'claimed'). Bewerken kan tot
+-- de organisator de claim bevestigt (confirmed); daarna alleen nog de
+-- organisator zelf, via update_prize_claim_status() of een rechtstreekse
+-- update. Elke statuswijziging wordt gelogd in prize_status_history.
+--
+-- prize_claims heeft bewust geen insert/update-policy voor de speler zelf:
+-- alle speler-mutaties lopen via de functies hierboven, die precies bepalen
+-- welke velden een winnaar mag zetten (nooit status of admin_notes). Net als
+-- player_onboarding is dit NIET zichtbaar voor andere spelers, in
+-- tegenstelling tot profiles.
+
+create table if not exists public.division_winners (
+  id            uuid primary key default gen_random_uuid(),
+  league_id     uuid not null references public.leagues (id) on delete cascade,
+  division_id   uuid references public.league_divisions (id) on delete set null,
+  division_name text not null,
+  division_rank int  not null,
+  league_name   text not null,
+  season        text,
+  player_id     uuid not null references public.profiles (id) on delete restrict,
+  decided_at    timestamptz not null default now(),
+  created_by    uuid references public.profiles (id) on delete set null,
+  unique (league_id, division_rank)
+);
+
+create index if not exists idx_division_winners_player on public.division_winners (player_id);
+
+alter table public.division_winners enable row level security;
+
+drop policy if exists "division_winners_select_authenticated" on public.division_winners;
+create policy "division_winners_select_authenticated"
+  on public.division_winners for select
+  to authenticated
+  using (true);
+
+drop policy if exists "division_winners_write_organizer" on public.division_winners;
+create policy "division_winners_write_organizer"
+  on public.division_winners for all
+  to authenticated
+  using (public.is_organizer())
+  with check (public.is_organizer());
+
+
+create table if not exists public.prize_claims (
+  id                            uuid primary key default gen_random_uuid(),
+  division_winner_id            uuid not null unique references public.division_winners (id) on delete cascade,
+  player_id                     uuid not null references public.profiles (id) on delete cascade,
+  status                        text not null default 'available' check (status in (
+                                  'available', 'claim_started', 'claimed', 'reviewing',
+                                  'contact_pending', 'confirmed', 'in_production',
+                                  'ready', 'delivered', 'cancelled'
+                                )),
+  full_name                     text,
+  email                         text,
+  phone                         text,
+  garment                       text check (garment in ('tshirt', 'hoodie', 'polo')),
+  size                          text check (size in ('xs', 's', 'm', 'l', 'xl', 'xxl', 'xxxl')),
+  color                         text,
+  design_notes                  text,
+  comments                      text,
+  consent_share_with_lwprints   boolean not null default false,
+  consent_given_at              timestamptz,
+  admin_notes                   text,
+  submitted_at                  timestamptz,
+  created_at                    timestamptz not null default now(),
+  updated_at                    timestamptz not null default now()
+);
+
+create index if not exists idx_prize_claims_player on public.prize_claims (player_id);
+
+alter table public.prize_claims enable row level security;
+
+drop policy if exists "prize_claims_select_own_or_organizer" on public.prize_claims;
+create policy "prize_claims_select_own_or_organizer"
+  on public.prize_claims for select
+  to authenticated
+  using (player_id = auth.uid() or public.is_organizer());
+
+drop policy if exists "prize_claims_write_organizer" on public.prize_claims;
+create policy "prize_claims_write_organizer"
+  on public.prize_claims for all
+  to authenticated
+  using (public.is_organizer())
+  with check (public.is_organizer());
+
+create or replace function public.touch_prize_claims_updated_at()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  new.updated_at := now();
+  return new;
+end;
+$$;
+
+drop trigger if exists on_prize_claims_update on public.prize_claims;
+create trigger on_prize_claims_update
+  before update on public.prize_claims
+  for each row
+  execute function public.touch_prize_claims_updated_at();
+
+
+-- In-app melding voor de winnaar. email_sent_at blijft voorlopig altijd
+-- leeg (geen e-mailprovider aangesloten); zo kan dat later zonder
+-- schemawijziging aangesloten worden.
+create table if not exists public.prize_notifications (
+  id              uuid primary key default gen_random_uuid(),
+  player_id       uuid not null references public.profiles (id) on delete cascade,
+  prize_claim_id  uuid not null references public.prize_claims (id) on delete cascade,
+  title           text not null,
+  body            text not null,
+  email_sent_at   timestamptz,
+  read_at         timestamptz,
+  created_at      timestamptz not null default now()
+);
+
+create index if not exists idx_prize_notifications_player on public.prize_notifications (player_id);
+
+alter table public.prize_notifications enable row level security;
+
+drop policy if exists "prize_notifications_select_own_or_organizer" on public.prize_notifications;
+create policy "prize_notifications_select_own_or_organizer"
+  on public.prize_notifications for select
+  to authenticated
+  using (player_id = auth.uid() or public.is_organizer());
+
+drop policy if exists "prize_notifications_update_own" on public.prize_notifications;
+create policy "prize_notifications_update_own"
+  on public.prize_notifications for update
+  to authenticated
+  using (player_id = auth.uid())
+  with check (player_id = auth.uid());
+
+
+-- Audit-log van statuswijzigingen. Alleen zichtbaar voor de organisator; de
+-- winnaar ziet alleen de huidige status op zijn eigen pagina.
+create table if not exists public.prize_status_history (
+  id              uuid primary key default gen_random_uuid(),
+  prize_claim_id  uuid not null references public.prize_claims (id) on delete cascade,
+  old_status      text,
+  new_status      text not null,
+  note            text,
+  changed_by      uuid references public.profiles (id) on delete set null,
+  created_at      timestamptz not null default now()
+);
+
+create index if not exists idx_prize_status_history_claim on public.prize_status_history (prize_claim_id);
+
+alter table public.prize_status_history enable row level security;
+
+drop policy if exists "prize_status_history_select_organizer" on public.prize_status_history;
+create policy "prize_status_history_select_organizer"
+  on public.prize_status_history for select
+  to authenticated
+  using (public.is_organizer());
+
+
+create or replace function public.determine_division_winners(p_league_id uuid)
+returns table(
+  won_player_id uuid,
+  won_display_name text,
+  won_division_name text
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_status text;
+  v_league_name text;
+  v_season text;
+  rec record;
+  v_new_id uuid;
+  v_claim_id uuid;
+begin
+  if auth.uid() is null then
+    raise exception 'Je moet ingelogd zijn.';
+  end if;
+  if not public.is_organizer() then
+    raise exception 'Alleen de organisator kan divisiewinnaars bepalen.';
+  end if;
+
+  select status, name, season into v_status, v_league_name, v_season
+    from public.leagues where id = p_league_id;
+  if v_status is null then
+    raise exception 'League niet gevonden.';
+  end if;
+  if v_status <> 'finished' then
+    raise exception 'Divisiewinnaars kunnen pas bepaald worden als de league is afgerond.';
+  end if;
+
+  for rec in
+    select
+      s.player_id as pid, s.display_name as pname, s.division_id as did,
+      s.division_name as dname, s.division_rank as drank
+    from public.league_standings(p_league_id) s
+    where s.position_in_division = 1
+      and s.division_id is not null
+      and s.played > 0
+  loop
+    v_new_id := null;
+
+    insert into public.division_winners (
+      league_id, division_id, division_name, division_rank,
+      league_name, season, player_id, created_by
+    ) values (
+      p_league_id, rec.did, rec.dname, rec.drank,
+      v_league_name, v_season, rec.pid, auth.uid()
+    )
+    on conflict (league_id, division_rank) do nothing
+    returning id into v_new_id;
+
+    if v_new_id is not null then
+      insert into public.prize_claims (division_winner_id, player_id, full_name, email)
+      values (
+        v_new_id, rec.pid, rec.pname,
+        (select email from public.profiles where id = rec.pid)
+      )
+      returning id into v_claim_id;
+
+      insert into public.prize_notifications (player_id, prize_claim_id, title, body)
+      values (
+        rec.pid, v_claim_id,
+        'Gefeliciteerd! Je hebt ' || rec.dname || ' gewonnen',
+        'Je bent winnaar geworden van ' || rec.dname || '. Je hebt een gepersonaliseerd ' ||
+        'kledingstuk gewonnen, beschikbaar gesteld door LWPrints.'
+      );
+
+      won_player_id := rec.pid;
+      won_display_name := rec.pname;
+      won_division_name := rec.dname;
+      return next;
+    end if;
+  end loop;
+end;
+$$;
+
+grant execute on function public.determine_division_winners(uuid) to authenticated;
+
+
+-- De winnaar klikt "Prijs claimen": zet available -> claim_started, zodat
+-- de organisator ziet dat het formulier geopend is. Idempotent (no-op als
+-- de status al verder is).
+create or replace function public.start_prize_claim(p_division_winner_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_winner_player_id uuid;
+  v_claim public.prize_claims%rowtype;
+begin
+  if auth.uid() is null then
+    raise exception 'Je moet ingelogd zijn.';
+  end if;
+
+  select player_id into v_winner_player_id
+    from public.division_winners where id = p_division_winner_id;
+  if v_winner_player_id is null or v_winner_player_id <> auth.uid() then
+    raise exception 'Dit is niet jouw prijs.';
+  end if;
+
+  select * into v_claim from public.prize_claims
+    where division_winner_id = p_division_winner_id for update;
+  if v_claim.id is null then
+    raise exception 'Claim niet gevonden.';
+  end if;
+
+  if v_claim.status = 'available' then
+    update public.prize_claims set status = 'claim_started' where id = v_claim.id;
+    insert into public.prize_status_history (prize_claim_id, old_status, new_status, changed_by)
+    values (v_claim.id, 'available', 'claim_started', auth.uid());
+  end if;
+end;
+$$;
+
+grant execute on function public.start_prize_claim(uuid) to authenticated;
+
+
+-- De winnaar dient (of corrigeert) zijn claim in. Alleen de velden die een
+-- winnaar mag zetten; status/admin_notes zijn hier bewust niet aanraakbaar.
+-- Bewerken kan zolang de organisator de claim nog niet bevestigd heeft
+-- (confirmed/in_production/ready/delivered/cancelled = op slot).
+create or replace function public.submit_prize_claim(
+  p_division_winner_id uuid,
+  p_full_name text,
+  p_email text,
+  p_phone text,
+  p_garment text,
+  p_size text,
+  p_color text,
+  p_design_notes text,
+  p_comments text,
+  p_consent boolean
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_winner_player_id uuid;
+  v_claim public.prize_claims%rowtype;
+begin
+  if auth.uid() is null then
+    raise exception 'Je moet ingelogd zijn.';
+  end if;
+
+  select player_id into v_winner_player_id
+    from public.division_winners where id = p_division_winner_id;
+  if v_winner_player_id is null then
+    raise exception 'Prijs niet gevonden.';
+  end if;
+  if v_winner_player_id <> auth.uid() then
+    raise exception 'Dit is niet jouw prijs.';
+  end if;
+
+  select * into v_claim from public.prize_claims
+    where division_winner_id = p_division_winner_id for update;
+  if v_claim.id is null then
+    raise exception 'Claim niet gevonden.';
+  end if;
+
+  if v_claim.status in ('confirmed', 'in_production', 'ready', 'delivered', 'cancelled') then
+    raise exception 'Deze prijs staat niet meer open om te wijzigen. Neem contact op met de organisator.';
+  end if;
+
+  if p_full_name is null or trim(p_full_name) = '' then
+    raise exception 'Vul je naam in.';
+  end if;
+  if p_email is null or p_email !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' then
+    raise exception 'Vul een geldig e-mailadres in.';
+  end if;
+  if p_garment is not null and p_garment not in ('tshirt', 'hoodie', 'polo') then
+    raise exception 'Ongeldige keuze voor kledingstuk.';
+  end if;
+  if p_size is not null and p_size not in ('xs', 's', 'm', 'l', 'xl', 'xxl', 'xxxl') then
+    raise exception 'Ongeldige maat.';
+  end if;
+  if not p_consent then
+    raise exception 'Je moet akkoord gaan met het delen van je gegevens met LWPrints om te kunnen claimen.';
+  end if;
+
+  update public.prize_claims set
+    status                       = case when v_claim.status in ('available', 'claim_started')
+                                    then 'claimed' else v_claim.status end,
+    full_name                    = p_full_name,
+    email                        = p_email,
+    phone                        = p_phone,
+    garment                      = p_garment,
+    size                         = p_size,
+    color                        = p_color,
+    design_notes                 = p_design_notes,
+    comments                     = p_comments,
+    consent_share_with_lwprints  = p_consent,
+    consent_given_at             = case when v_claim.consent_share_with_lwprints
+                                    then v_claim.consent_given_at else now() end,
+    submitted_at                 = now()
+  where id = v_claim.id;
+
+  if v_claim.status in ('available', 'claim_started') then
+    insert into public.prize_status_history (prize_claim_id, old_status, new_status, changed_by)
+    values (v_claim.id, v_claim.status, 'claimed', auth.uid());
+  end if;
+end;
+$$;
+
+grant execute on function public.submit_prize_claim(
+  uuid, text, text, text, text, text, text, text, text, boolean
+) to authenticated;
+
+
+-- Organisator wijzigt de status (incl. "markeer als uitgereikt" = delivered)
+-- en legt dat vast in prize_status_history.
+create or replace function public.update_prize_claim_status(
+  p_claim_id uuid,
+  p_new_status text,
+  p_note text
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_old_status text;
+begin
+  if auth.uid() is null then
+    raise exception 'Je moet ingelogd zijn.';
+  end if;
+  if not public.is_organizer() then
+    raise exception 'Alleen de organisator kan de status wijzigen.';
+  end if;
+  if p_new_status not in (
+    'available', 'claim_started', 'claimed', 'reviewing', 'contact_pending',
+    'confirmed', 'in_production', 'ready', 'delivered', 'cancelled'
+  ) then
+    raise exception 'Ongeldige status: %.', p_new_status;
+  end if;
+
+  select status into v_old_status from public.prize_claims where id = p_claim_id for update;
+  if v_old_status is null then
+    raise exception 'Claim niet gevonden.';
+  end if;
+
+  update public.prize_claims set status = p_new_status where id = p_claim_id;
+
+  insert into public.prize_status_history (prize_claim_id, old_status, new_status, note, changed_by)
+  values (p_claim_id, v_old_status, p_new_status, p_note, auth.uid());
+end;
+$$;
+
+grant execute on function public.update_prize_claim_status(uuid, text, text) to authenticated;
 
 
 -- ----------------------------------------------------------------------------

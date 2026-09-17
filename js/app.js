@@ -1494,7 +1494,7 @@ async function viewLeagues() {
   setView(`
     <h1>Leagues</h1>
     ${leagues.length ? leagues.map((l) => leagueCard(l)).join("")
-      : emptyView("Nog geen leagues", "De organisator maakt ze aan.", "league")}
+      : emptyView("Nog geen leagues", "", "league")}
   `);
 }
 

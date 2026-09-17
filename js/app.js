@@ -241,7 +241,7 @@ function matchCard(m) {
 function leagueCard(l, clickable = true) {
   const meta = [
     l.season,
-    `${l.game_type} · best of legs`,
+    `${l.game_type} · best of ${l.legs_per_match}`,
   ].filter(Boolean).join(" · ");
   const inner = `
       <div class="row">
@@ -1541,7 +1541,7 @@ async function viewLeagueDetail(id) {
       <span style="width:16px;height:16px;display:inline-flex">${icon.back}</span> Leagues
     </button>
     <h1>${esc(league.name)}</h1>
-    <p class="sub">${esc([league.season, `${league.game_type} · best of legs`].filter(Boolean).join(" · "))}</p>
+    <p class="sub">${esc([league.season, `${league.game_type} · best of ${league.legs_per_match}`].filter(Boolean).join(" · "))}</p>
     <div style="margin-bottom:24px">${badge(league.status)}</div>
 
     ${isOrg ? `

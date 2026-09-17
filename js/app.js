@@ -174,6 +174,7 @@ function errorView(error) {
 function matchCard(m) {
   const a = m.player_a, b = m.player_b;
   const played = m.player_a_legs > 0 || m.player_b_legs > 0;
+  const isDraw = played && m.player_a_legs === m.player_b_legs;
   const aWin = m.winner_id && m.winner_id === m.player_a_id;
   const bWin = m.winner_id && m.winner_id === m.player_b_id;
   return `
@@ -196,7 +197,8 @@ function matchCard(m) {
           <span class="score ${aWin ? "win" : ""}">${m.player_a_legs}</span>
           <span class="score-sep">-</span>
           <span class="score ${bWin ? "win" : ""}">${m.player_b_legs}</span>
-        </div>` : ""}
+        </div>
+        ${isDraw ? `<div class="center muted" style="font-size:12.5px;margin-top:4px">Gelijkspel</div>` : ""}` : ""}
       ${m.scheduled_at ? `<div class="match-meta">${icon.clock}<span>${esc(fmtDate(m.scheduled_at))}</span></div>` : ""}
     </div>`;
 }
@@ -240,6 +242,9 @@ function tournamentCard(t) {
 
 // Groepeert platte standenregels (zie db.standingsForLeague) per divisie,
 // gesorteerd op divisieniveau en daarbinnen op punten/legssaldo.
+// De rijen komen al gesorteerd terug van league_standings() (punten,
+// legsaldo, gemiddelde als tiebreaker) - hier alleen groeperen per divisie,
+// niet opnieuw sorteren.
 function groupStandingsByDivision(rows) {
   const groups = new Map();
   for (const r of rows) {
@@ -250,9 +255,6 @@ function groupStandingsByDivision(rows) {
     groups.get(key).rows.push(r);
   }
   const list = [...groups.values()];
-  list.forEach((g) => g.rows.sort((a, b) =>
-    b.points - a.points || (b.legsFor - b.legsAgainst) - (a.legsFor - a.legsAgainst)
-  ));
   list.sort((a, b) => a.rank - b.rank);
   return list;
 }
@@ -267,7 +269,7 @@ function divisionStandingsCard(group) {
           ${avatar(r.player, "sm")}
           <div class="row-main">
             <div class="row-title">${esc(r.player?.display_name || "?")}</div>
-            <div class="row-sub">${r.played} gespeeld &middot; ${r.wins}W-${r.losses}V &middot; legs ${r.legsFor}-${r.legsAgainst}</div>
+            <div class="row-sub">${r.played} gespeeld &middot; ${r.wins}W-${r.draws}G-${r.losses}V &middot; legs ${r.legsFor}-${r.legsAgainst}</div>
           </div>
           <div style="font-weight:700;flex-shrink:0">${r.points} pt</div>
           ${i === 0 ? `<span style="width:16px;height:16px;color:var(--accent);flex-shrink:0">${icon.trophy}</span>` : ""}
@@ -409,45 +411,44 @@ const db = {
     if (error) throw error;
   },
 
-  // Stand per divisie. Haalt bevestigde wedstrijden op via een
-  // security-definer functie (RLS laat een speler anders alleen zijn eigen
-  // wedstrijden zien) en telt punten/legs in de app zelf op.
+  // Stand per divisie: punten (2 win / 1 gelijk / 0 verlies), legsaldo en
+  // gemiddelde als tiebreaker. Draait volledig server-side (security-definer
+  // functie), want de sortering mag intern het PRIVATE zelf-opgegeven
+  // gemiddelde gebruiken (player_onboarding) zonder dat aan andere spelers
+  // te tonen - de functie geeft daarom altijd het publieke
+  // player_statistics-gemiddelde terug als display_average.
   async standingsForLeague(leagueId) {
-    const [{ data: matches, error: e1 }, members] = await Promise.all([
-      sb.rpc("league_confirmed_matches", { p_league_id: leagueId }),
-      this.leagueMembers(leagueId),
-    ]);
-    if (e1) throw e1;
-
-    const stats = {};
-    for (const m of matches || []) {
-      for (const side of ["a", "b"]) {
-        const pid = side === "a" ? m.player_a_id : m.player_b_id;
-        const legsFor = side === "a" ? m.player_a_legs : m.player_b_legs;
-        const legsAgainst = side === "a" ? m.player_b_legs : m.player_a_legs;
-        const s = stats[pid] || (stats[pid] = { played: 0, wins: 0, losses: 0, legsFor: 0, legsAgainst: 0 });
-        s.played += 1;
-        s.legsFor += legsFor;
-        s.legsAgainst += legsAgainst;
-        if (m.winner_id === pid) s.wins += 1; else s.losses += 1;
-      }
-    }
-
-    return members.map((mem) => {
-      const s = stats[mem.player_id] || { played: 0, wins: 0, losses: 0, legsFor: 0, legsAgainst: 0 };
-      return {
-        divisionId: mem.division_id,
-        divisionName: mem.division?.name || null,
-        divisionRank: mem.division?.rank ?? Infinity,
-        player: mem.player,
-        ...s,
-        points: s.wins * 2,
-      };
-    });
+    const { data, error } = await sb.rpc("league_standings", { p_league_id: leagueId });
+    if (error) throw error;
+    return (data || []).map((r) => ({
+      divisionId: r.division_id,
+      divisionName: r.division_name,
+      divisionRank: r.division_rank ?? Infinity,
+      player: { id: r.player_id, display_name: r.display_name },
+      played: r.played,
+      wins: r.wins,
+      draws: r.draws,
+      losses: r.losses,
+      legsFor: r.legs_for,
+      legsAgainst: r.legs_against,
+      points: r.points,
+      displayAverage: r.display_average,
+    }));
   },
 
-  async promoteDivisionWinners(leagueId) {
-    const { data, error } = await sb.rpc("promote_division_winners", { p_league_id: leagueId });
+  // Eerste, volledige indeling op gemiddelde (1e divisie 70+, 2e 60+, 3e
+  // 50+, 4e <50), max 12 per divisie. Alleen zolang de league nog niet
+  // actief is.
+  async autoAssignDivisions(leagueId) {
+    const { data, error } = await sb.rpc("auto_assign_divisions", { p_league_id: leagueId });
+    if (error) throw error;
+    return data || [];
+  },
+
+  // Promotie/degradatie: 2 op / 2 neer tussen aangrenzende divisies, op
+  // basis van de punten uit gespeelde wedstrijden.
+  async applyPromotionRelegation(leagueId) {
+    const { data, error } = await sb.rpc("apply_promotion_relegation", { p_league_id: leagueId });
     if (error) throw error;
     return data || [];
   },
@@ -525,7 +526,7 @@ const db = {
   async matchById(id) {
     const { data, error } = await sb
       .from("league_matches")
-      .select("*, player_a:player_a_id(*), player_b:player_b_id(*), league:league_id(name)")
+      .select("*, player_a:player_a_id(*), player_b:player_b_id(*), league:league_id(name, legs_per_match)")
       .eq("id", id)
       .single();
     if (error) throw error;
@@ -1153,11 +1154,17 @@ async function viewLeagueDetail(id) {
     ${isOrg ? `
       ${sectionHead("Divisies en spelers")}
       <div class="chips" style="margin-bottom:14px">
+        ${league.status === "draft" ? `
+          <button class="chip" onclick="autoAssignDivisions('${esc(id)}')">${icon.target} Automatisch indelen</button>` : ""}
         <button class="chip" onclick="openDivisionDialog('${esc(id)}')">${icon.plus} Nieuwe divisie</button>
         <button class="chip" onclick="openAssignPlayerDialog('${esc(id)}')">${icon.plus} Speler indelen</button>
         ${league.status === "finished" ? `
-          <button class="chip" onclick="promoteWinners('${esc(id)}')">${icon.trophy} Promoveer kampioenen</button>` : ""}
+          <button class="chip" onclick="applyPromotionRelegation('${esc(id)}')">${icon.trophy} Promotie/degradatie toepassen</button>` : ""}
       </div>
+      ${league.status === "draft" ? `
+        <p class="muted" style="font-size:12.5px;margin:-6px 0 14px">
+          Automatisch indelen: 1e divisie 70+ gemiddelde, 2e 60+, 3e 50+, 4e &lt;50 (max 12 per divisie).
+        </p>` : ""}
     ` : ""}
 
     ${sectionHead("Wedstrijden")}
@@ -1183,12 +1190,20 @@ function openDivisionDialog(leagueId) {
 }
 
 async function openAssignPlayerDialog(leagueId) {
-  const [players, divisions, onboardingList] = await Promise.all([
-    db.players(), db.divisionsForLeague(leagueId), db.allOnboarding(),
+  const [players, divisions, onboardingList, members] = await Promise.all([
+    db.players(), db.divisionsForLeague(leagueId), db.allOnboarding(), db.leagueMembers(leagueId),
   ]);
   if (!players.length) return toast("Er zijn nog geen spelers.");
   const onboardingByPlayer = Object.fromEntries(onboardingList.map((o) => [o.player_id, o]));
+  const counts = {};
+  for (const m of members) {
+    if (m.division_id) counts[m.division_id] = (counts[m.division_id] || 0) + 1;
+  }
   const opts = (list, val, lab) => list.map((x) => `<option value="${esc(x[val])}">${esc(x[lab])}</option>`).join("");
+  const divOpts = divisions.map((d) => {
+    const n = counts[d.id] || 0;
+    return `<option value="${esc(d.id)}" ${n >= 12 ? "disabled" : ""}>${esc(d.name)} (${n}/12)</option>`;
+  }).join("");
 
   openModal("Speler indelen", `
     <div class="field"><label for="ap">Speler</label><select id="ap">${opts(players, "id", "display_name")}</select></div>
@@ -1196,7 +1211,7 @@ async function openAssignPlayerDialog(leagueId) {
     <div class="field"><label for="ad">Divisie</label>
       <select id="ad">
         <option value="">Geen divisie</option>
-        ${opts(divisions, "id", "name")}
+        ${divOpts}
       </select>
     </div>`, async (bg) => {
     const playerId = bg.querySelector("#ap").value;
@@ -1220,13 +1235,31 @@ async function openAssignPlayerDialog(leagueId) {
   showInfo();
 }
 
-async function promoteWinners(leagueId) {
+async function autoAssignDivisions(leagueId) {
   try {
-    const promoted = await db.promoteDivisionWinners(leagueId);
-    if (!promoted.length) {
-      toast("Niemand om te promoveren: geen wedstrijden gespeeld, of iedereen zit al in de hoogste divisie.");
+    const placed = await db.autoAssignDivisions(leagueId);
+    const lowConfidence = placed.filter((p) => p.low_confidence);
+    let msg = `${placed.length} speler(s) ingedeeld.`;
+    if (lowConfidence.length) {
+      msg += ` Let op: ${lowConfidence.map((p) => p.display_name).join(", ")} had(den) geen gemiddelde en staat/staan nu in de 4e divisie.`;
+    }
+    toast(msg);
+    router();
+  } catch (e) { toast(errText(e)); }
+}
+
+async function applyPromotionRelegation(leagueId) {
+  try {
+    const moves = await db.applyPromotionRelegation(leagueId);
+    if (!moves.length) {
+      toast("Niemand om te verplaatsen: geen wedstrijden gespeeld, of alle divisies zijn te klein.");
     } else {
-      toast(`${promoted.length} speler(s) gepromoveerd: ${promoted.map((p) => p.display_name).join(", ")}`);
+      const promoted = moves.filter((m) => m.movement === "promotie");
+      const relegated = moves.filter((m) => m.movement === "degradatie");
+      const parts = [];
+      if (promoted.length) parts.push(`${promoted.length} promotie (${promoted.map((p) => p.display_name).join(", ")})`);
+      if (relegated.length) parts.push(`${relegated.length} degradatie (${relegated.map((p) => p.display_name).join(", ")})`);
+      toast(parts.join(" · "));
     }
     router();
   } catch (e) { toast(errText(e)); }
@@ -1705,7 +1738,9 @@ async function openMatchDialog() {
   openModal("Nieuwe wedstrijd", `
     <div class="field"><label for="ml">League</label><select id="ml">${opts(leagues, "id", "name")}</select></div>
     <div class="field"><label for="mdiv">Divisie <span class="muted" style="font-weight:400">(optioneel)</span></label>
-      <select id="mdiv"><option value="">Geen divisie</option></select></div>
+      <select id="mdiv"><option value="">Geen divisie</option></select>
+      <div id="mdivInfo" class="muted" style="font-size:12.5px;margin-top:6px"></div>
+    </div>
     <div class="field"><label for="ma">Speler A</label><select id="ma">${opts(players, "id", "display_name")}</select></div>
     <div class="field"><label for="mb">Speler B</label><select id="mb">${opts(players, "id", "display_name")}</select></div>
     <div class="field"><label for="md">Wanneer</label><input id="md" type="datetime-local"></div>`,
@@ -1731,14 +1766,29 @@ async function openMatchDialog() {
   if (sel && players[1]) sel.value = players[1].id;
 
   // Divisies horen bij een league; laad ze opnieuw zodra een andere league
-  // gekozen wordt.
+  // gekozen wordt. Toont ook of de gekozen divisie al genoeg spelers heeft
+  // om een wedstrijd in te plannen (minimaal 4).
   const leagueSel = document.querySelector("#ml");
   const divSel = document.querySelector("#mdiv");
+  const divInfo = document.querySelector("#mdivInfo");
+  let members = [];
+  const showDivInfo = () => {
+    if (!divSel.value) return (divInfo.textContent = "");
+    const n = members.filter((mem) => mem.division_id === divSel.value).length;
+    divInfo.textContent = n < 4
+      ? `Deze divisie heeft nog maar ${n} speler(s); minimaal 4 nodig om te starten.`
+      : `${n} spelers in deze divisie.`;
+  };
   const loadDivisions = async () => {
-    const divisions = await db.divisionsForLeague(leagueSel.value);
+    const [divisions, mem] = await Promise.all([
+      db.divisionsForLeague(leagueSel.value), db.leagueMembers(leagueSel.value),
+    ]);
+    members = mem;
     divSel.innerHTML = `<option value="">Geen divisie</option>${opts(divisions, "id", "name")}`;
+    showDivInfo();
   };
   leagueSel.onchange = loadDivisions;
+  divSel.onchange = showDivInfo;
   loadDivisions();
 }
 
@@ -1747,23 +1797,25 @@ async function openResultDialog(matchId) {
   const a = m.player_a, b = m.player_b;
   const aName = a?.display_name || "Speler A";
   const bName = b?.display_name || "Speler B";
+  const legsPerMatch = m.league?.legs_per_match || 10;
 
   openModal("Uitslag doorgeven", `
-    <p class="sub" style="margin-bottom:18px">Je tegenstander moet dit bevestigen voor het meetelt.</p>
+    <p class="sub" style="margin-bottom:18px">Jullie spelen altijd alle ${legsPerMatch} legs. Je tegenstander moet dit bevestigen voor het meetelt.</p>
 
     <div class="field">
       <label>Wie heeft gewonnen?</label>
       <div class="chips" role="radiogroup" aria-label="Winnaar">
         <label class="chip"><input type="radio" name="winner" value="${esc(a.id)}" class="sr">${esc(aName)}</label>
+        <label class="chip"><input type="radio" name="winner" value="draw" class="sr">Gelijkspel</label>
         <label class="chip"><input type="radio" name="winner" value="${esc(b.id)}" class="sr">${esc(bName)}</label>
       </div>
     </div>
 
     <div class="field">
-      <label>Gewonnen legs</label>
+      <label>Gewonnen legs <span class="muted" style="font-weight:400">(samen ${legsPerMatch})</span></label>
       <div class="field-pair">
-        <div><div class="field-pair-label">${esc(aName)}</div><input id="ra" type="number" min="0" max="99" value="0" required></div>
-        <div><div class="field-pair-label">${esc(bName)}</div><input id="rb" type="number" min="0" max="99" value="0" required></div>
+        <div><div class="field-pair-label">${esc(aName)}</div><input id="ra" type="number" min="0" max="${legsPerMatch}" value="0" required></div>
+        <div><div class="field-pair-label">${esc(bName)}</div><input id="rb" type="number" min="0" max="${legsPerMatch}" value="0" required></div>
       </div>
     </div>
 
@@ -1791,20 +1843,25 @@ async function openResultDialog(matchId) {
       </div>
     </div>`, async (bg) => {
     const winner = bg.querySelector("input[name=winner]:checked")?.value;
-    if (!winner) throw new Error("Kies wie de wedstrijd heeft gewonnen.");
+    if (!winner) throw new Error("Kies wie er gewonnen heeft, of gelijkspel.");
     const aLegs = parseInt(bg.querySelector("#ra").value, 10);
     const bLegs = parseInt(bg.querySelector("#rb").value, 10);
     if (isNaN(aLegs) || isNaN(bLegs)) throw new Error("Vul beide legscores in.");
-    if (aLegs === bLegs) throw new Error("Een wedstrijd kan niet gelijk eindigen.");
-    if ((aLegs > bLegs && winner !== a.id) || (bLegs > aLegs && winner !== b.id)) {
-      throw new Error("De gekozen winnaar komt niet overeen met de legscore.");
+    if (aLegs + bLegs !== legsPerMatch) throw new Error(`Samen moeten de legs precies ${legsPerMatch} zijn.`);
+    if (aLegs === bLegs) {
+      if (winner !== "draw") throw new Error("Bij gelijke legs is het een gelijkspel.");
+    } else {
+      if (winner === "draw") throw new Error("De legs zijn niet gelijk, dus kies wie er gewonnen heeft.");
+      if ((aLegs > bLegs && winner !== a.id) || (bLegs > aLegs && winner !== b.id)) {
+        throw new Error("De gekozen winnaar komt niet overeen met de legscore.");
+      }
     }
     const num = (sel) => {
       const v = bg.querySelector(sel).value;
       return v === "" ? null : Number(v);
     };
     await db.reportResult(matchId, {
-      winnerId: winner,
+      winnerId: winner === "draw" ? null : winner,
       aLegs, bLegs,
       aAverage: num("#avga"), bAverage: num("#avgb"),
       a180s: num("#s180a") ?? 0, b180s: num("#s180b") ?? 0,
@@ -1820,7 +1877,8 @@ async function openResultDialog(matchId) {
 async function openConfirmDialog(matchId) {
   const m = await db.matchById(matchId);
   const a = m.player_a, b = m.player_b;
-  const winnerName = m.winner_id === m.player_a_id ? a?.display_name : b?.display_name;
+  const isDraw = m.winner_id === null;
+  const winnerName = isDraw ? null : (m.winner_id === m.player_a_id ? a?.display_name : b?.display_name);
   const reporterName = m.reported_by === m.player_a_id ? a?.display_name : b?.display_name;
 
   const row = (label, av, bv) => `
@@ -1840,8 +1898,10 @@ async function openConfirmDialog(matchId) {
       </p>
       <div class="card" style="margin-bottom:20px">
         <div style="display:flex;align-items:center;justify-content:center;gap:8px;font-weight:700;margin-bottom:10px">
-          <span style="width:18px;height:18px;color:var(--accent)">${icon.trophy}</span>
-          ${esc(winnerName || "?")} wint
+          ${isDraw ? "Gelijkspel" : `
+            <span style="width:18px;height:18px;color:var(--accent)">${icon.trophy}</span>
+            ${esc(winnerName || "?")} wint
+          `}
         </div>
         ${row("Legs", m.player_a_legs, m.player_b_legs)}
         ${row("Gemiddelde", m.player_a_average, m.player_b_average)}

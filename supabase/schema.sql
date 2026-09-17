@@ -80,10 +80,38 @@ create table if not exists public.leagues (
                  check (match_format in ('best_of_legs')),
   status       text        not null default 'draft'
                  check (status in ('draft', 'active', 'finished')),
+  -- Aantal legs dat een wedstrijd in deze league telt. Er wordt altijd het
+  -- volledige aantal gespeeld (niet eerder gestopt bij een meerderheid),
+  -- zodat een gelijkspel (bv. 5-5 bij 10) mogelijk is.
+  legs_per_match int      not null default 10 check (legs_per_match > 0),
   created_by   uuid        not null references public.profiles (id)
                  on delete restrict default auth.uid(),
   created_at   timestamptz not null default now()
 );
+
+alter table public.leagues
+  add column if not exists legs_per_match int not null default 10 check (legs_per_match > 0);
+
+-- legs_per_match mag alleen wijzigen zolang de league nog niet actief is
+-- (anders komen lopende/bevestigde uitslagen niet meer overeen met de regel).
+create or replace function public.protect_legs_per_match()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if new.legs_per_match is distinct from old.legs_per_match and old.status <> 'draft' then
+    raise exception 'Het aantal legs kan niet meer gewijzigd worden nadat de league actief is.';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists on_leagues_protect_legs_per_match on public.leagues;
+create trigger on_leagues_protect_legs_per_match
+  before update on public.leagues
+  for each row
+  execute function public.protect_legs_per_match();
 
 
 -- league_players ---------------------------------------------------------
@@ -294,12 +322,23 @@ create table if not exists public.player_statistics (
   matches_lost        int  not null default 0,
   legs_played         int  not null default 0,
   legs_won            int  not null default 0,
+  draws               int  not null default 0,
   average_score       numeric(5,2) not null default 0,
+  -- Hoe vaak er daadwerkelijk een gemiddelde is meegegeven bij een
+  -- bevestigde wedstrijd (het gemiddelde-veld bij het doorgeven van een
+  -- uitslag is optioneel). matches_played loopt bij élke wedstrijd op, dus
+  -- die alleen zegt niets over hoe betrouwbaar average_score is - deze
+  -- teller wel.
+  average_sample_count int not null default 0,
   checkout_percentage numeric(5,2) not null default 0,
   highest_checkout    int  not null default 0,
   count_180           int  not null default 0,
   updated_at          timestamptz not null default now()
 );
+
+alter table public.player_statistics
+  add column if not exists draws int not null default 0,
+  add column if not exists average_sample_count int not null default 0;
 
 
 -- ----------------------------------------------------------------------------
@@ -660,12 +699,16 @@ create policy "player_statistics_write_organizer"
 -- tegenstander niet reageert.
 
 -- Interne helper: telt één wedstrijdresultaat mee in player_statistics.
--- Niet rechtstreeks aanroepbaar door de client (zie grants onderaan).
+-- Niet rechtstreeks aanroepbaar door de client (zie revoke onderaan) - de
+-- Supabase-standaardrechten kennen EXECUTE anders alsnog toe aan anon en
+-- authenticated, dus revoke from public alleen is niet genoeg.
+drop function if exists public.apply_match_stats(uuid, int, int, boolean, numeric, int, int);
+
 create or replace function public.apply_match_stats(
   p_player_id uuid,
   p_legs_won int,
   p_legs_lost int,
-  p_won boolean,
+  p_outcome text, -- 'win' | 'draw' | 'loss'
   p_average numeric,
   p_count_180 int,
   p_highest_checkout int
@@ -678,6 +721,10 @@ as $$
 declare
   s public.player_statistics%rowtype;
 begin
+  if p_outcome not in ('win', 'draw', 'loss') then
+    raise exception 'Ongeldige uitslag: %.', p_outcome;
+  end if;
+
   select * into s from public.player_statistics where player_id = p_player_id for update;
   if s.id is null then
     insert into public.player_statistics (player_id) values (p_player_id)
@@ -685,27 +732,35 @@ begin
   end if;
 
   update public.player_statistics set
-    matches_played   = s.matches_played + 1,
-    matches_won      = s.matches_won + case when p_won then 1 else 0 end,
-    matches_lost     = s.matches_lost + case when p_won then 0 else 1 end,
-    legs_played      = s.legs_played + p_legs_won + p_legs_lost,
-    legs_won         = s.legs_won + p_legs_won,
-    average_score    = case when p_average is null then s.average_score
-                        else round(((s.average_score * s.matches_played) + p_average)
-                                    / (s.matches_played + 1), 2) end,
-    highest_checkout = greatest(s.highest_checkout, coalesce(p_highest_checkout, 0)),
-    count_180        = s.count_180 + coalesce(p_count_180, 0),
-    updated_at       = now()
+    matches_played       = s.matches_played + 1,
+    matches_won          = s.matches_won + case when p_outcome = 'win' then 1 else 0 end,
+    matches_lost         = s.matches_lost + case when p_outcome = 'loss' then 1 else 0 end,
+    draws                = s.draws + case when p_outcome = 'draw' then 1 else 0 end,
+    legs_played          = s.legs_played + p_legs_won + p_legs_lost,
+    legs_won             = s.legs_won + p_legs_won,
+    -- Weegt mee op average_sample_count (hoe vaak er ECHT een gemiddelde
+    -- werd opgegeven), niet op matches_played (dat ook ophoogt wanneer het
+    -- veld leeg werd gelaten) - anders zou een leeg gelaten gemiddelde het
+    -- bestaande gemiddelde ten onrechte verdunnen.
+    average_score        = case when p_average is null then s.average_score
+                            else round(((s.average_score * s.average_sample_count) + p_average)
+                                        / (s.average_sample_count + 1), 2) end,
+    average_sample_count = s.average_sample_count + case when p_average is null then 0 else 1 end,
+    highest_checkout     = greatest(s.highest_checkout, coalesce(p_highest_checkout, 0)),
+    count_180            = s.count_180 + coalesce(p_count_180, 0),
+    updated_at           = now()
   where player_id = p_player_id;
 end;
 $$;
 
-revoke execute on function public.apply_match_stats(uuid, int, int, boolean, numeric, int, int) from public;
+revoke execute on function public.apply_match_stats(uuid, int, int, text, numeric, int, int) from public, anon, authenticated;
 
 
 -- Uitslag doorgeven. Alleen door één van de twee spelers, alleen zolang de
 -- wedstrijd nog open staat. Onthoudt wie hem invulde (reported_by), zodat
--- diezelfde speler hem niet ook kan bevestigen.
+-- diezelfde speler hem niet ook kan bevestigen. Er wordt altijd het
+-- volledige aantal legs van de league gespeeld (legs_per_match), dus een
+-- gelijkspel is mogelijk (winner_id is dan null).
 create or replace function public.report_league_match_result(
   p_match_id uuid,
   p_winner_id uuid,
@@ -725,6 +780,7 @@ set search_path = public
 as $$
 declare
   m public.league_matches%rowtype;
+  v_legs_per_match int;
 begin
   -- auth.uid() is NULL voor een niet-ingelogde aanroeper. Zonder deze check
   -- levert `auth.uid() <> m.player_a_id` verderop NULL op (niet true/false),
@@ -749,17 +805,24 @@ begin
     raise exception 'Deze wedstrijd staat niet meer open voor het invullen van een uitslag.';
   end if;
 
-  if p_winner_id <> m.player_a_id and p_winner_id <> m.player_b_id then
-    raise exception 'De winnaar moet één van beide spelers zijn.';
+  select legs_per_match into v_legs_per_match from public.leagues where id = m.league_id;
+
+  if p_player_a_legs + p_player_b_legs <> v_legs_per_match then
+    raise exception 'Samen moeten de legs precies % zijn.', v_legs_per_match;
   end if;
 
   if p_player_a_legs = p_player_b_legs then
-    raise exception 'Een wedstrijd kan niet gelijk eindigen.';
-  end if;
-
-  if (p_player_a_legs > p_player_b_legs and p_winner_id <> m.player_a_id)
-     or (p_player_b_legs > p_player_a_legs and p_winner_id <> m.player_b_id) then
-    raise exception 'De gekozen winnaar komt niet overeen met de legscore.';
+    if p_winner_id is not null then
+      raise exception 'Bij een gelijkspel mag er geen winnaar opgegeven worden.';
+    end if;
+  else
+    if p_winner_id is null or (p_winner_id <> m.player_a_id and p_winner_id <> m.player_b_id) then
+      raise exception 'De winnaar moet één van beide spelers zijn.';
+    end if;
+    if (p_player_a_legs > p_player_b_legs and p_winner_id <> m.player_a_id)
+       or (p_player_b_legs > p_player_a_legs and p_winner_id <> m.player_b_id) then
+      raise exception 'De gekozen winnaar komt niet overeen met de legscore.';
+    end if;
   end if;
 
   update public.league_matches set
@@ -795,6 +858,8 @@ as $$
 declare
   m public.league_matches%rowtype;
   is_opponent boolean;
+  v_a_outcome text;
+  v_b_outcome text;
 begin
   -- Zie de toelichting in report_league_match_result: zonder deze check
   -- kan een niet-ingelogde aanroeper de is_opponent-berekening hieronder
@@ -824,13 +889,24 @@ begin
     set status = 'confirmed', confirmed_at = now()
     where id = p_match_id;
 
+  if m.winner_id is null then
+    v_a_outcome := 'draw';
+    v_b_outcome := 'draw';
+  elsif m.winner_id = m.player_a_id then
+    v_a_outcome := 'win';
+    v_b_outcome := 'loss';
+  else
+    v_a_outcome := 'loss';
+    v_b_outcome := 'win';
+  end if;
+
   perform public.apply_match_stats(
     m.player_a_id, m.player_a_legs, m.player_b_legs,
-    m.winner_id = m.player_a_id, m.player_a_average, m.player_a_180s, m.player_a_highest_checkout
+    v_a_outcome, m.player_a_average, m.player_a_180s, m.player_a_highest_checkout
   );
   perform public.apply_match_stats(
     m.player_b_id, m.player_b_legs, m.player_a_legs,
-    m.winner_id = m.player_b_id, m.player_b_average, m.player_b_180s, m.player_b_highest_checkout
+    v_b_outcome, m.player_b_average, m.player_b_180s, m.player_b_highest_checkout
   );
 end;
 $$;
@@ -895,19 +971,34 @@ grant execute on function public.reject_league_match_result(uuid) to authenticat
 -- ----------------------------------------------------------------------------
 -- 8. Divisies binnen een league
 -- ----------------------------------------------------------------------------
--- Spelers worden ingedeeld in een divisie binnen een league (bijv. 1e, 2e,
--- 3e divisie; rank 1 = hoogste niveau). Wedstrijden kunnen aan een divisie
--- gekoppeld worden. De organisator kan de winnaar van elke divisie laten
--- promoveren naar de divisie één niveau hoger.
+-- Spelers worden ingedeeld in een divisie binnen een league: vaste
+-- gemiddelde-drempels (1e divisie 70+, 2e 60+, 3e 50+, 4e <50), max 12
+-- spelers per divisie, min. 4 om te kunnen starten. "Automatisch indelen"
+-- (auto_assign_divisions) doet de allereerste indeling op gemiddelde, zolang
+-- de league nog niet actief is. "Promotie/degradatie" (apply_promotion_
+-- relegation) is het doorlopende mechanisme: elk seizoen 2 op / 2 neer
+-- tussen aangrenzende divisies, op basis van punten uit gespeelde
+-- wedstrijden (zie league_standings voor de rangschikking).
 
 create table if not exists public.league_divisions (
   id         uuid primary key default gen_random_uuid(),
   league_id  uuid not null references public.leagues (id) on delete cascade,
   name       text not null,
-  rank       int  not null check (rank >= 1),
+  rank       int  not null check (rank between 1 and 4),
+  -- Gemiddelde-drempels voor "Automatisch indelen". null = geen ondergrens
+  -- (4e divisie) resp. geen bovengrens (1e divisie).
+  min_average numeric(5,2),
+  max_average numeric(5,2),
   created_at timestamptz not null default now(),
   unique (league_id, rank)
 );
+
+alter table public.league_divisions
+  add column if not exists min_average numeric(5,2),
+  add column if not exists max_average numeric(5,2);
+
+alter table public.league_divisions drop constraint if exists league_divisions_rank_check;
+alter table public.league_divisions add constraint league_divisions_rank_check check (rank between 1 and 4);
 
 create index if not exists idx_league_divisions_league on public.league_divisions (league_id);
 
@@ -941,11 +1032,84 @@ alter table public.league_matches
 create index if not exists idx_league_matches_division on public.league_matches (division_id);
 
 
+-- Maximaal 12 spelers per divisie. Kan niet met een CHECK-constraint (die
+-- kan geen rijen tellen), dus een trigger.
+create or replace function public.enforce_division_capacity()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+declare
+  v_count int;
+begin
+  if new.division_id is null then
+    return new;
+  end if;
+  if tg_op = 'UPDATE' and old.division_id is not distinct from new.division_id then
+    return new;
+  end if;
+
+  select count(*) into v_count
+    from public.league_players
+    where division_id = new.division_id
+      and id <> new.id;
+
+  if v_count >= 12 then
+    raise exception 'Deze divisie zit al vol (maximaal 12 spelers).';
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists on_league_players_division_capacity on public.league_players;
+create trigger on_league_players_division_capacity
+  before insert or update of division_id on public.league_players
+  for each row
+  execute function public.enforce_division_capacity();
+
+
+-- Minimaal 4 spelers in een divisie voordat er een wedstrijd in gepland mag
+-- worden.
+create or replace function public.enforce_division_min_players()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+declare
+  v_count int;
+begin
+  if new.division_id is null then
+    return new;
+  end if;
+
+  select count(*) into v_count
+    from public.league_players
+    where division_id = new.division_id;
+
+  if v_count < 4 then
+    raise exception 'Deze divisie heeft nog geen 4 spelers; er kunnen nog geen wedstrijden gepland worden.';
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists on_league_matches_division_min_players on public.league_matches;
+create trigger on_league_matches_division_min_players
+  before insert on public.league_matches
+  for each row
+  execute function public.enforce_division_min_players();
+
+
 -- Geeft bevestigde wedstrijden van een league terug, ook aan spelers die er
 -- zelf niet in speelden - nodig om een standenlijst te tonen die voor
 -- iedereen in de league zichtbaar is (de gewone select-policy op
 -- league_matches laat een speler alleen zijn eigen wedstrijden zien). Vereist
 -- wel inloggen, net als de rest van de app: dit is geen publiek endpoint.
+-- (Wordt niet meer gebruikt door league_standings hieronder, die doet de
+-- aggregatie zelf server-side, maar blijft bestaan voor eventueel ander
+-- gebruik.)
 create or replace function public.league_confirmed_matches(p_league_id uuid)
 returns setof public.league_matches
 language plpgsql
@@ -969,92 +1133,335 @@ $$;
 grant execute on function public.league_confirmed_matches(uuid) to authenticated;
 
 
--- Promoveert, voor elke divisie in de league (behalve de hoogste), de
--- speler met de meeste punten (op basis van bevestigde wedstrijden) naar de
--- divisie één niveau hoger. Alleen de organisator mag dit aanroepen. Geeft
--- de lijst gepromoveerde spelers terug zodat de app dat kan tonen.
-create or replace function public.promote_division_winners(p_league_id uuid)
-returns table(player_id uuid, display_name text, from_division text, to_division text)
+-- Automatisch indelen op gemiddelde: 1e divisie 70+, 2e divisie 60+, 3e
+-- divisie 50+, 4e divisie <50. Max 12 per divisie; wie boven de 12 valt
+-- zakt door naar de eerstvolgende lagere divisie. Alleen zolang de league
+-- nog op 'draft' staat. Maximaal 48 spelers (4 x 12) te verwerken - anders
+-- kan de max-12-regel niet gegarandeerd worden en wordt er niets uitgevoerd.
+--
+-- Het gebruikte gemiddelde is player_statistics.average_score zodra dat
+-- betrouwbaar genoeg is (average_sample_count >= 5), anders het zelf
+-- opgegeven player_onboarding.reported_average. Ontbreekt beide (zou niet
+-- moeten voorkomen nu onboarding verplicht is), dan telt 0 en komt de
+-- speler in de 4e divisie terecht, gemarkeerd als low_confidence in het
+-- resultaat.
+create or replace function public.auto_assign_divisions(p_league_id uuid)
+returns table(
+  player_id uuid,
+  display_name text,
+  division_name text,
+  effective_average numeric,
+  low_confidence boolean
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_status text;
+  v_total int;
+  v_div_ids uuid[];
+  v_min_avgs numeric[];
+  v_counts int[] := array[0,0,0,0];
+  rec record;
+  v_target_rank int;
+begin
+  if auth.uid() is null then
+    raise exception 'Je moet ingelogd zijn.';
+  end if;
+  if not public.is_organizer() then
+    raise exception 'Alleen de organisator kan automatisch indelen.';
+  end if;
+
+  select status into v_status from public.leagues where id = p_league_id;
+  if v_status is null then
+    raise exception 'League niet gevonden.';
+  end if;
+  if v_status <> 'draft' then
+    raise exception 'Automatisch indelen kan alleen zolang de league nog niet actief is.';
+  end if;
+
+  select count(*) into v_total from public.league_players where league_id = p_league_id;
+  if v_total = 0 then
+    raise exception 'Er zijn nog geen spelers in deze league.';
+  end if;
+  if v_total > 48 then
+    raise exception 'Te veel spelers voor 4 divisies van elk maximaal 12 (% spelers, max 48).', v_total;
+  end if;
+
+  -- Zorg dat de 4 divisies met vaste drempels bestaan (naam blijft
+  -- ongemoeid als de organisator die al had aangepast).
+  insert into public.league_divisions (league_id, name, rank, min_average, max_average)
+  values
+    (p_league_id, '1e divisie', 1, 70, null),
+    (p_league_id, '2e divisie', 2, 60, 70),
+    (p_league_id, '3e divisie', 3, 50, 60),
+    (p_league_id, '4e divisie', 4, null, 50)
+  on conflict (league_id, rank) do update
+    set min_average = excluded.min_average,
+        max_average = excluded.max_average;
+
+  select array_agg(id order by rank), array_agg(min_average order by rank)
+    into v_div_ids, v_min_avgs
+    from public.league_divisions
+    where league_id = p_league_id and rank between 1 and 4;
+
+  for rec in
+    select
+      lp.player_id as p_id,
+      p.display_name as p_name,
+      coalesce(
+        case when ps.average_sample_count >= 5 then ps.average_score end,
+        po.reported_average,
+        0
+      ) as eff_avg,
+      (po.player_id is null) as no_onboarding
+    from public.league_players lp
+    join public.profiles p on p.id = lp.player_id
+    left join public.player_statistics ps on ps.player_id = lp.player_id
+    left join public.player_onboarding po on po.player_id = lp.player_id
+    where lp.league_id = p_league_id
+    order by
+      coalesce(case when ps.average_sample_count >= 5 then ps.average_score end, po.reported_average, 0) desc,
+      po.reported_average desc nulls last,
+      p.display_name
+  loop
+    -- Natuurlijke divisie o.b.v. drempel.
+    v_target_rank := 1;
+    while v_target_rank < 4 and v_min_avgs[v_target_rank] is not null and rec.eff_avg < v_min_avgs[v_target_rank] loop
+      v_target_rank := v_target_rank + 1;
+    end loop;
+
+    -- Doorval als die divisie al vol zit (max 12).
+    while v_counts[v_target_rank] >= 12 and v_target_rank < 4 loop
+      v_target_rank := v_target_rank + 1;
+    end loop;
+
+    update public.league_players lp
+      set division_id = v_div_ids[v_target_rank]
+      where lp.league_id = p_league_id and lp.player_id = rec.p_id;
+
+    v_counts[v_target_rank] := v_counts[v_target_rank] + 1;
+
+    player_id := rec.p_id;
+    display_name := rec.p_name;
+    division_name := (case v_target_rank
+      when 1 then '1e divisie' when 2 then '2e divisie'
+      when 3 then '3e divisie' else '4e divisie' end);
+    effective_average := rec.eff_avg;
+    low_confidence := rec.no_onboarding;
+    return next;
+  end loop;
+end;
+$$;
+
+grant execute on function public.auto_assign_divisions(uuid) to authenticated;
+
+
+-- Volledige standenlijst per divisie: punten (2 win / 1 gelijk / 0
+-- verlies), dan legsaldo, dan het effectieve gemiddelde als tiebreaker (kan
+-- de PRIVATE player_onboarding.reported_average zijn - die geven we dus
+-- nooit als display_average terug, alleen het altijd-publieke
+-- player_statistics.average_score, zodat de sortering wél de private
+-- waarde mag gebruiken zonder hem aan andere spelers te tonen).
+create or replace function public.league_standings(p_league_id uuid)
+returns table(
+  division_id uuid,
+  division_name text,
+  division_rank int,
+  player_id uuid,
+  display_name text,
+  played bigint,
+  wins bigint,
+  draws bigint,
+  losses bigint,
+  legs_for bigint,
+  legs_against bigint,
+  points bigint,
+  display_average numeric,
+  position_in_division bigint
+)
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'Je moet ingelogd zijn.';
+  end if;
+
+  return query
+  with results as (
+    select
+      lp.division_id,
+      lp.player_id,
+      case when m.winner_id = lp.player_id then 1 else 0 end as win,
+      case when m.winner_id is null then 1 else 0 end as draw,
+      case when m.winner_id is not null and m.winner_id <> lp.player_id then 1 else 0 end as loss,
+      case when m.player_a_id = lp.player_id then m.player_a_legs
+           when m.player_b_id = lp.player_id then m.player_b_legs else 0 end as lw,
+      case when m.player_a_id = lp.player_id then m.player_b_legs
+           when m.player_b_id = lp.player_id then m.player_a_legs else 0 end as ll
+    from public.league_players lp
+    join public.league_matches m
+      on m.league_id = lp.league_id
+     and m.status = 'confirmed'
+     and (m.player_a_id = lp.player_id or m.player_b_id = lp.player_id)
+    where lp.league_id = p_league_id
+  ),
+  agg as (
+    select
+      lp.division_id,
+      lp.player_id,
+      coalesce(sum(r.win), 0)  as wins,
+      coalesce(sum(r.draw), 0) as draws,
+      coalesce(sum(r.loss), 0) as losses,
+      coalesce(count(r.player_id), 0) as played,
+      coalesce(sum(r.lw), 0)   as legs_for,
+      coalesce(sum(r.ll), 0)   as legs_against,
+      coalesce(sum(r.win), 0) * 2 + coalesce(sum(r.draw), 0) as points,
+      coalesce(
+        case when ps.average_sample_count >= 5 then ps.average_score end,
+        po.reported_average, 0
+      ) as sort_avg,
+      coalesce(ps.average_score, 0) as pub_avg
+    from public.league_players lp
+    left join results r on r.player_id = lp.player_id and r.division_id is not distinct from lp.division_id
+    left join public.player_statistics ps on ps.player_id = lp.player_id
+    left join public.player_onboarding po on po.player_id = lp.player_id
+    where lp.league_id = p_league_id
+    group by lp.division_id, lp.player_id, ps.average_sample_count, ps.average_score, po.reported_average
+  )
+  select
+    a.division_id,
+    d.name,
+    d.rank,
+    a.player_id,
+    p.display_name,
+    a.played, a.wins, a.draws, a.losses,
+    a.legs_for, a.legs_against, a.points,
+    a.pub_avg,
+    row_number() over (
+      partition by a.division_id
+      order by a.points desc, (a.legs_for - a.legs_against) desc, a.sort_avg desc, a.player_id
+    )
+  from agg a
+  join public.profiles p on p.id = a.player_id
+  left join public.league_divisions d on d.id = a.division_id
+  order by d.rank nulls last, 14;
+end;
+$$;
+
+grant execute on function public.league_standings(uuid) to authenticated;
+
+
+-- Promotie/degradatie: 2 op / 2 neer tussen aangrenzende divisies, op basis
+-- van dezelfde rangschikking als league_standings. Divisie 1 kent geen
+-- promotie (niets erboven), divisie 4 geen degradatie (niets eronder). Bij
+-- minder dan 4 spelers in een divisie wordt het aantal dat verschuift
+-- verlaagd naar min(2, aantal // 2), zodat "beste 2" en "onderste 2"
+-- elkaar nooit overlappen. Vervangt de oudere promote_division_winners
+-- (die geen degradatie kende).
+drop function if exists public.promote_division_winners(uuid);
+
+create or replace function public.apply_promotion_relegation(p_league_id uuid)
+returns table(
+  player_id uuid,
+  display_name text,
+  movement text,
+  from_division text,
+  to_division text
+)
 language plpgsql
 security definer
 set search_path = public
 as $$
 declare
   rec record;
+  v_div record;
+  v_move_count int;
 begin
   if auth.uid() is null then
     raise exception 'Je moet ingelogd zijn.';
   end if;
-
   if not public.is_organizer() then
-    raise exception 'Alleen de organisator kan winnaars promoveren.';
+    raise exception 'Alleen de organisator kan promotie/degradatie toepassen.';
   end if;
 
-  for rec in
-    with results as (
-      select
-        lp.division_id,
-        lp.player_id,
-        case when m.winner_id = lp.player_id then 1 else 0 end as win,
-        case when m.player_a_id = lp.player_id then m.player_a_legs
-             when m.player_b_id = lp.player_id then m.player_b_legs else 0 end as lw,
-        case when m.player_a_id = lp.player_id then m.player_b_legs
-             when m.player_b_id = lp.player_id then m.player_a_legs else 0 end as ll
-      from public.league_players lp
-      join public.league_matches m
-        on m.league_id = lp.league_id
-       and m.status = 'confirmed'
-       and (m.player_a_id = lp.player_id or m.player_b_id = lp.player_id)
-      where lp.league_id = p_league_id
-        and lp.division_id is not null
-    ),
-    agg as (
-      select
-        division_id,
-        player_id,
-        sum(win)     as wins,
-        sum(lw)      as legs_won,
-        sum(ll)      as legs_lost,
-        sum(win) * 2 as points
-      from results
-      group by division_id, player_id
-    ),
-    ranked as (
-      select
-        a.*,
-        row_number() over (
-          partition by division_id
-          order by points desc, (legs_won - legs_lost) desc, player_id
-        ) as rnk
-      from agg a
-    )
-    select
-      r.player_id,
-      p.display_name,
-      d_from.name as from_division,
-      d_to.name   as to_division,
-      d_to.id     as to_division_id
-    from ranked r
-    join public.profiles p on p.id = r.player_id
-    join public.league_divisions d_from on d_from.id = r.division_id
-    join public.league_divisions d_to
-      on d_to.league_id = d_from.league_id and d_to.rank = d_from.rank - 1
-    where r.rnk = 1
-  loop
-    update public.league_players
-      set division_id = rec.to_division_id
-      where league_id = p_league_id and player_id = rec.player_id;
+  -- Bevroren rangschikking: beide passes (promotie en degradatie) gebruiken
+  -- dezelfde momentopname, zodat een verschuiving in de ene divisiegrens de
+  -- berekening van een andere grens niet beïnvloedt.
+  create temporary table tmp_pr_standings on commit drop as
+  select s.*, count(*) over (partition by s.division_id) as division_size
+  from public.league_standings(p_league_id) s
+  where s.division_id is not null;
 
-    player_id := rec.player_id;
-    display_name := rec.display_name;
-    from_division := rec.from_division;
-    to_division := rec.to_division;
-    return next;
+  -- Promotie: beste N van elke divisie (behalve rank 1) naar rank - 1.
+  for v_div in
+    select distinct division_id, division_rank, division_size from tmp_pr_standings where division_rank > 1
+  loop
+    v_move_count := least(2, v_div.division_size / 2);
+    if v_move_count > 0 then
+      for rec in
+        select ts.player_id as p_id, p.display_name as p_name,
+               d_from.name as from_name, d_to.id as to_id, d_to.name as to_name
+        from tmp_pr_standings ts
+        join public.profiles p on p.id = ts.player_id
+        join public.league_divisions d_from on d_from.id = ts.division_id
+        join public.league_divisions d_to
+          on d_to.league_id = d_from.league_id and d_to.rank = d_from.rank - 1
+        where ts.division_id = v_div.division_id
+          and ts.position_in_division <= v_move_count
+      loop
+        update public.league_players lp
+          set division_id = rec.to_id
+          where lp.league_id = p_league_id and lp.player_id = rec.p_id;
+
+        player_id := rec.p_id;
+        display_name := rec.p_name;
+        movement := 'promotie';
+        from_division := rec.from_name;
+        to_division := rec.to_name;
+        return next;
+      end loop;
+    end if;
+  end loop;
+
+  -- Degradatie: onderste N van elke divisie (behalve rank 4) naar rank + 1.
+  for v_div in
+    select distinct division_id, division_rank, division_size from tmp_pr_standings where division_rank < 4
+  loop
+    v_move_count := least(2, v_div.division_size / 2);
+    if v_move_count > 0 then
+      for rec in
+        select ts.player_id as p_id, p.display_name as p_name,
+               d_from.name as from_name, d_to.id as to_id, d_to.name as to_name
+        from tmp_pr_standings ts
+        join public.profiles p on p.id = ts.player_id
+        join public.league_divisions d_from on d_from.id = ts.division_id
+        join public.league_divisions d_to
+          on d_to.league_id = d_from.league_id and d_to.rank = d_from.rank + 1
+        where ts.division_id = v_div.division_id
+          and ts.position_in_division > (v_div.division_size - v_move_count)
+      loop
+        update public.league_players lp
+          set division_id = rec.to_id
+          where lp.league_id = p_league_id and lp.player_id = rec.p_id;
+
+        player_id := rec.p_id;
+        display_name := rec.p_name;
+        movement := 'degradatie';
+        from_division := rec.from_name;
+        to_division := rec.to_name;
+        return next;
+      end loop;
+    end if;
   end loop;
 end;
 $$;
 
-grant execute on function public.promote_division_winners(uuid) to authenticated;
+grant execute on function public.apply_promotion_relegation(uuid) to authenticated;
 
 
 -- ----------------------------------------------------------------------------

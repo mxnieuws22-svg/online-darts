@@ -448,6 +448,15 @@ const db = {
     if (error) throw error;
   },
 
+  // Verwijdert een league (alleen concept/gepland, zie protect_league_
+  // deletion - actieve/afgeronde leagues worden server-side geweigerd).
+  // Gekoppelde divisies, spelerskoppelingen, wedstrijden en meldingen
+  // verdwijnen automatisch mee (cascade); spelersaccounts blijven bestaan.
+  async deleteLeague(id) {
+    const { error } = await sb.from("leagues").delete().eq("id", id);
+    if (error) throw error;
+  },
+
   // Planninggegevens van een league bijwerken (en eventueel meteen naar
   // 'scheduled' zetten). protect_league_schedule_fields bewaakt serverside
   // dat dit alleen mag zolang de league nog niet actief is.
@@ -2294,12 +2303,18 @@ async function viewManageLeagues() {
     <div class="mt24">
       ${leagues.length ? leagues.map((l) => `
         ${leagueCard(l, true)}
-        <div class="chips" style="margin:-4px 0 14px">
+        <div class="chips" style="margin:-4px 0 8px">
           ${["draft", "active", "finished"].filter((s) => s !== l.status).map((s) => `
             <button class="chip" onclick="changeLeagueStatus('${esc(l.id)}','${s}')">
               Zet op ${esc(STATUS[s].label.toLowerCase())}
             </button>`).join("")}
-        </div>`).join("")
+        </div>
+        ${l.status === "draft" ? `
+          <div style="margin:0 0 20px">
+            <button class="btn ghost sm" style="color:#E74C3C;border-color:#E74C3C66" onclick="confirmDeleteLeague('${esc(l.id)}','${esc(l.name)}')">
+              Verwijderen
+            </button>
+          </div>` : `<div style="margin-bottom:14px"></div>`}`).join("")
         : emptyView("Nog geen leagues", "Maak je eerste league aan.", "league")}
     </div>
   `);
@@ -2311,6 +2326,17 @@ async function changeLeagueStatus(id, status) {
     toast("Status aangepast");
     viewManageLeagues();
   } catch (e) { toast(errText(e)); }
+}
+
+function confirmDeleteLeague(id, name) {
+  openModal("Concept-league verwijderen", `
+    <p style="margin:0 0 4px">Weet je zeker dat je <strong style="color:var(--white)">${esc(name)}</strong> wilt verwijderen?</p>
+    <p class="muted" style="font-size:13px;margin:0">Deze actie kan niet ongedaan worden gemaakt.</p>`,
+    async () => {
+      await db.deleteLeague(id);
+      toast("League verwijderd");
+      viewManageLeagues();
+    }, "Verwijderen", true);
 }
 
 async function viewManageTournaments() {
@@ -2374,7 +2400,7 @@ async function viewSettings() {
    Dialogen
    ------------------------------------------------------------------------- */
 
-function openModal(title, bodyHtml, onSubmit, submitLabel = "Opslaan") {
+function openModal(title, bodyHtml, onSubmit, submitLabel = "Opslaan", danger = false) {
   const bg = document.createElement("div");
   bg.className = "modal-bg";
   bg.innerHTML = `
@@ -2384,7 +2410,7 @@ function openModal(title, bodyHtml, onSubmit, submitLabel = "Opslaan") {
       <form id="modalForm">${bodyHtml}
         <div class="modal-actions">
           <button type="button" class="btn ghost" id="cancel">Annuleren</button>
-          <button type="submit" class="btn" id="ok">${esc(submitLabel)}</button>
+          <button type="submit" class="btn${danger ? " danger" : ""}" id="ok">${esc(submitLabel)}</button>
         </div>
       </form>
     </div>`;

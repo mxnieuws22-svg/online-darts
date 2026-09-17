@@ -524,6 +524,33 @@ create policy "leagues_write_organizer"
   using (public.is_organizer())
   with check (public.is_organizer());
 
+-- Concept- en geplande (nog niet gestarte) leagues mogen verwijderd worden;
+-- actieve en afgeronde leagues niet, vanwege lopende/historische gegevens
+-- (standen, divisiewinnaars, promotie/degradatie, wedstrijdgegevens). Dit
+-- geldt server-side, ongeacht wat de frontend toont - de policy hierboven
+-- staat delete al toe voor organisatoren, deze trigger voegt de
+-- statusbeperking daarbovenop toe. Gekoppelde divisies, spelerskoppelingen,
+-- wedstrijden en meldingen verdwijnen automatisch mee (on delete cascade op
+-- die tabellen); spelersaccounts (profiles) worden nooit aangeraakt.
+create or replace function public.protect_league_deletion()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if old.status not in ('draft', 'scheduled') then
+    raise exception 'Een % league kan niet verwijderd worden.', old.status;
+  end if;
+  return old;
+end;
+$$;
+
+drop trigger if exists on_leagues_protect_deletion on public.leagues;
+create trigger on_leagues_protect_deletion
+  before delete on public.leagues
+  for each row
+  execute function public.protect_league_deletion();
+
 
 -- league_players ---------------------------------------------------------
 drop policy if exists "league_players_select_authenticated" on public.league_players;

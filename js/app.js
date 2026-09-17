@@ -350,7 +350,7 @@ function groupStandingsByDivision(rows) {
   for (const r of rows) {
     const key = r.divisionId || "none";
     if (!groups.has(key)) {
-      groups.set(key, { name: r.divisionName || "Geen divisie", rank: r.divisionRank, rows: [] });
+      groups.set(key, { id: key, name: r.divisionName || "Geen divisie", rank: r.divisionRank, rows: [] });
     }
     groups.get(key).rows.push(r);
   }
@@ -382,17 +382,20 @@ function formDots(form, compact = false) {
 // krijgen een subtiele achtergrondkleur; de koploper krijgt een kroontje.
 function divisionStandingsCard(group, opts = {}) {
   const { meId, divisionCount } = opts;
-  const isMyDivision = meId && group.rows.some((r) => r.player?.id === meId);
+  const isUnassigned = group.id === "none";
+  const isMyDivision = !isUnassigned && meId && group.rows.some((r) => r.player?.id === meId);
   const moveCount = Math.min(2, Math.floor(group.rows.length / 2));
-  const canPromote = group.rank > 1;
-  const canRelegate = divisionCount ? group.rank < divisionCount : false;
+  const canPromote = !isUnassigned && group.rank > 1;
+  const canRelegate = !isUnassigned && divisionCount && group.rank < divisionCount;
 
   return `
     <div class="card" style="${isMyDivision ? "border-color:#F47B20" : ""}">
       <div class="row" style="align-items:flex-start;margin-bottom:12px">
         <div class="row-main">
           <h2 style="margin:0">${esc(group.name)}</h2>
-          <div class="muted" style="font-size:12.5px;margin-top:2px">${group.rows.length}/12 spelers</div>
+          <div class="muted" style="font-size:12.5px;margin-top:2px">${isUnassigned
+            ? "Nog niet ingedeeld door de organisator"
+            : `${group.rows.length}/12 spelers`}</div>
         </div>
         ${isMyDivision ? `<span class="badge" style="color:#F47B20;border-color:#F47B2066;background:#F47B2022">Jouw divisie</span>` : ""}
       </div>
@@ -414,7 +417,7 @@ function divisionStandingsCard(group, opts = {}) {
               const rowClass = [isMe && "me", promoting && "promo", relegating && "relegate"].filter(Boolean).join(" ");
               return `
                 <tr class="${rowClass}">
-                  <td>${i === 0 ? `<span style="display:inline-flex;width:13px;height:13px;color:#F47B20;vertical-align:-2px;margin-right:3px">${icon.trophy}</span>` : ""}${i + 1}</td>
+                  <td>${!isUnassigned && i === 0 ? `<span style="display:inline-flex;width:13px;height:13px;color:#F47B20;vertical-align:-2px;margin-right:3px">${icon.trophy}</span>` : ""}${i + 1}</td>
                   <td class="player-cell">
                     ${avatar(r.player, "sm")}
                     <span>${esc(r.player?.display_name || "?")}${isMe ? ` <span class="muted" style="font-weight:400">(jij)</span>` : ""}</span>

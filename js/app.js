@@ -490,7 +490,7 @@ function renderLanding() {
     <div class="landing">
       <div class="landing-nav">
         <div class="brand">
-          <div class="brand-mark"></div>
+          <img class="landing-logo" src="https://qspfphnailbelqmmzjbk.supabase.co/storage/v1/object/public/app-assets/favicon.png" alt="Dart League">
           <span class="brand-name">Dart League</span>
         </div>
         <button class="btn ghost sm" onclick="renderLogin()">Inloggen</button>

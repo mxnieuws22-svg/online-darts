@@ -379,23 +379,47 @@ const db = {
     if (error) throw error;
   },
 
-  // Uitslag doorgeven. Zet de status op pending_confirmation; de
-  // organisator bevestigt daarna.
-  async reportResult(matchId, aLegs, bLegs, winnerId) {
-    const { error } = await sb.from("league_matches").update({
-      player_a_legs: aLegs,
-      player_b_legs: bLegs,
-      winner_id: winnerId,
-      status: "pending_confirmation",
-    }).eq("id", matchId);
+  async matchById(id) {
+    const { data, error } = await sb
+      .from("league_matches")
+      .select("*, player_a:player_a_id(*), player_b:player_b_id(*), league:league_id(name)")
+      .eq("id", id)
+      .single();
+    if (error) throw error;
+    return data;
+  },
+
+  // Uitslag doorgeven. Draait via een security-definer functie in de
+  // database, die onthoudt wie hem invulde (reported_by) zodat diezelfde
+  // speler hem niet ook kan bevestigen. Zet de status op
+  // pending_confirmation; de tegenstander (of de organisator) bevestigt of
+  // keurt af.
+  async reportResult(matchId, r) {
+    const { error } = await sb.rpc("report_league_match_result", {
+      p_match_id: matchId,
+      p_winner_id: r.winnerId,
+      p_player_a_legs: r.aLegs,
+      p_player_b_legs: r.bLegs,
+      p_player_a_average: r.aAverage,
+      p_player_b_average: r.bAverage,
+      p_player_a_180s: r.a180s,
+      p_player_b_180s: r.b180s,
+      p_player_a_highest_checkout: r.aCheckout,
+      p_player_b_highest_checkout: r.bCheckout,
+    });
     if (error) throw error;
   },
 
+  // Bevestigen telt de wedstrijd mee in player_statistics (in de database).
   async confirmMatch(matchId) {
-    const { error } = await sb.from("league_matches").update({
-      status: "confirmed",
-      confirmed_at: new Date().toISOString(),
-    }).eq("id", matchId);
+    const { error } = await sb.rpc("confirm_league_match_result", { p_match_id: matchId });
+    if (error) throw error;
+  },
+
+  // Afkeuren zet de wedstrijd terug naar 'scheduled' zodat de uitslag
+  // opnieuw ingevuld kan worden.
+  async rejectMatch(matchId) {
+    const { error } = await sb.rpc("reject_league_match_result", { p_match_id: matchId });
     if (error) throw error;
   },
 
@@ -460,6 +484,125 @@ function showAuthError(msg) {
 function busy(btn, on, label) {
   btn.disabled = on;
   btn.innerHTML = on ? `<span class="spinner inline"></span>` : esc(label);
+}
+
+function renderLanding() {
+  const step = (num, title, text) => `
+    <div class="landing-step">
+      <div class="landing-step-num">${num}</div>
+      <div>
+        <h3>${esc(title)}</h3>
+        <p>${esc(text)}</p>
+      </div>
+    </div>`;
+
+  const feature = (num, title, text) => `
+    <div class="landing-feature">
+      <div class="landing-feature-num">${num}</div>
+      <h3>${esc(title)}</h3>
+      <p>${esc(text)}</p>
+    </div>`;
+
+  const tile = (color, label, value, who) => `
+    <div class="landing-tile" style="--tile-c:${color}">
+      <div class="landing-tile-label"><span class="dot"></span>${esc(label)}</div>
+      <div class="landing-tile-value">${esc(value)}</div>
+      <div class="landing-tile-who">${esc(who)}</div>
+    </div>`;
+
+  app.innerHTML = `
+    <div class="landing">
+      <div class="landing-nav">
+        <div class="brand">
+          <img class="landing-logo" src="https://qspfphnailbelqmmzjbk.supabase.co/storage/v1/object/public/app-assets/favicon.png" alt="Dart League">
+          <span class="brand-name">Dart League</span>
+        </div>
+        <button class="btn ghost sm" onclick="renderLogin()">Inloggen</button>
+      </div>
+
+      <div class="landing-wrap">
+        <div class="landing-hero-panel">
+          <div class="landing-hero-ring" aria-hidden="true"></div>
+          <div class="landing-hero-inner">
+            <span class="landing-eyebrow">${icon.target}&nbsp;Voor elke darter</span>
+            <h1 class="landing-wordmark">Dart League</h1>
+            <p class="sub">Speel mee in leagues en toernooien, plan je wedstrijden en houd je scores en statistieken automatisch bij &mdash; allemaal op één plek.</p>
+            <div class="landing-cta">
+              <button class="btn" onclick="renderRegister()">Gratis account aanmaken</button>
+              <button class="btn ghost" onclick="renderLogin()">Inloggen</button>
+              <button class="btn ghost" onclick="document.getElementById('hoe-het-werkt').scrollIntoView({behavior:'smooth'})">Zo werkt het</button>
+            </div>
+            <p class="landing-hero-note">Gratis te gebruiken &middot; geen creditcard nodig</p>
+          </div>
+        </div>
+
+        <div class="landing-notice">
+          ${icon.shield}
+          <span>Log in om de standen, wedstrijden en statistieken van je league te bekijken.</span>
+        </div>
+
+        <div class="landing-section">
+          <h2>Zo ziet jouw stand eruit</h2>
+          <p class="sub">Een voorbeeld &mdash; jouw eigen cijfers verschijnen zodra je meedoet.</p>
+          <div class="landing-highlight">
+            <div class="card" style="margin:0">
+              <div class="match-top">
+                <span class="match-league">Halve finale &middot; League Zuid</span>
+              </div>
+              <div class="match-row">
+                <div class="mp winner">
+                  ${avatar({ display_name: "Sanne" })}
+                  <span class="mp-name">Sanne</span>
+                </div>
+                <span class="vs">VS</span>
+                <div class="mp right">
+                  ${avatar({ display_name: "Rick" })}
+                  <span class="mp-name">Rick</span>
+                </div>
+              </div>
+              <div class="match-score">
+                <span class="score win">3</span>
+                <span class="score-sep">&ndash;</span>
+                <span class="score">1</span>
+              </div>
+            </div>
+            <div class="landing-tile-grid">
+              ${tile("#2ECC71", "Winratio", "68%", "Sanne")}
+              ${tile("#4EA1F7", "Gemiddelde", "58.4", "Rick")}
+              ${tile("#F5B942", "180's", "24", "Sanne")}
+              ${tile("#9B7BD9", "Beste finish", "121", "Rick")}
+            </div>
+          </div>
+        </div>
+
+        <div class="landing-section" id="hoe-het-werkt">
+          <h2>Zo werkt het</h2>
+          <div class="landing-step-list">
+            ${step("01", "Maak een account", "Binnen een minuut aangemeld, zonder gedoe.")}
+            ${step("02", "Sluit je aan bij een league of toernooi", "De beheerder zet ze voor je klaar, jij doet mee.")}
+            ${step("03", "Speel en volg je voortgang", "Standen, uitslagen en statistieken staan direct klaar.")}
+          </div>
+        </div>
+
+        <div class="landing-section">
+          <h2>Wat je krijgt</h2>
+          <div class="landing-feature-grid">
+            ${feature("01", "Automatische standen", "Elke afgeronde wedstrijd werkt de ranglijst meteen bij.")}
+            ${feature("02", "Persoonlijke statistieken", "Gemiddelde, 180's, checkouts en winratio per speler.")}
+            ${feature("03", "Organisatordashboard", "Leagues en toernooien beheren vanuit één overzicht.")}
+            ${feature("04", "Overal te gebruiken", "Werkt in de browser, op telefoon, tablet en desktop.")}
+          </div>
+        </div>
+
+        <div class="landing-final">
+          <h2>Klaar om mee te doen?</h2>
+          <p>Maak een gratis account aan en speel je eerste wedstrijd binnen een minuut.</p>
+          <button class="btn" onclick="renderRegister()">Gratis account aanmaken</button>
+        </div>
+      </div>
+
+      <div class="landing-foot">© ${new Date().getFullYear()} Dart League</div>
+    </div>`;
 }
 
 function renderLogin() {
@@ -696,7 +839,7 @@ async function router() {
   const route = currentRoute();
 
   if (route === "nieuw-wachtwoord") return renderNewPassword();
-  if (!state.session) return renderLogin();
+  if (!state.session) return renderLanding();
 
   renderShell();
 
@@ -802,15 +945,30 @@ async function viewMatches() {
   const open = matches.filter((m) => ["scheduled", "in_progress", "pending_confirmation"].includes(m.status));
   const done = matches.filter((m) => !open.includes(m));
 
+  const openItem = (m) => {
+    if (m.status === "pending_confirmation") {
+      const waitingForMe = m.reported_by && m.reported_by !== state.profile.id;
+      if (waitingForMe) {
+        return `
+          ${matchCard(m)}
+          <button class="btn sm" style="margin:-4px 0 14px" onclick="openConfirmDialog('${esc(m.id)}')">Uitslag controleren</button>`;
+      }
+      const opponentName = m.player_a_id === state.profile.id
+        ? m.player_b?.display_name : m.player_a?.display_name;
+      return `
+        ${matchCard(m)}
+        <p class="muted" style="margin:-4px 0 14px;font-size:13px">Wacht op bevestiging van ${esc(opponentName || "je tegenstander")}</p>`;
+    }
+    return `
+      ${matchCard(m)}
+      <button class="btn ghost sm" style="margin:-4px 0 10px" onclick="openResultDialog('${esc(m.id)}')">Uitslag doorgeven</button>`;
+  };
+
   setView(`
     <h1>Je wedstrijden</h1>
     <p class="sub">Alles waar jij aan meedoet</p>
     ${matches.length === 0 ? emptyView("Nog geen wedstrijden", "Zodra je bent ingedeeld, verschijnen ze hier.", "match") : ""}
-    ${open.length ? `${sectionHead("Open")}${open.map((m) => `
-      ${matchCard(m)}
-      ${m.status !== "pending_confirmation" ? `
-        <button class="btn ghost sm" style="margin:-4px 0 10px" onclick="openResultDialog('${esc(m.id)}')">Uitslag doorgeven</button>` : ""}
-    `).join("")}` : ""}
+    ${open.length ? `${sectionHead("Open")}${open.map(openItem).join("")}` : ""}
     ${done.length ? `${sectionHead("Gespeeld")}${done.map(matchCard).join("")}` : ""}
   `);
 }
@@ -1039,23 +1197,18 @@ async function viewManageMatches() {
     <button class="btn mt8" onclick="openMatchDialog()">${icon.plus} Nieuwe wedstrijd</button>
 
     ${pending.length ? `${sectionHead("Wacht op bevestiging")}
+      <p class="muted" style="font-size:13px;margin:-4px 0 14px">
+        Spelers bevestigen dit normaal gesproken zelf bij elkaar. Grijp hier alleen in als dat vastloopt.
+      </p>
       ${pending.map((m) => `
         ${matchCard(m)}
-        <button class="btn sm" style="margin:-4px 0 14px" onclick="confirmMatch('${esc(m.id)}')">Uitslag bevestigen</button>
+        <button class="btn sm" style="margin:-4px 0 14px" onclick="openConfirmDialog('${esc(m.id)}')">Uitslag controleren</button>
       `).join("")}` : ""}
 
     ${sectionHead("Alle wedstrijden")}
     ${matches.length ? matches.map(matchCard).join("")
       : emptyView("Nog geen wedstrijden", "Plan je eerste wedstrijd in.", "match")}
   `);
-}
-
-async function confirmMatch(id) {
-  try {
-    await db.confirmMatch(id);
-    toast("Uitslag bevestigd");
-    viewManageMatches();
-  } catch (e) { toast(errText(e)); }
 }
 
 async function viewSettings() {
@@ -1224,29 +1377,155 @@ async function openMatchDialog() {
 }
 
 async function openResultDialog(matchId) {
-  const matches = await db.myMatches(state.profile.id);
-  const m = matches.find((x) => x.id === matchId);
-  if (!m) return toast("Wedstrijd niet gevonden.");
+  const m = await db.matchById(matchId);
+  const a = m.player_a, b = m.player_b;
+  const aName = a?.display_name || "Speler A";
+  const bName = b?.display_name || "Speler B";
 
   openModal("Uitslag doorgeven", `
-    <p class="sub" style="margin-bottom:18px">Vul het aantal gewonnen legs in.</p>
+    <p class="sub" style="margin-bottom:18px">Je tegenstander moet dit bevestigen voor het meetelt.</p>
+
     <div class="field">
-      <label for="ra">${esc(m.player_a?.display_name || "Speler A")}</label>
-      <input id="ra" type="number" min="0" max="99" value="0" required>
+      <label>Wie heeft gewonnen?</label>
+      <div class="chips" role="radiogroup" aria-label="Winnaar">
+        <label class="chip"><input type="radio" name="winner" value="${esc(a.id)}" class="sr">${esc(aName)}</label>
+        <label class="chip"><input type="radio" name="winner" value="${esc(b.id)}" class="sr">${esc(bName)}</label>
+      </div>
     </div>
+
     <div class="field">
-      <label for="rb">${esc(m.player_b?.display_name || "Speler B")}</label>
-      <input id="rb" type="number" min="0" max="99" value="0" required>
+      <label>Gewonnen legs</label>
+      <div class="field-pair">
+        <div><div class="field-pair-label">${esc(aName)}</div><input id="ra" type="number" min="0" max="99" value="0" required></div>
+        <div><div class="field-pair-label">${esc(bName)}</div><input id="rb" type="number" min="0" max="99" value="0" required></div>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Gemiddelde <span class="muted" style="font-weight:400">(optioneel)</span></label>
+      <div class="field-pair">
+        <input id="avga" type="number" step="0.1" min="0" max="180" placeholder="${esc(aName)}">
+        <input id="avgb" type="number" step="0.1" min="0" max="180" placeholder="${esc(bName)}">
+      </div>
+    </div>
+
+    <div class="field">
+      <label>180's <span class="muted" style="font-weight:400">(optioneel)</span></label>
+      <div class="field-pair">
+        <input id="s180a" type="number" min="0" max="99" placeholder="${esc(aName)}">
+        <input id="s180b" type="number" min="0" max="99" placeholder="${esc(bName)}">
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Hoogste finish <span class="muted" style="font-weight:400">(optioneel)</span></label>
+      <div class="field-pair">
+        <input id="coa" type="number" min="0" max="170" placeholder="${esc(aName)}">
+        <input id="cob" type="number" min="0" max="170" placeholder="${esc(bName)}">
+      </div>
     </div>`, async (bg) => {
-    const a = parseInt(bg.querySelector("#ra").value, 10);
-    const b = parseInt(bg.querySelector("#rb").value, 10);
-    if (isNaN(a) || isNaN(b)) throw new Error("Vul beide scores in.");
-    if (a === b) throw new Error("Een wedstrijd kan niet gelijk eindigen.");
-    const winner = a > b ? m.player_a_id : m.player_b_id;
-    await db.reportResult(matchId, a, b, winner);
-    toast("Doorgegeven. De organisator bevestigt het.");
+    const winner = bg.querySelector("input[name=winner]:checked")?.value;
+    if (!winner) throw new Error("Kies wie de wedstrijd heeft gewonnen.");
+    const aLegs = parseInt(bg.querySelector("#ra").value, 10);
+    const bLegs = parseInt(bg.querySelector("#rb").value, 10);
+    if (isNaN(aLegs) || isNaN(bLegs)) throw new Error("Vul beide legscores in.");
+    if (aLegs === bLegs) throw new Error("Een wedstrijd kan niet gelijk eindigen.");
+    if ((aLegs > bLegs && winner !== a.id) || (bLegs > aLegs && winner !== b.id)) {
+      throw new Error("De gekozen winnaar komt niet overeen met de legscore.");
+    }
+    const num = (sel) => {
+      const v = bg.querySelector(sel).value;
+      return v === "" ? null : Number(v);
+    };
+    await db.reportResult(matchId, {
+      winnerId: winner,
+      aLegs, bLegs,
+      aAverage: num("#avga"), bAverage: num("#avgb"),
+      a180s: num("#s180a") ?? 0, b180s: num("#s180b") ?? 0,
+      aCheckout: num("#coa") ?? 0, bCheckout: num("#cob") ?? 0,
+    });
+    toast("Doorgegeven. Je tegenstander bevestigt de uitslag.");
     router();
   }, "Uitslag versturen");
+}
+
+// Toont de door de tegenstander (of jou) ingevulde uitslag ter controle,
+// met knoppen om te bevestigen of af te keuren.
+async function openConfirmDialog(matchId) {
+  const m = await db.matchById(matchId);
+  const a = m.player_a, b = m.player_b;
+  const winnerName = m.winner_id === m.player_a_id ? a?.display_name : b?.display_name;
+  const reporterName = m.reported_by === m.player_a_id ? a?.display_name : b?.display_name;
+
+  const row = (label, av, bv) => `
+    <div class="row" style="justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)">
+      <span class="row-sub">${esc(label)}</span>
+      <span style="font-weight:600">${esc(av ?? "–")} &ndash; ${esc(bv ?? "–")}</span>
+    </div>`;
+
+  const bg = document.createElement("div");
+  bg.className = "modal-bg";
+  bg.innerHTML = `
+    <div class="modal" role="dialog" aria-modal="true">
+      <h2>Uitslag controleren</h2>
+      <p class="sub" style="margin-bottom:16px">
+        ${esc(reporterName || "Je tegenstander")} gaf deze uitslag door voor
+        ${esc(a?.display_name)} &ndash; ${esc(b?.display_name)}. Klopt dit?
+      </p>
+      <div class="card" style="margin-bottom:20px">
+        <div style="display:flex;align-items:center;justify-content:center;gap:8px;font-weight:700;margin-bottom:10px">
+          <span style="width:18px;height:18px;color:var(--accent)">${icon.trophy}</span>
+          ${esc(winnerName || "?")} wint
+        </div>
+        ${row("Legs", m.player_a_legs, m.player_b_legs)}
+        ${row("Gemiddelde", m.player_a_average, m.player_b_average)}
+        ${row("180's", m.player_a_180s, m.player_b_180s)}
+        ${row("Hoogste finish", m.player_a_highest_checkout, m.player_b_highest_checkout)}
+      </div>
+      <div id="confirmError"></div>
+      <div class="modal-actions" style="justify-content:space-between">
+        <button type="button" class="btn ghost" id="rejectBtn">Afkeuren</button>
+        <button type="button" class="btn" id="approveBtn">Bevestigen</button>
+      </div>
+    </div>`;
+  document.body.appendChild(bg);
+
+  const close = () => bg.remove();
+  bg.onclick = (e) => { if (e.target === bg) close(); };
+  document.addEventListener("keydown", function onEsc(e) {
+    if (e.key === "Escape") { close(); document.removeEventListener("keydown", onEsc); }
+  });
+
+  const showError = (e) => {
+    bg.querySelector("#confirmError").innerHTML = `<div class="alert bad">${esc(errText(e))}</div>`;
+  };
+
+  bg.querySelector("#approveBtn").onclick = async () => {
+    const btn = bg.querySelector("#approveBtn");
+    busy(btn, true);
+    try {
+      await db.confirmMatch(matchId);
+      toast("Uitslag bevestigd");
+      close();
+      router();
+    } catch (e) {
+      busy(btn, false, "Bevestigen");
+      showError(e);
+    }
+  };
+  bg.querySelector("#rejectBtn").onclick = async () => {
+    const btn = bg.querySelector("#rejectBtn");
+    busy(btn, true);
+    try {
+      await db.rejectMatch(matchId);
+      toast("Uitslag afgekeurd. Kan opnieuw worden ingevuld.");
+      close();
+      router();
+    } catch (e) {
+      busy(btn, false, "Afkeuren");
+      showError(e);
+    }
+  };
 }
 
 async function signOut() {
@@ -1313,7 +1592,7 @@ function init() {
     state.session = session;
     if (!session) {
       state.profile = null;
-      return renderLogin();
+      return renderLanding();
     }
     if (!wasLoggedIn) {
       state.profile = await db.myProfile(session.user.id).catch(() => null);

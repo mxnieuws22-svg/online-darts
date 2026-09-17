@@ -1,0 +1,16 @@
+{
+  "name": "Dart League",
+  "short_name": "Dart League",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "icons": [
+    {
+      "src": "https://qspfphnailbelqmmzjbk.supabase.co/storage/v1/object/public/app-assets/favicon.png",
+      "sizes": "any",
+      "type": "image/png"
+    }
+  ]
+}

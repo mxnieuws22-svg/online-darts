@@ -1493,9 +1493,30 @@ async function viewLeagues() {
   const leagues = await db.leagues();
   setView(`
     <h1>Leagues</h1>
+
+    <details class="card info-card" style="margin-bottom:16px">
+      <summary>
+        <div class="row">
+          <div class="row-ico">${icon.league}</div>
+          <div class="row-main"><div class="row-title" style="white-space:normal">Hoe werkt de league?</div></div>
+          <span class="muted toggle-label" style="font-size:13px;flex-shrink:0">Meer info &darr;</span>
+        </div>
+      </summary>
+      <div class="muted" style="font-size:13.5px;line-height:1.6;margin-top:14px">
+        <p>Een league bestaat uit maximaal 4 divisies. Spelers worden op basis van hun 3-dart gemiddelde ingedeeld in een divisie. Iedere divisie heeft maximaal 12 spelers.</p>
+        <p>Binnen je divisie speel je wedstrijden tegen de andere spelers. De wedstrijden worden automatisch ingedeeld. Na de start van de league hebben spelers 7 dagen de tijd om hun wedstrijden te spelen.</p>
+        <p>Aan het einde van een league-periode wordt de eindstand opgemaakt. De beste spelers kunnen promoveren naar een hogere divisie en de laagst geklasseerde spelers kunnen degraderen.</p>
+        <p>De winnaar van iedere divisie ontvangt een kampioenstitel en een gepersonaliseerde prijs, beschikbaar gesteld door LWPrints. Dit kan bijvoorbeeld een bedrukt T-shirt, hoodie of polo zijn.</p>
+      </div>
+    </details>
+
     ${leagues.length ? leagues.map((l) => leagueCard(l)).join("")
       : emptyView("Nog geen leagues", "", "league")}
   `);
+  const infoCard = document.querySelector(".info-card");
+  infoCard?.addEventListener("toggle", () => {
+    infoCard.querySelector(".toggle-label").innerHTML = infoCard.open ? "Minder info &uarr;" : "Meer info &darr;";
+  });
 }
 
 // Tekst voor "eerstvolgende actie" op het beheerdersblok, bv. "Deze league

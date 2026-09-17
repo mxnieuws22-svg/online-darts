@@ -172,6 +172,7 @@ const icon = {
   bell: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9a6 6 0 0 1 12 0c0 4 1.5 5.5 1.5 5.5H4.5S6 13 6 9z"/><path d="M10 19a2 2 0 0 0 4 0"/></svg>',
   chevronUp: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 15l7-7 7 7"/></svg>',
   chevronDown: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 9l7 7 7-7"/></svg>',
+  chat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v12H8l-4 4z"/></svg>',
 };
 
 /* -------------------------------------------------------------------------
@@ -767,6 +768,21 @@ const db = {
     const { data, error } = await sb.rpc("head_to_head_matches", { p_other_player_id: otherPlayerId });
     if (error) throw error;
     return data || [];
+  },
+
+  async chatMessages(matchId) {
+    const { data, error } = await sb
+      .from("match_chat_messages")
+      .select("*, sender:sender_id(display_name, avatar_url)")
+      .eq("league_match_id", matchId)
+      .order("created_at", { ascending: true });
+    if (error) throw error;
+    return data || [];
+  },
+
+  async sendChatMessage(matchId, body) {
+    const { error } = await sb.rpc("send_match_chat_message", { p_match_id: matchId, p_body: body });
+    if (error) throw error;
   },
 
   async markPrizeNotificationsReadForClaim(claimId) {
@@ -1615,11 +1631,13 @@ async function viewMyDivision(focusMatchId) {
   let opponent = null;
   let headToHead = [];
   let proposalHistory = [];
+  let chatMessages = [];
   if (focusMatch) {
     opponent = focusMatch.player_a_id === me.id ? focusMatch.player_b : focusMatch.player_a;
-    [headToHead, proposalHistory] = await Promise.all([
+    [headToHead, proposalHistory, chatMessages] = await Promise.all([
       opponent ? db.headToHead(opponent.id) : Promise.resolve([]),
       db.scheduleProposalHistory(focusMatch.id),
+      db.chatMessages(focusMatch.id),
     ]);
   }
 
@@ -1644,6 +1662,9 @@ async function viewMyDivision(focusMatchId) {
       ${scheduleCard(focusMatch, proposalHistory)}
 
       ${opponent ? `
+        ${sectionHead("Chat")}
+        ${chatCard(chatMessages, me.id, focusMatch.id)}
+
         ${sectionHead("Onderlinge wedstrijden")}
         ${headToHeadCard(headToHead, opponent, me.id)}
       ` : ""}
@@ -1662,6 +1683,7 @@ async function viewMyDivision(focusMatchId) {
     ${groups.length ? groups.map((g) => divisionStandingsCard(g, { meId: me.id, divisionCount: league.division_count })).join("")
       : emptyView("Nog geen indeling", "", "league")}
   `);
+  document.getElementById("chat-messages")?.scrollTo(0, 999999);
 }
 
 async function viewLeagues() {
@@ -2333,6 +2355,53 @@ function headToHeadCard(matches, opponent, meId) {
           </div>`;
       }).join("")}
     </div>`;
+}
+
+const CHAT_EMOJIS = ["👍", "😀", "😅", "😬", "🎯", "🔥", "🎉", "😢"];
+
+// Privéchat tussen de twee spelers van de gefocuste wedstrijd (Mijn divisie).
+function chatCard(messages, meId, matchId) {
+  return `
+    <div class="card">
+      <h2 style="margin-bottom:8px">Chat</h2>
+      <p class="muted" style="font-size:13px;margin:0 0 14px">Alleen jij en je tegenstander kunnen dit gesprek zien.</p>
+      <div class="chat-messages" id="chat-messages">
+        ${messages.length ? messages.map((m) => `
+          <div class="chat-msg ${m.sender_id === meId ? "me" : "them"}">
+            ${esc(m.body)}
+            <span class="chat-time">${esc(fmtDate(m.created_at))}</span>
+          </div>`).join("")
+          : `<p class="muted" style="font-size:13px;margin:0">Nog geen berichten. Stuur de eerste!</p>`}
+      </div>
+      <div class="chat-emojis">
+        ${CHAT_EMOJIS.map((e) => `<button type="button" class="chat-emoji-btn" onclick="insertChatEmoji('${e}')">${e}</button>`).join("")}
+      </div>
+      <form class="chat-input-row" onsubmit="return sendMatchChatMessage(event, '${esc(matchId)}')">
+        <input id="chat-input" placeholder="Typ een bericht..." maxlength="1000" autocomplete="off">
+        <button class="btn sm" type="submit">Stuur</button>
+      </form>
+    </div>`;
+}
+
+function insertChatEmoji(emoji) {
+  const input = document.getElementById("chat-input");
+  if (!input) return;
+  input.value += emoji;
+  input.focus();
+}
+
+async function sendMatchChatMessage(event, matchId) {
+  event.preventDefault();
+  const input = document.getElementById("chat-input");
+  const body = input?.value.trim();
+  if (!body) return false;
+  try {
+    await db.sendChatMessage(matchId, body);
+    input.value = "";
+    await router();
+    document.getElementById("chat-messages")?.scrollTo(0, 999999);
+  } catch (e) { toast(errText(e)); }
+  return false;
 }
 
 async function viewMatches() {

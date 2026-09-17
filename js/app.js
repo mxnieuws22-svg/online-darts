@@ -367,8 +367,9 @@ const db = {
   },
 
   async createLeague(fields) {
-    const { error } = await sb.from("leagues").insert(fields);
+    const { data, error } = await sb.from("leagues").insert(fields).select().single();
     if (error) throw error;
+    return data;
   },
 
   async setLeagueStatus(id, status) {
@@ -1502,7 +1503,7 @@ async function viewManageLeagues() {
     <button class="btn mt8" onclick="openLeagueDialog()">${icon.plus} Nieuwe league</button>
     <div class="mt24">
       ${leagues.length ? leagues.map((l) => `
-        ${leagueCard(l, false)}
+        ${leagueCard(l, true)}
         <div class="chips" style="margin:-4px 0 14px">
           ${["draft", "active", "finished"].filter((s) => s !== l.status).map((s) => `
             <button class="chip" onclick="changeLeagueStatus('${esc(l.id)}','${s}')">
@@ -1683,7 +1684,7 @@ function openLeagueDialog() {
     </div>`, async (bg) => {
     const name = bg.querySelector("#ln").value.trim();
     if (!name) throw new Error("Vul een naam in.");
-    await db.createLeague({
+    const league = await db.createLeague({
       name,
       season: bg.querySelector("#ls").value.trim() || null,
       game_type: bg.querySelector("#lg").value,
@@ -1691,8 +1692,8 @@ function openLeagueDialog() {
       status: "draft",
       created_by: state.profile.id,
     });
-    toast("League aangemaakt");
-    router();
+    toast("League aangemaakt. Voeg spelers toe en deel ze in bij divisies.");
+    go("league/" + league.id);
   }, "League aanmaken");
 }
 

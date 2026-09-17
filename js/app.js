@@ -524,7 +524,7 @@ function renderLanding() {
         <h2>Zo werkt het</h2>
         <div class="landing-step-list">
           ${step("01", "Maak een account", "Binnen een minuut aangemeld, zonder gedoe.")}
-          ${step("02", "Sluit je aan bij een league of toernooi", "Of start er zelf een voor je eigen groep.")}
+          ${step("02", "Sluit je aan bij een league of toernooi", "De beheerder zet ze voor je klaar, jij doet mee.")}
           ${step("03", "Speel en volg je voortgang", "Standen, uitslagen en statistieken staan direct klaar.")}
         </div>
       </div>

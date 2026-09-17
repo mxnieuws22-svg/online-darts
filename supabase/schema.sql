@@ -20,6 +20,8 @@
 --      wedstrijdmoment voorstellen/accepteren
 --  12. Divisiehistorie, één-actieve-league-regel, en meldingen bij
 --      indeling/promotie/degradatie
+--  13. Per-wedstrijd beschikbaarheid en deadline, automatische herinnering/
+--      verval, en organizer-only verlenging
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
@@ -2261,9 +2263,15 @@ create trigger on_match_schedule_proposals_touch
 
 
 -- Round-robin binnen elke divisie van minimaal 4 spelers. Elke wedstrijd
--- krijgt scheduled_at = start_at van de league en deadline_at = start_at +
--- match_deadline_days. Intern (geen grant naar authenticated/anon): wordt
--- alleen aangeroepen door activate_league hieronder.
+-- krijgt zijn eigen available_at (moment waarop deze specifieke wedstrijd
+-- beschikbaar werd) en deadline_at = available_at + match_deadline_days -
+-- zie sectie 13: dit hangt nooit af van een andere wedstrijd. Vandaag
+-- ontstaan alle wedstrijden van een divisie nog gelijktijdig (bij het
+-- starten van de league), dus available_at = league.start_at voor
+-- iedereen; zodra wedstrijden per ronde vrijgegeven worden, wordt dit per
+-- aanroep ingevuld met het eigen moment van die ronde. Intern (geen grant
+-- naar authenticated/anon): wordt alleen aangeroepen door activate_league
+-- hieronder.
 create or replace function public.generate_league_matches(p_league_id uuid)
 returns int
 language plpgsql
@@ -2272,6 +2280,7 @@ set search_path = public
 as $$
 declare
   v_league record;
+  v_available timestamptz;
   v_deadline timestamptz;
   v_count int := 0;
   rec record;
@@ -2284,7 +2293,8 @@ begin
     raise exception 'League heeft nog geen startmoment.';
   end if;
 
-  v_deadline := v_league.start_at + make_interval(days => v_league.match_deadline_days);
+  v_available := v_league.start_at;
+  v_deadline := v_available + make_interval(days => v_league.match_deadline_days);
 
   for rec in
     select a.player_id as a_id, b.player_id as b_id, a.division_id as div_id
@@ -2298,9 +2308,9 @@ begin
       and (select count(*) from public.league_players lp where lp.division_id = a.division_id) >= 4
   loop
     insert into public.league_matches
-      (league_id, division_id, player_a_id, player_b_id, scheduled_at, deadline_at, status)
+      (league_id, division_id, player_a_id, player_b_id, scheduled_at, available_at, deadline_at, status)
     values
-      (p_league_id, rec.div_id, rec.a_id, rec.b_id, v_league.start_at, v_deadline, 'scheduled')
+      (p_league_id, rec.div_id, rec.a_id, rec.b_id, v_available, v_available, v_deadline, 'scheduled')
     on conflict (league_id, division_id, least(player_a_id, player_b_id), greatest(player_a_id, player_b_id))
       where division_id is not null
       do nothing;
@@ -2641,6 +2651,167 @@ create trigger on_league_players_single_active_league
   before insert or update of league_id on public.league_players
   for each row
   execute function public.enforce_single_active_league();
+
+
+-- ============================================================================
+-- 13. Per-wedstrijd beschikbaarheid en deadline, automatische herinnering/
+--     verval, en organizer-only verlenging.
+--     (generate_league_matches hierboven schrijft nu ook available_at weg.)
+-- ============================================================================
+
+-- available_at: het moment waarop DEZE wedstrijd beschikbaar werd (ligt vast
+-- vanaf aanmaken, verandert nooit - ook niet als spelers via propose/respond
+-- een ander scheduled_at afspreken). deadline_at bestond al (sectie 11).
+alter table public.league_matches
+  add column if not exists available_at timestamptz,
+  add column if not exists reminder_sent_at timestamptz,
+  add column if not exists deadline_expired_at timestamptz;
+
+update public.league_matches
+  set available_at = scheduled_at
+  where available_at is null and scheduled_at is not null;
+
+comment on column public.league_matches.available_at is 'Moment waarop deze specifieke wedstrijd beschikbaar werd; ligt vast na aanmaken.';
+comment on column public.league_matches.deadline_expired_at is 'Gezet zodra deze wedstrijd na de deadline nog niet gespeeld was (voor idempotente meldingen).';
+comment on column public.league_matches.reminder_sent_at is 'Gezet zodra de "deadline nadert"-herinnering voor deze wedstrijd is verstuurd.';
+
+
+-- Geldt voor ELK schrijfpad (ook een rechtstreekse update door de
+-- organisator), niet alleen voor extend_match_deadline() hieronder -
+-- vergelijkbaar met protect_league_schedule_fields voor leagues.
+create or replace function public.protect_match_schedule_fields()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if old.available_at is not null and new.available_at is distinct from old.available_at then
+    raise exception 'Het beschikbaarheidsmoment van een wedstrijd kan niet meer gewijzigd worden.';
+  end if;
+  if new.deadline_at is distinct from old.deadline_at
+     and old.deadline_at is not null
+     and new.deadline_at < old.deadline_at then
+    raise exception 'De deadline van een wedstrijd kan alleen verlengd worden, niet verkort.';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists on_league_matches_protect_schedule on public.league_matches;
+create trigger on_league_matches_protect_schedule
+  before update on public.league_matches
+  for each row
+  execute function public.protect_match_schedule_fields();
+
+
+-- Organizer-only: een deadline verlengen. Zet deadline_expired_at terug op
+-- null zodat een inmiddels "verlopen" wedstrijd weer normaal meetelt als de
+-- nieuwe deadline nog in de toekomst ligt.
+create or replace function public.extend_match_deadline(p_match_id uuid, p_new_deadline timestamptz)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_current timestamptz;
+begin
+  if auth.uid() is null then
+    raise exception 'Je moet ingelogd zijn.';
+  end if;
+  if not public.is_organizer() then
+    raise exception 'Alleen de organisator kan een deadline verlengen.';
+  end if;
+
+  select deadline_at into v_current from public.league_matches where id = p_match_id;
+  if v_current is null then
+    raise exception 'Wedstrijd niet gevonden.';
+  end if;
+  if p_new_deadline <= v_current then
+    raise exception 'De nieuwe deadline moet na de huidige deadline liggen.';
+  end if;
+
+  update public.league_matches
+    set deadline_at = p_new_deadline, deadline_expired_at = null
+    where id = p_match_id;
+end;
+$$;
+
+grant execute on function public.extend_match_deadline(uuid, timestamptz) to authenticated;
+
+
+-- Automatische "deadline nadert"-herinnering (24 uur van tevoren) en
+-- "deadline verstreken"-melding, allebei eenmalig per wedstrijd (via
+-- reminder_sent_at/deadline_expired_at). Sluit expliciet 'confirmed' en
+-- 'cancelled' uit, zodat een voltooide of geannuleerde wedstrijd nooit
+-- alsnog als verlopen gemarkeerd wordt. Nooit rechtstreeks aanroepbaar door
+-- gebruikers; draait via pg_cron.
+create or replace function public.process_match_deadlines()
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  with due as (
+    select id, deadline_at, player_a_id, player_b_id
+    from public.league_matches
+    where status not in ('confirmed', 'cancelled')
+      and deadline_at is not null
+      and reminder_sent_at is null
+      and deadline_at > now()
+      and deadline_at <= now() + interval '24 hours'
+  )
+  insert into public.notifications (player_id, type, title, body, league_match_id)
+  select player_a_id, 'match_deadline_reminder', 'Deadline nadert',
+         'Je hebt nog tot ' || to_char(deadline_at, 'DD Mon YYYY HH24:MI') || ' om deze wedstrijd te spelen.', id
+  from due
+  union all
+  select player_b_id, 'match_deadline_reminder', 'Deadline nadert',
+         'Je hebt nog tot ' || to_char(deadline_at, 'DD Mon YYYY HH24:MI') || ' om deze wedstrijd te spelen.', id
+  from due;
+
+  update public.league_matches
+    set reminder_sent_at = now()
+    where status not in ('confirmed', 'cancelled')
+      and deadline_at is not null
+      and reminder_sent_at is null
+      and deadline_at > now()
+      and deadline_at <= now() + interval '24 hours';
+
+  with due as (
+    select id, player_a_id, player_b_id
+    from public.league_matches
+    where status not in ('confirmed', 'cancelled')
+      and deadline_at is not null
+      and deadline_expired_at is null
+      and deadline_at <= now()
+  )
+  insert into public.notifications (player_id, type, title, body, league_match_id)
+  select player_a_id, 'match_deadline_expired', 'Deadline verstreken',
+         'De deadline voor deze wedstrijd is verstreken zonder dat hij gespeeld is. Neem contact op met je tegenstander of de organisator.', id
+  from due
+  union all
+  select player_b_id, 'match_deadline_expired', 'Deadline verstreken',
+         'De deadline voor deze wedstrijd is verstreken zonder dat hij gespeeld is. Neem contact op met je tegenstander of de organisator.', id
+  from due;
+
+  update public.league_matches
+    set deadline_expired_at = now()
+    where status not in ('confirmed', 'cancelled')
+      and deadline_at is not null
+      and deadline_expired_at is null
+      and deadline_at <= now();
+end;
+$$;
+
+revoke execute on function public.process_match_deadlines() from public, anon, authenticated;
+
+select cron.schedule(
+  'process_match_deadlines',
+  '*/5 * * * *',
+  $cron$select public.process_match_deadlines();$cron$
+);
 
 
 -- ----------------------------------------------------------------------------

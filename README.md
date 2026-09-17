@@ -146,3 +146,11 @@ tiers die ruim volstaan voor een dartclub).
 
 **Wachtwoord vergeten werkt niet** — je live-URL staat niet bij de
 Redirect URLs in Supabase.
+
+**Activatielink na registratie komt op een onbekende pagina uit** — zelfde
+oorzaak: je live-URL (met `/**` erachter) staat niet bij **Authentication →
+URL Configuration → Redirect URLs**, en/of de **Site URL** daar staat nog op
+een oude preview-, Lovable- of localhost-adres in plaats van je Vercel-URL.
+Zet de Site URL en de Redirect URLs goed en vraag de gebruiker de link
+opnieuw te versturen (kan vanaf het inlogscherm of vanaf de foutmelding op
+de activatiepagina zelf).

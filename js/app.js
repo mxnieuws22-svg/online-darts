@@ -1046,14 +1046,43 @@ function authShell(title, sub, body, alt = "") {
     </div>`;
 }
 
-function showAuthError(msg) {
+function showAuthError(msg, extraHtml = "") {
   const box = document.getElementById("authError");
-  if (box) box.innerHTML = `<div class="alert bad">${esc(msg)}</div>`;
+  if (box) box.innerHTML = `<div class="alert bad">${esc(msg)}</div>${extraHtml}`;
+}
+
+async function handleResendClick(email, btnEl) {
+  btnEl.disabled = true;
+  btnEl.textContent = "Bezig...";
+  const error = await resendSignupEmail(email);
+  if (error) {
+    btnEl.disabled = false;
+    btnEl.textContent = "Verstuur activatiemail opnieuw";
+    return toast(errText(error));
+  }
+  toast(`Nieuwe activatiemail verstuurd naar ${email}`);
+  btnEl.remove();
 }
 
 function busy(btn, on, label) {
   btn.disabled = on;
   btn.innerHTML = on ? `<span class="spinner inline"></span>` : esc(label);
+}
+
+// Altijd het huidige origin gebruiken (nooit een hardcoded domein) zodat dit
+// vanzelf klopt op productie, Vercel-previews én lokaal - zolang die URL in
+// Supabase (Authentication -> URL Configuration -> Redirect URLs) staat.
+function signupRedirectTo() {
+  return `${location.origin}${location.pathname}#/geactiveerd`;
+}
+
+async function resendSignupEmail(email) {
+  const { error } = await sb.auth.resend({
+    type: "signup",
+    email,
+    options: { emailRedirectTo: signupRedirectTo() },
+  });
+  return error;
 }
 
 function renderLanding() {
@@ -1206,7 +1235,13 @@ function renderLogin() {
     if (!email || !pw) return showAuthError("Vul je e-mailadres en wachtwoord in.");
     busy(btn, true);
     const { error } = await sb.auth.signInWithPassword({ email, password: pw });
-    if (error) { busy(btn, false, "Inloggen"); showAuthError(errText(error)); }
+    if (error) {
+      busy(btn, false, "Inloggen");
+      const unconfirmed = /Email not confirmed/i.test(error.message || "");
+      showAuthError(errText(error), unconfirmed
+        ? `<button type="button" class="linkbtn" style="padding:0;margin-top:8px" onclick="handleResendClick('${esc(email)}', this)">Verstuur activatiemail opnieuw</button>`
+        : "");
+    }
     // Bij succes neemt onAuthStateChange het over.
   };
 }
@@ -1251,7 +1286,7 @@ function renderRegister() {
     const { data, error } = await sb.auth.signUp({
       email,
       password: pw,
-      options: { data: { display_name: name } },
+      options: { data: { display_name: name }, emailRedirectTo: signupRedirectTo() },
     });
     if (error) { busy(btn, false, "Account aanmaken"); return showAuthError(errText(error)); }
 
@@ -1323,6 +1358,49 @@ function renderNewPassword() {
     location.hash = "#/";
     toast("Wachtwoord opgeslagen");
     boot();
+  };
+}
+
+// Scherm waar de gebruiker landt na het klikken op de activatielink uit de
+// registratiemail (zie signupRedirectTo() en de afhandeling in init()).
+function renderSignupConfirmed() {
+  app.innerHTML = authShell(
+    "Account geactiveerd",
+    "",
+    `<div class="alert ok">Je account is succesvol geactiveerd!</div>
+     <button class="btn block" onclick="renderLogin()">Naar inloggen</button>`
+  );
+}
+
+// Scherm voor een verlopen of ongeldige activatielink: duidelijke uitleg +
+// meteen de mogelijkheid om een nieuwe activatiemail aan te vragen.
+function renderSignupLinkError() {
+  app.innerHTML = authShell(
+    "Link verlopen of ongeldig",
+    "Vraag hieronder een nieuwe activatielink aan",
+    `<form id="f" novalidate>
+      <div class="field">
+        <label for="email">E-mailadres</label>
+        <input id="email" type="email" autocomplete="email" required>
+      </div>
+      <button class="btn block" id="submit" type="submit">Verstuur activatiemail opnieuw</button>
+    </form>`,
+    `<div class="auth-alt"><button class="linkbtn" onclick="renderLogin()">Terug naar inloggen</button></div>`
+  );
+
+  document.getElementById("f").onsubmit = async (e) => {
+    e.preventDefault();
+    const btn = document.getElementById("submit");
+    const email = document.getElementById("email").value.trim();
+    if (!email.includes("@")) return showAuthError("Vul een geldig e-mailadres in.");
+    busy(btn, true);
+    const error = await resendSignupEmail(email);
+    if (error) { busy(btn, false, "Verstuur activatiemail opnieuw"); return showAuthError(errText(error)); }
+    app.innerHTML = authShell(
+      "Check je mail",
+      `We stuurden een nieuwe activatielink naar ${email}`,
+      `<button class="btn block" onclick="renderLogin()">Terug naar inloggen</button>`
+    );
   };
 }
 
@@ -3215,12 +3293,45 @@ async function boot() {
   router();
 }
 
+// Supabase plakt na een activatie-/herstellink de tokens (of, bij een
+// verlopen/ongeldige link, een foutmelding) als key=value-paren achter de
+// redirectTo-URL - als hash-fragment, als querystring, of allebei, en soms
+// nog met onze eigen "#/geactiveerd"-route ervoor. In plaats van te gokken
+// naar de precieze vorm: hash én query samenvoegen en alles zonder "="
+// (zoals onze eigen routenaam) weggooien, dan simpel als een key/value-set
+// lezen. Werkt hierdoor ook onaangetast door voor normale routes (#/leagues
+// e.d. bevatten geen "=").
+function parseAuthRedirectParams() {
+  const raw = (location.hash.slice(1) + "&" + location.search.slice(1))
+    .split(/[&?]/)
+    .filter((s) => s.includes("="))
+    .join("&");
+  return new URLSearchParams(raw);
+}
+
 function init() {
   if (!cfg.SUPABASE_URL || cfg.SUPABASE_URL.includes("JOUW-PROJECT")) {
     return configMissing();
   }
 
+  const authParams = parseAuthRedirectParams();
+  const authType = authParams.get("type");
+  const authError = authParams.get("error") || authParams.get("error_code");
+
+  // Bij een fout is er geen sessie te herstellen uit de URL - de rommelige
+  // hash meteen opruimen zodat de router hem niet als onbekende route ziet.
+  if (authError) {
+    history.replaceState(null, "", location.pathname);
+  }
+
   sb = window.supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY);
+
+  // Bij een geslaagde activatie meldt Supabase alleen het generieke
+  // "SIGNED_IN"-event (anders dan "PASSWORD_RECOVERY" bij een resetlink) -
+  // dit onthoudt dat we net van een activatielink komen, zodat we in plaats
+  // van gewoon in te loggen het bevestigingsscherm tonen.
+  let awaitingSignupConfirmation = authType === "signup";
+  let skipNextSignedOutRender = false;
 
   sb.auth.onAuthStateChange(async (event, session) => {
     if (event === "PASSWORD_RECOVERY") {
@@ -3233,17 +3344,31 @@ function init() {
     if (!session) {
       state.profile = null;
       state.onboarding = null;
+      if (skipNextSignedOutRender) { skipNextSignedOutRender = false; return; }
       return renderLanding();
     }
     if (!wasLoggedIn) {
       state.profile = await db.myProfile(session.user.id).catch(() => null);
       state.onboarding = await db.myOnboarding(session.user.id).catch(() => null);
+      if (awaitingSignupConfirmation) {
+        awaitingSignupConfirmation = false;
+        // De gebruiker moet zelf inloggen (zie de gewenste flow); niet
+        // await'en, anders wint de renderLanding() van de resulterende
+        // SIGNED_OUT-event het van het bevestigingsscherm hieronder.
+        skipNextSignedOutRender = true;
+        sb.auth.signOut();
+        return renderSignupConfirmed();
+      }
       if (!location.hash || location.hash === "#/nieuw-wachtwoord") location.hash = "#/";
       router();
     }
   });
 
   window.addEventListener("hashchange", router);
+
+  if (authError) {
+    return renderSignupLinkError();
+  }
   boot();
 }
 

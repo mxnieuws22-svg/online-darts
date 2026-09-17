@@ -45,6 +45,29 @@ const TOURNAMENT_TYPES = {
   groups_and_knockout: "Poules + knock-out",
 };
 
+const GARMENT_LABELS = { tshirt: "T-shirt", hoodie: "Hoodie", polo: "Polo" };
+const SIZE_LABELS = { xs: "XS", s: "S", m: "M", l: "L", xl: "XL", xxl: "XXL", xxxl: "XXXL" };
+
+// Statussen van een prijsclaim: label voor de winnaar (vriendelijk, geen
+// interne termen) en voor de organisator (exacte statusnaam), plus kleur.
+const PRIZE_STATUS = {
+  available:         { label: "Beschikbaar",              color: "#4EA1F7" },
+  claim_started:     { label: "Bezig met claimen",         color: "#4EA1F7" },
+  claimed:           { label: "Aanvraag ingediend",        color: "#F5B942" },
+  reviewing:         { label: "Wordt beoordeeld",          color: "#F5B942" },
+  contact_pending:   { label: "Contact volgt nog",         color: "#F5B942" },
+  confirmed:         { label: "Bevestigd",                 color: "#2ECC71" },
+  in_production:     { label: "Wordt gemaakt",             color: "#9B7BD9" },
+  ready:             { label: "Klaar om op te halen",      color: "#2ECC71" },
+  delivered:         { label: "Uitgereikt",                color: "#2ECC71" },
+  cancelled:         { label: "Geannuleerd",                color: "#6B7280" },
+};
+
+function prizeStatusBadge(status) {
+  const s = PRIZE_STATUS[status] || { label: status, color: "#8A93AA" };
+  return `<span class="badge" style="color:${s.color};border-color:${s.color}66;background:${s.color}22">${esc(s.label)}</span>`;
+}
+
 /* -------------------------------------------------------------------------
    2. Hulpfuncties
    ------------------------------------------------------------------------- */
@@ -452,6 +475,130 @@ const db = {
     const { data, error } = await sb.rpc("apply_promotion_relegation", { p_league_id: leagueId });
     if (error) throw error;
     return data || [];
+  },
+
+  // ---- Prijsclaims (divisiewinnaars, LWPrints) -------------------------
+
+  // Bepaalt (idempotent) de winnaars van een afgeronde league en maakt
+  // meteen hun prijsclaim + melding aan.
+  async determineDivisionWinners(leagueId) {
+    const { data, error } = await sb.rpc("determine_division_winners", { p_league_id: leagueId });
+    if (error) throw error;
+    return data || [];
+  },
+
+  // Winnaars + hun claim voor een specifieke league (organisator, inline op
+  // de league-pagina).
+  async divisionWinnersForLeague(leagueId) {
+    const { data, error } = await sb
+      .from("division_winners")
+      .select("*, claim:prize_claims(*), player:player_id(*)")
+      .eq("league_id", leagueId)
+      .order("division_rank");
+    if (error) throw error;
+    return (data || []).map((w) => ({ ...w, claim: Array.isArray(w.claim) ? w.claim[0] : w.claim }));
+  },
+
+  async prizeByDivisionWinner(id) {
+    const { data, error } = await sb
+      .from("division_winners")
+      .select("*, claim:prize_claims(*)")
+      .eq("id", id)
+      .single();
+    if (error) throw error;
+    data.claim = Array.isArray(data.claim) ? data.claim[0] : data.claim;
+    return data;
+  },
+
+  // Alle prijzen van de ingelogde speler ("Mijn prijzen").
+  async myPrizes() {
+    const { data, error } = await sb
+      .from("division_winners")
+      .select("*, claim:prize_claims(*)")
+      .eq("player_id", state.profile.id)
+      .order("decided_at", { ascending: false });
+    if (error) throw error;
+    return (data || []).map((w) => ({ ...w, claim: Array.isArray(w.claim) ? w.claim[0] : w.claim }));
+  },
+
+  // Nieuwste ongelezen prijsmelding, voor de banner op Home.
+  async myPendingPrizeNotification() {
+    const { data, error } = await sb
+      .from("prize_notifications")
+      .select("*, claim:prize_claim_id(id, division_winner_id)")
+      .eq("player_id", state.profile.id)
+      .is("read_at", null)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) throw error;
+    return data;
+  },
+
+  async markPrizeNotificationRead(id) {
+    const { error } = await sb.from("prize_notifications").update({ read_at: new Date().toISOString() }).eq("id", id);
+    if (error) throw error;
+  },
+
+  async markPrizeNotificationsReadForClaim(claimId) {
+    const { error } = await sb.from("prize_notifications")
+      .update({ read_at: new Date().toISOString() })
+      .eq("prize_claim_id", claimId)
+      .is("read_at", null);
+    if (error) throw error;
+  },
+
+  async startPrizeClaim(divisionWinnerId) {
+    const { error } = await sb.rpc("start_prize_claim", { p_division_winner_id: divisionWinnerId });
+    if (error) throw error;
+  },
+
+  async submitPrizeClaim(divisionWinnerId, r) {
+    const { error } = await sb.rpc("submit_prize_claim", {
+      p_division_winner_id: divisionWinnerId,
+      p_full_name: r.fullName,
+      p_email: r.email,
+      p_phone: r.phone,
+      p_garment: r.garment,
+      p_size: r.size,
+      p_color: r.color,
+      p_design_notes: r.designNotes,
+      p_comments: r.comments,
+      p_consent: r.consent,
+    });
+    if (error) throw error;
+  },
+
+  // Beheeroverzicht: alle divisiewinnaars + hun claim, over alle leagues.
+  async allPrizeClaims() {
+    const { data, error } = await sb
+      .from("division_winners")
+      .select("*, claim:prize_claims(*), player:player_id(*)")
+      .order("decided_at", { ascending: false });
+    if (error) throw error;
+    return (data || []).map((w) => ({ ...w, claim: Array.isArray(w.claim) ? w.claim[0] : w.claim }));
+  },
+
+  async prizeClaimHistory(claimId) {
+    const { data, error } = await sb
+      .from("prize_status_history")
+      .select("*, changed_by_profile:changed_by(display_name)")
+      .eq("prize_claim_id", claimId)
+      .order("created_at");
+    if (error) throw error;
+    return data || [];
+  },
+
+  async updatePrizeClaimStatus(claimId, status, note) {
+    const { error } = await sb.rpc("update_prize_claim_status", {
+      p_claim_id: claimId, p_new_status: status, p_note: note || null,
+    });
+    if (error) throw error;
+  },
+
+  async updatePrizeClaimFields(claimId, fields) {
+    const { error } = await sb.from("prize_claims").update(fields).eq("id", claimId);
+    if (error) throw error;
   },
 
   async tournaments() {
@@ -1050,6 +1197,7 @@ const ROUTES = {
   "beheer/leagues": viewManageLeagues,
   "beheer/toernooien": viewManageTournaments,
   "beheer/wedstrijden": viewManageMatches,
+  "beheer/prijzen": viewManagePrizes,
   "beheer/instellingen": viewSettings,
 };
 
@@ -1065,6 +1213,15 @@ async function router() {
   try {
     if (route.startsWith("league/")) {
       return await viewLeagueDetail(route.split("/")[1]);
+    }
+    if (route.startsWith("prijs/")) {
+      return await viewPrizeDetail(route.split("/")[1]);
+    }
+    if (route.startsWith("beheer/prijs/")) {
+      if (state.profile?.role !== "organizer") {
+        return setView(emptyView("Alleen voor organisatoren", "Vraag de organisator om toegang."));
+      }
+      return await viewManagePrizeDetail(route.split("/")[2]);
     }
     const handler = ROUTES[route];
     if (!handler) {
@@ -1089,11 +1246,12 @@ async function viewHome() {
   const firstName = (me?.display_name || "").split(" ")[0];
   const s = me?.stats;
 
-  const [matches, leagues, tournaments, results] = await Promise.all([
+  const [matches, leagues, tournaments, results, prizeNotification] = await Promise.all([
     db.myMatches(me.id),
     db.leagues("active"),
     db.upcomingTournaments(),
     db.recentResults(3),
+    db.myPendingPrizeNotification(),
   ]);
 
   const next = matches.find((m) => m.status === "scheduled" || m.status === "in_progress");
@@ -1103,6 +1261,18 @@ async function viewHome() {
   setView(`
     <h1>Hoi ${esc(firstName)}</h1>
     <p class="sub">${esc(new Date().toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long" }))}</p>
+
+    ${prizeNotification ? `
+      <button class="card clickable" style="border-color:#F5B94266;background:#F5B94214;margin-bottom:16px"
+        onclick="go('prijs/${esc(prizeNotification.claim.division_winner_id)}')">
+        <div class="row">
+          <div class="row-ico" style="background:#F5B94222;color:#F5B942">${icon.trophy}</div>
+          <div class="row-main">
+            <div class="row-title">${esc(prizeNotification.title)}</div>
+            <div class="row-sub">Bekijk je prijs &rarr;</div>
+          </div>
+        </div>
+      </button>` : ""}
 
     <div class="grid" style="grid-template-columns:repeat(2,1fr)">
       ${statCard({ label: "Gemiddelde", value: (s?.average_score ?? 0).toFixed(1), ico: "trend" })}
@@ -1134,10 +1304,11 @@ async function viewLeagues() {
 }
 
 async function viewLeagueDetail(id) {
+  const isOrg = state.profile?.role === "organizer";
   const [league, matches, standings] = await Promise.all([
     db.league(id), db.matchesForLeague(id), db.standingsForLeague(id),
   ]);
-  const isOrg = state.profile?.role === "organizer";
+  const winners = (isOrg && league.status === "finished") ? await db.divisionWinnersForLeague(id) : [];
   const groups = groupStandingsByDivision(standings);
 
   setView(`
@@ -1168,10 +1339,297 @@ async function viewLeagueDetail(id) {
         </p>` : ""}
     ` : ""}
 
+    ${isOrg && league.status === "finished" ? `
+      ${sectionHead("Divisiewinnaars & prijzen")}
+      ${winners.length ? `
+        <div class="card">
+          ${winners.map((w, i) => `
+            <div class="row" style="padding:7px 0;${i > 0 ? "border-top:1px solid var(--line)" : ""}">
+              ${avatar(w.player, "sm")}
+              <div class="row-main">
+                <div class="row-title">${esc(w.player?.display_name || "?")}</div>
+                <div class="row-sub">${esc(w.division_name)}</div>
+              </div>
+              ${w.claim ? prizeStatusBadge(w.claim.status) : ""}
+            </div>`).join("")}
+        </div>
+        <button class="btn ghost sm mt8" onclick="go('beheer/prijzen')">Alle prijzen beheren</button>
+      ` : `
+        <button class="btn" onclick="determineDivisionWinners('${esc(id)}')">${icon.trophy} Bepaal divisiewinnaars</button>
+        <p class="muted" style="font-size:12.5px;margin:8px 0 0">
+          Elke divisiewinnaar krijgt automatisch een melding en kan zijn prijs claimen (beschikbaar gesteld door LWPrints).
+        </p>
+      `}
+    ` : ""}
+
     ${sectionHead("Wedstrijden")}
     ${matches.length ? matches.map(matchCard).join("")
       : emptyView("Nog geen wedstrijden", "Er is nog niets ingepland voor deze league.", "match")}
   `);
+}
+
+async function determineDivisionWinners(leagueId) {
+  try {
+    const winners = await db.determineDivisionWinners(leagueId);
+    toast(winners.length
+      ? `${winners.length} divisiewinnaar(s) bepaald en op de hoogte gebracht.`
+      : "Geen winnaars: in geen enkele divisie is nog een wedstrijd gespeeld.");
+    router();
+  } catch (e) { toast(errText(e)); }
+}
+
+// Winnaarspagina: wat je hebt gewonnen, de status van je claim, en de knop
+// om te claimen. Voor iedereen die niet de winnaar zelf is, alleen de
+// feestelijke, publieke info (geen contactgegevens - die geeft de database
+// sowieso niet terug aan wie niet de winnaar of organisator is).
+async function viewPrizeDetail(id) {
+  const w = await db.prizeByDivisionWinner(id);
+  const isMine = w.player_id === state.profile.id;
+  const claim = w.claim;
+
+  if (isMine && claim) {
+    await db.markPrizeNotificationsReadForClaim(claim.id).catch(() => {});
+  }
+
+  const prizeBlurb = "De winnaar van elke divisie ontvangt een gepersonaliseerd bedrukt kledingstuk, " +
+    "beschikbaar gesteld door LWPrints. Je kunt, in overleg en afhankelijk van de mogelijkheden en " +
+    "beschikbaarheid, kiezen uit een bedrukt T-shirt, een hoodie of een polo.";
+
+  const filledIn = claim && (claim.garment || claim.size || claim.full_name);
+  const locked = claim && ["confirmed", "in_production", "ready", "delivered", "cancelled"].includes(claim.status);
+
+  setView(`
+    <button class="linkbtn" onclick="go('')" style="display:flex;align-items:center;gap:4px;margin-bottom:12px">
+      <span style="width:16px;height:16px;display:inline-flex">${icon.back}</span> Home
+    </button>
+
+    <div class="card center" style="padding:28px 20px">
+      <span style="width:40px;height:40px;color:var(--accent);display:inline-flex;margin:0 auto 12px">${icon.trophy}</span>
+      <h1 style="font-size:22px">${esc(w.division_name)} gewonnen!</h1>
+      <p class="sub" style="margin-bottom:4px">${esc(w.league_name)}${w.season ? " · " + esc(w.season) : ""}</p>
+      <p class="muted" style="font-size:13px">Bepaald op ${esc(fmtDate(w.decided_at, false))}</p>
+    </div>
+
+    <div class="card mt16">
+      <p style="margin:0">${esc(prizeBlurb)}</p>
+    </div>
+
+    ${isMine ? `
+      <div class="section"><h2>Status van je claim</h2></div>
+      <div class="card">
+        <div class="row" style="margin-bottom:${filledIn ? "14px" : "0"}">
+          <div class="row-main"><div class="row-title">Huidige status</div></div>
+          ${claim ? prizeStatusBadge(claim.status) : ""}
+        </div>
+        ${filledIn ? `
+          <div class="row-sub" style="line-height:1.7">
+            ${claim.garment ? `Kledingstuk: <strong style="color:var(--white)">${esc(GARMENT_LABELS[claim.garment] || claim.garment)}</strong><br>` : ""}
+            ${claim.size ? `Maat: <strong style="color:var(--white)">${esc(SIZE_LABELS[claim.size] || claim.size)}</strong><br>` : ""}
+            ${claim.color ? `Kleur: <strong style="color:var(--white)">${esc(claim.color)}</strong><br>` : ""}
+          </div>` : ""}
+        ${!claim || claim.status === "available" ? `
+          <button class="btn block mt16" onclick="openPrizeClaimDialog('${esc(id)}')">Prijs claimen</button>
+        ` : locked ? `
+          <p class="muted mt16" style="font-size:13px;margin-bottom:0">
+            Je gegevens zijn bevestigd. Neem contact op met de organisator als er iets moet wijzigen.
+          </p>
+        ` : `
+          <button class="btn ghost block mt16" onclick="openPrizeClaimDialog('${esc(id)}')">Gegevens wijzigen</button>
+        `}
+      </div>
+    ` : `
+      <p class="muted center mt16" style="font-size:13.5px">Gefeliciteerd aan ${esc(w.player?.display_name || "de winnaar")}!</p>
+    `}
+  `);
+}
+
+function openPrizeClaimDialog(divisionWinnerId) {
+  const me = state.profile;
+  db.prizeByDivisionWinner(divisionWinnerId).then((w) => {
+    const c = w.claim || {};
+    const garmentOpt = (val, lab) => `<option value="${val}" ${c.garment === val ? "selected" : ""}>${lab}</option>`;
+    const sizeOpt = (val) => `<option value="${val}" ${c.size === val ? "selected" : ""}>${SIZE_LABELS[val]}</option>`;
+
+    db.startPrizeClaim(divisionWinnerId).catch(() => {});
+
+    openModal("Prijs claimen", `
+      <p class="sub" style="margin-bottom:18px">
+        De uiteindelijke prijskeuze gebeurt in overleg en is afhankelijk van de mogelijkheden en
+        beschikbaarheid van LWPrints.
+      </p>
+      <div class="field"><label for="pcName">Naam</label>
+        <input id="pcName" required value="${esc(c.full_name || me.display_name || "")}"></div>
+      <div class="field"><label for="pcEmail">E-mailadres</label>
+        <input id="pcEmail" type="email" required value="${esc(c.email || me.email || "")}"></div>
+      <div class="field"><label for="pcPhone">Telefoonnummer <span class="muted" style="font-weight:400">(optioneel)</span></label>
+        <input id="pcPhone" type="tel" value="${esc(c.phone || "")}"></div>
+      <div class="field"><label for="pcGarment">Voorkeur kledingstuk</label>
+        <select id="pcGarment" required>
+          <option value="">Kies...</option>
+          ${garmentOpt("tshirt", "T-shirt")}${garmentOpt("hoodie", "Hoodie")}${garmentOpt("polo", "Polo")}
+        </select></div>
+      <div class="field"><label for="pcSize">Kledingmaat</label>
+        <select id="pcSize" required>
+          <option value="">Kies...</option>
+          ${["xs","s","m","l","xl","xxl","xxxl"].map(sizeOpt).join("")}
+        </select></div>
+      <div class="field"><label for="pcColor">Gewenste kleur <span class="muted" style="font-weight:400">(optioneel)</span></label>
+        <input id="pcColor" value="${esc(c.color || "")}"></div>
+      <div class="field"><label for="pcDesign">Gewenste bedrukking/ontwerp <span class="muted" style="font-weight:400">(optioneel)</span></label>
+        <textarea id="pcDesign" rows="2">${esc(c.design_notes || "")}</textarea></div>
+      <div class="field"><label for="pcComments">Opmerkingen <span class="muted" style="font-weight:400">(optioneel)</span></label>
+        <textarea id="pcComments" rows="2">${esc(c.comments || "")}</textarea></div>
+      <div class="field">
+        <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer">
+          <input type="checkbox" id="pcConsent" style="margin-top:3px" ${c.consent_share_with_lwprints ? "checked" : ""}>
+          <span style="font-size:13.5px;color:var(--grey)">
+            Ik ga akkoord dat mijn naam, e-mailadres en (indien opgegeven) telefoonnummer worden gedeeld met
+            LWPrints, uitsluitend om mijn prijs te maken en te leveren.
+          </span>
+        </label>
+      </div>`, async (bg) => {
+      const fullName = bg.querySelector("#pcName").value.trim();
+      const email = bg.querySelector("#pcEmail").value.trim();
+      const garment = bg.querySelector("#pcGarment").value;
+      const size = bg.querySelector("#pcSize").value;
+      const consent = bg.querySelector("#pcConsent").checked;
+      if (!fullName) throw new Error("Vul je naam in.");
+      if (!email.includes("@")) throw new Error("Vul een geldig e-mailadres in.");
+      if (!garment) throw new Error("Kies een voorkeur voor je kledingstuk.");
+      if (!size) throw new Error("Kies je kledingmaat.");
+      if (!consent) throw new Error("Je moet akkoord gaan met het delen van je gegevens met LWPrints.");
+      await db.submitPrizeClaim(divisionWinnerId, {
+        fullName, email,
+        phone: bg.querySelector("#pcPhone").value.trim() || null,
+        garment, size,
+        color: bg.querySelector("#pcColor").value.trim() || null,
+        designNotes: bg.querySelector("#pcDesign").value.trim() || null,
+        comments: bg.querySelector("#pcComments").value.trim() || null,
+        consent,
+      });
+      toast("Bedankt! Je aanvraag is ingediend.");
+      router();
+    }, "Aanvraag versturen");
+  }).catch((e) => toast(errText(e)));
+}
+
+async function viewManagePrizes() {
+  const winners = await db.allPrizeClaims();
+  setView(`
+    <h1>Prijzen</h1>
+    <p class="sub">Divisiewinnaars en hun prijsclaim (LWPrints)</p>
+    ${winners.length ? winners.map((w) => `
+      <button class="card clickable" onclick="go('beheer/prijs/${esc(w.claim?.id)}')">
+        <div class="row">
+          ${avatar(w.player, "sm")}
+          <div class="row-main">
+            <div class="row-title">${esc(w.player?.display_name || "?")}</div>
+            <div class="row-sub">${esc(w.division_name)} · ${esc(w.league_name)}${w.season ? " · " + esc(w.season) : ""}</div>
+          </div>
+          ${w.claim ? prizeStatusBadge(w.claim.status) : ""}
+        </div>
+      </button>
+    `).join("") : emptyView("Nog geen divisiewinnaars", "Bepaal winnaars op een afgeronde league-pagina.", "trophy")}
+  `);
+}
+
+async function viewManagePrizeDetail(claimId) {
+  const winners = await db.allPrizeClaims();
+  const w = winners.find((x) => x.claim?.id === claimId);
+  if (!w) return setView(emptyView("Claim niet gevonden", "Ga terug naar Prijzen.", "warn"));
+  const c = w.claim;
+  const history = await db.prizeClaimHistory(claimId);
+
+  const row = (label, value) => value ? `
+    <div class="row" style="justify-content:space-between;padding:6px 0;border-top:1px solid var(--line)">
+      <span class="row-sub">${esc(label)}</span>
+      <span style="font-weight:600;text-align:right">${esc(value)}</span>
+    </div>` : "";
+
+  setView(`
+    <button class="linkbtn" onclick="go('beheer/prijzen')" style="display:flex;align-items:center;gap:4px;margin-bottom:12px">
+      <span style="width:16px;height:16px;display:inline-flex">${icon.back}</span> Prijzen
+    </button>
+
+    <div class="card center">
+      ${avatar(w.player, "lg")}
+      <div class="mt16" style="font-size:19px;font-weight:700">${esc(w.player?.display_name || "?")}</div>
+      <div class="muted" style="font-size:14px">${esc(w.division_name)} · ${esc(w.league_name)}${w.season ? " · " + esc(w.season) : ""}</div>
+      <div class="mt8">${prizeStatusBadge(c.status)}</div>
+    </div>
+
+    ${sectionHead("Status wijzigen")}
+    <div class="card">
+      <div class="field"><label for="pStatus">Nieuwe status</label>
+        <select id="pStatus">
+          ${Object.keys(PRIZE_STATUS).map((s) => `<option value="${s}" ${s === c.status ? "selected" : ""}>${esc(PRIZE_STATUS[s].label)} (${s})</option>`).join("")}
+        </select>
+      </div>
+      <div class="field"><label for="pNote">Notitie <span class="muted" style="font-weight:400">(optioneel, komt in de historie)</span></label>
+        <textarea id="pNote" rows="2" placeholder="Bijv. telefonisch contact gehad op ..."></textarea>
+      </div>
+      <button class="btn" onclick="submitStatusChange('${esc(claimId)}')">Status opslaan</button>
+      ${c.status !== "delivered" ? `
+        <button class="btn ghost" style="margin-left:8px" onclick="quickMarkDelivered('${esc(claimId)}')">Markeer als uitgereikt</button>` : ""}
+    </div>
+
+    ${sectionHead("Ingevulde gegevens")}
+    <div class="card">
+      ${row("Naam", c.full_name)}
+      ${row("E-mail", c.email)}
+      ${row("Telefoon", c.phone)}
+      ${row("Kledingstuk", c.garment ? GARMENT_LABELS[c.garment] : null)}
+      ${row("Maat", c.size ? SIZE_LABELS[c.size] : null)}
+      ${row("Kleur", c.color)}
+      ${row("Bedrukking/ontwerp", c.design_notes)}
+      ${row("Opmerkingen van winnaar", c.comments)}
+      ${row("Toestemming delen met LWPrints", c.consent_share_with_lwprints ? `Ja, gegeven op ${fmtDate(c.consent_given_at)}` : "Nee")}
+      ${!c.full_name && !c.garment ? `<p class="muted" style="font-size:13.5px;margin:0">Nog niets ingevuld door de winnaar.</p>` : ""}
+    </div>
+
+    ${sectionHead("Beheerdersnotitie")}
+    <div class="card">
+      <textarea id="pAdminNotes" rows="3" placeholder="Interne notitie, bijv. contactpogingen">${esc(c.admin_notes || "")}</textarea>
+      <button class="btn ghost sm mt8" onclick="saveAdminNotes('${esc(claimId)}')">Opslaan</button>
+    </div>
+
+    ${sectionHead("Historie")}
+    <div class="card">
+      ${history.length ? history.map((h, i) => `
+        <div class="row-sub" style="padding:6px 0;${i > 0 ? "border-top:1px solid var(--line)" : ""}">
+          ${esc(fmtDate(h.created_at))} &middot; ${esc(PRIZE_STATUS[h.old_status]?.label || h.old_status || "-")} &rarr; ${esc(PRIZE_STATUS[h.new_status]?.label || h.new_status)}
+          ${h.changed_by_profile?.display_name ? ` door ${esc(h.changed_by_profile.display_name)}` : ""}
+          ${h.note ? `<div style="margin-top:2px">${esc(h.note)}</div>` : ""}
+        </div>`).join("")
+        : `<p class="muted" style="font-size:13.5px;margin:0">Nog geen statuswijzigingen.</p>`}
+    </div>
+  `);
+}
+
+async function submitStatusChange(claimId) {
+  const status = document.getElementById("pStatus").value;
+  const note = document.getElementById("pNote").value.trim() || null;
+  try {
+    await db.updatePrizeClaimStatus(claimId, status, note);
+    toast("Status bijgewerkt");
+    viewManagePrizeDetail(claimId);
+  } catch (e) { toast(errText(e)); }
+}
+
+async function quickMarkDelivered(claimId) {
+  try {
+    await db.updatePrizeClaimStatus(claimId, "delivered", "Gemarkeerd als uitgereikt");
+    toast("Gemarkeerd als uitgereikt");
+    viewManagePrizeDetail(claimId);
+  } catch (e) { toast(errText(e)); }
+}
+
+async function saveAdminNotes(claimId) {
+  const notes = document.getElementById("pAdminNotes").value;
+  try {
+    await db.updatePrizeClaimFields(claimId, { admin_notes: notes });
+    toast("Notitie opgeslagen");
+  } catch (e) { toast(errText(e)); }
 }
 
 function openDivisionDialog(leagueId) {
@@ -1437,6 +1895,7 @@ async function viewOrganizer() {
     ${tile("Leagues", "beheer/leagues", "league")}
     ${tile("Toernooien", "beheer/toernooien", "target")}
     ${tile("Wedstrijden", "beheer/wedstrijden", "match")}
+    ${tile("Prijzen", "beheer/prijzen", "trophy")}
     ${tile("Instellingen", "beheer/instellingen", "settings")}
 
     ${sectionHead("Laatste uitslagen")}

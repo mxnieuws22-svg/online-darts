@@ -22,6 +22,8 @@
 --      indeling/promotie/degradatie
 --  13. Per-wedstrijd beschikbaarheid en deadline, automatische herinnering/
 --      verval, en organizer-only verlenging
+--  14. Voorstelgeschiedenis + intrekken, vorm in de stand, onderlinge
+--      wedstrijden
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
@@ -1368,7 +1370,9 @@ grant execute on function public.auto_assign_divisions(uuid) to authenticated;
 -- de PRIVATE player_onboarding.reported_average zijn - die geven we dus
 -- nooit als display_average terug, alleen het altijd-publieke
 -- player_statistics.average_score, zodat de sortering wél de private
--- waarde mag gebruiken zonder hem aan andere spelers te tonen).
+-- waarde mag gebruiken zonder hem aan andere spelers te tonen). form geeft
+-- de laatste (max) 5 bevestigde resultaten terug, oudste eerst (zie
+-- sectie 14) - voor de "Mijn divisie"-pagina.
 create or replace function public.league_standings(p_league_id uuid)
 returns table(
   division_id uuid,
@@ -1384,7 +1388,8 @@ returns table(
   legs_against bigint,
   points bigint,
   display_average numeric,
-  position_in_division bigint
+  position_in_division bigint,
+  form text[]
 )
 language plpgsql
 stable
@@ -1437,6 +1442,28 @@ begin
     left join public.player_onboarding po on po.player_id = lp.player_id
     where lp.league_id = p_league_id
     group by lp.division_id, lp.player_id, ps.average_sample_count, ps.average_score, po.reported_average
+  ),
+  form_calc as (
+    select
+      lp.player_id,
+      (
+        select array_agg(x.outcome order by x.confirmed_at)
+        from (
+          select
+            m.confirmed_at,
+            case when m.winner_id = lp.player_id then 'W'
+                 when m.winner_id is null then 'D'
+                 else 'L' end as outcome
+          from public.league_matches m
+          where m.league_id = p_league_id
+            and m.status = 'confirmed'
+            and (m.player_a_id = lp.player_id or m.player_b_id = lp.player_id)
+          order by m.confirmed_at desc
+          limit 5
+        ) x
+      ) as form
+    from public.league_players lp
+    where lp.league_id = p_league_id
   )
   select
     a.division_id,
@@ -1450,10 +1477,12 @@ begin
     row_number() over (
       partition by a.division_id
       order by a.points desc, (a.legs_for - a.legs_against) desc, a.sort_avg desc, a.player_id
-    )
+    ),
+    coalesce(f.form, array[]::text[])
   from agg a
   join public.profiles p on p.id = a.player_id
   left join public.league_divisions d on d.id = a.division_id
+  left join form_calc f on f.player_id = a.player_id
   order by d.rank nulls last, 14;
 end;
 $$;
@@ -2459,6 +2488,9 @@ begin
         note = excluded.note,
         updated_at = now();
 
+  insert into public.match_schedule_proposal_history (league_match_id, action, actor_id, proposed_at, note)
+  values (p_match_id, 'proposed', auth.uid(), p_proposed_at, p_note);
+
   insert into public.notifications (player_id, type, title, body, league_match_id)
   values (
     v_opponent, 'match_schedule_proposed',
@@ -2520,6 +2552,10 @@ begin
     update public.league_matches
       set scheduled_at = prop.proposed_at
       where id = p_match_id;
+
+    insert into public.match_schedule_proposal_history (league_match_id, action, actor_id, proposed_at, note)
+    values (p_match_id, 'accepted', auth.uid(), prop.proposed_at, prop.note);
+
     insert into public.notifications (player_id, type, title, body, league_match_id)
     values (v_other, 'match_schedule_accepted', 'Voorstel geaccepteerd',
             'Jullie wedstrijd staat gepland.', p_match_id);
@@ -2538,6 +2574,10 @@ begin
       set proposed_by = auth.uid(), proposed_at = p_proposed_at,
           status = 'countered', note = p_note
       where league_match_id = p_match_id;
+
+    insert into public.match_schedule_proposal_history (league_match_id, action, actor_id, proposed_at, note)
+    values (p_match_id, 'countered', auth.uid(), p_proposed_at, p_note);
+
     insert into public.notifications (player_id, type, title, body, league_match_id)
     values (v_other, 'match_schedule_countered', 'Tegenvoorstel ontvangen',
             'Reageer op het nieuwe voorgestelde moment.', p_match_id);
@@ -2546,6 +2586,10 @@ begin
     update public.match_schedule_proposals
       set status = 'disputed', note = coalesce(p_note, prop.note)
       where league_match_id = p_match_id;
+
+    insert into public.match_schedule_proposal_history (league_match_id, action, actor_id, proposed_at, note)
+    values (p_match_id, 'disputed', auth.uid(), prop.proposed_at, coalesce(p_note, prop.note));
+
     insert into public.notifications (player_id, type, title, body, league_match_id)
     values (v_other, 'match_schedule_disputed', 'Probleem gemeld',
             coalesce(p_note, 'Er is een probleem gemeld met het voorgestelde moment.'), p_match_id);
@@ -2812,6 +2856,124 @@ select cron.schedule(
   '*/5 * * * *',
   $cron$select public.process_match_deadlines();$cron$
 );
+
+
+-- ============================================================================
+-- 14. Voorstelgeschiedenis + intrekken, vorm in de stand, onderlinge
+--     wedstrijden - bouwstenen voor de "Mijn divisie"-pagina.
+--     (propose_match_schedule/respond_match_schedule loggen nu ook naar de
+--     geschiedenis hieronder - zie hun bijgewerkte definitie hierboven bij
+--     sectie 11. league_standings hierboven (sectie 8) geeft nu ook form
+--     terug.)
+-- ============================================================================
+
+-- Append-only geschiedenis van elke actie op een wedstrijdmoment-voorstel.
+create table if not exists public.match_schedule_proposal_history (
+  id              uuid primary key default gen_random_uuid(),
+  league_match_id uuid not null references public.league_matches (id) on delete cascade,
+  action          text not null check (action in ('proposed', 'accepted', 'countered', 'disputed', 'withdrawn')),
+  actor_id        uuid not null references public.profiles (id) on delete cascade,
+  proposed_at     timestamptz,
+  note            text,
+  created_at      timestamptz not null default now()
+);
+
+create index if not exists idx_match_schedule_proposal_history_match
+  on public.match_schedule_proposal_history (league_match_id);
+
+alter table public.match_schedule_proposal_history enable row level security;
+
+drop policy if exists "match_schedule_proposal_history_select_participants" on public.match_schedule_proposal_history;
+create policy "match_schedule_proposal_history_select_participants"
+  on public.match_schedule_proposal_history for select
+  to authenticated
+  using (
+    exists (
+      select 1 from public.league_matches m
+      where m.id = match_schedule_proposal_history.league_match_id
+        and (m.player_a_id = auth.uid() or m.player_b_id = auth.uid())
+    )
+    or public.is_organizer()
+  );
+
+-- Let op: bewust geen insert-policy - uitsluitend geschreven door
+-- propose_match_schedule/respond_match_schedule (sectie 11) en
+-- withdraw_match_schedule_proposal hieronder.
+
+
+-- Intrekken: alleen door wie het voorstel deed, en alleen zolang het nog
+-- niet geaccepteerd is.
+create or replace function public.withdraw_match_schedule_proposal(p_match_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  prop record;
+  v_other uuid;
+begin
+  if auth.uid() is null then
+    raise exception 'Je moet ingelogd zijn.';
+  end if;
+
+  select * into prop from public.match_schedule_proposals where league_match_id = p_match_id for update;
+  if prop is null then
+    raise exception 'Er is geen voorstel om in te trekken.';
+  end if;
+  if prop.proposed_by <> auth.uid() then
+    raise exception 'Je kunt alleen je eigen voorstel intrekken.';
+  end if;
+  if prop.status = 'accepted' then
+    raise exception 'Een geaccepteerd voorstel kan niet meer ingetrokken worden.';
+  end if;
+
+  select case when m.player_a_id = auth.uid() then m.player_b_id else m.player_a_id end
+    into v_other
+    from public.league_matches m where m.id = p_match_id;
+
+  delete from public.match_schedule_proposals where league_match_id = p_match_id;
+
+  insert into public.match_schedule_proposal_history (league_match_id, action, actor_id, proposed_at, note)
+  values (p_match_id, 'withdrawn', auth.uid(), prop.proposed_at, prop.note);
+
+  insert into public.notifications (player_id, type, title, body, league_match_id)
+  values (v_other, 'match_schedule_withdrawn', 'Voorstel ingetrokken',
+          'Het voorgestelde moment voor jullie wedstrijd is ingetrokken.', p_match_id);
+end;
+$$;
+
+grant execute on function public.withdraw_match_schedule_proposal(uuid) to authenticated;
+
+
+-- Onderlinge wedstrijden tussen de ingelogde speler en een tegenstander.
+-- Altijd beperkt tot wedstrijden waar de aanroeper zelf in speelde (geen
+-- los privacy-risico, ongeacht welke p_other_player_id wordt opgegeven).
+create or replace function public.head_to_head_matches(p_other_player_id uuid)
+returns setof public.league_matches
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'Je moet ingelogd zijn.';
+  end if;
+
+  return query
+    select *
+    from public.league_matches
+    where status = 'confirmed'
+      and (
+        (player_a_id = auth.uid() and player_b_id = p_other_player_id)
+        or (player_a_id = p_other_player_id and player_b_id = auth.uid())
+      )
+    order by confirmed_at desc;
+end;
+$$;
+
+grant execute on function public.head_to_head_matches(uuid) to authenticated;
 
 
 -- ----------------------------------------------------------------------------

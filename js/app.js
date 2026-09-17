@@ -364,6 +364,17 @@ function groupStandingsByDivision(rows) {
 // - samen met group.rank - of promotie/degradatie-pijltjes getoond worden;
 // dit is altijd een voorspelling op basis van de huidige (mogelijk nog
 // lopende) tussenstand, niet een definitief resultaat.
+// Kleine stip-reeks voor de "vorm" van een speler: laatste (max 5) bevestigde
+// resultaten, oudste eerst.
+function formDots(form) {
+  if (!form || !form.length) return "";
+  const colorFor = { W: "#2ECC71", D: "#8A93AA", L: "#E74C3C" };
+  const labelFor = { W: "Gewonnen", D: "Gelijk", L: "Verloren" };
+  return `<div style="display:flex;gap:3px;margin-top:4px">
+    ${form.map((f) => `<span style="width:7px;height:7px;border-radius:50%;background:${colorFor[f] || "#8A93AA"};display:inline-block" title="${labelFor[f] || f}"></span>`).join("")}
+  </div>`;
+}
+
 function divisionStandingsCard(group, opts = {}) {
   const { meId, divisionCount } = opts;
   const isMyDivision = meId && group.rows.some((r) => r.player?.id === meId);
@@ -391,6 +402,7 @@ function divisionStandingsCard(group, opts = {}) {
           <div class="row-main">
             <div class="row-title">${esc(r.player?.display_name || "?")}${isMe ? ` <span class="muted" style="font-weight:400">(jij)</span>` : ""}</div>
             <div class="row-sub">${r.played} gespeeld &middot; ${r.wins}W-${r.draws}G-${r.losses}V &middot; legs ${r.legsFor}-${r.legsAgainst} &middot; gem. ${Number(r.displayAverage ?? 0).toFixed(1)}</div>
+            ${formDots(r.form)}
           </div>
           <div style="font-weight:700;flex-shrink:0">${r.points} pt</div>
           ${promoting ? `<span title="Promotiezone" style="width:14px;height:14px;color:#2ECC71;flex-shrink:0">${icon.chevronUp}</span>` : ""}
@@ -618,6 +630,7 @@ const db = {
       legsAgainst: r.legs_against,
       points: r.points,
       displayAverage: r.display_average,
+      form: r.form || [],
     }));
   },
 
@@ -733,6 +746,27 @@ const db = {
       p_match_id: matchId, p_action: action, p_proposed_at: proposedAt, p_note: note,
     });
     if (error) throw error;
+  },
+
+  async withdrawMatchSchedule(matchId) {
+    const { error } = await sb.rpc("withdraw_match_schedule_proposal", { p_match_id: matchId });
+    if (error) throw error;
+  },
+
+  async scheduleProposalHistory(matchId) {
+    const { data, error } = await sb
+      .from("match_schedule_proposal_history")
+      .select("*, actor:actor_id(display_name)")
+      .eq("league_match_id", matchId)
+      .order("created_at", { ascending: true });
+    if (error) throw error;
+    return data || [];
+  },
+
+  async headToHead(otherPlayerId) {
+    const { data, error } = await sb.rpc("head_to_head_matches", { p_other_player_id: otherPlayerId });
+    if (error) throw error;
+    return data || [];
   },
 
   async markPrizeNotificationsReadForClaim(claimId) {
@@ -1420,6 +1454,9 @@ async function router() {
     if (route.startsWith("league/")) {
       return await viewLeagueDetail(route.split("/")[1]);
     }
+    if (route.startsWith("mijn-divisie/")) {
+      return await viewMyDivision(route.split("/")[1]);
+    }
     if (route.startsWith("prijs/")) {
       return await viewPrizeDetail(route.split("/")[1]);
     }
@@ -1545,7 +1582,14 @@ async function viewHome() {
 // met alle divisies van die league als kaarten en de eigen divisie/rij
 // gemarkeerd - dezelfde weergave als op de leaguepagina, hier alvast
 // gefilterd naar "van mij".
-async function viewMyDivision() {
+// "Mijn divisie": league-info, de gefocuste wedstrijd (huidige wedstrijd +
+// datum&tijd-kaart + onderlinge wedstrijden tegen die tegenstander), alle
+// open wedstrijden van de speler in deze league (wisselbare focus), en de
+// volledige stand. Een speler kan meerdere open wedstrijden tegelijk hebben
+// (round-robin), dus focusMatchId (via de route mijn-divisie/:id) bepaalt
+// welke wedstrijd bovenaan uitgelicht wordt - standaard de eerstvolgende
+// deadline.
+async function viewMyDivision(focusMatchId) {
   const membership = await db.myLeagueMembership();
   if (!membership) {
     return setView(`
@@ -1554,14 +1598,68 @@ async function viewMyDivision() {
     `);
   }
   const league = membership.league;
-  const standings = await db.standingsForLeague(league.id);
+  const me = state.profile;
+
+  const [standings, allMyMatches] = await Promise.all([
+    db.standingsForLeague(league.id),
+    db.myMatches(me.id),
+  ]);
+  const leagueMatches = allMyMatches.filter((m) => m.league_id === league.id);
+  const openMatches = leagueMatches
+    .filter((m) => !["confirmed", "cancelled"].includes(m.status))
+    .sort((a, b) => new Date(a.deadline_at || 0) - new Date(b.deadline_at || 0));
+
+  let focusMatch = focusMatchId ? leagueMatches.find((m) => m.id === focusMatchId) : null;
+  if (!focusMatch) focusMatch = openMatches[0] || leagueMatches[0] || null;
+
+  let opponent = null;
+  let headToHead = [];
+  let proposalHistory = [];
+  if (focusMatch) {
+    opponent = focusMatch.player_a_id === me.id ? focusMatch.player_b : focusMatch.player_a;
+    [headToHead, proposalHistory] = await Promise.all([
+      opponent ? db.headToHead(opponent.id) : Promise.resolve([]),
+      db.scheduleProposalHistory(focusMatch.id),
+    ]);
+  }
+
   const groups = groupStandingsByDivision(standings);
 
   setView(`
     <h1>Jouw divisie</h1>
     <p class="sub">${esc(membership.division?.name || "")} &middot; ${esc(league.name)}${league.season ? " &middot; Seizoen: " + esc(league.season) : ""}</p>
     <button class="linkbtn mt8" style="margin-bottom:16px" onclick="go('league/${esc(league.id)}')">Bekijk de hele league &rarr;</button>
-    ${groups.length ? groups.map((g) => divisionStandingsCard(g, { meId: state.profile.id, divisionCount: league.division_count })).join("")
+
+    ${focusMatch ? `
+      ${sectionHead("Huidige wedstrijd")}
+      ${matchCard(focusMatch)}
+      ${!["confirmed", "cancelled"].includes(focusMatch.status) ? `
+        <button class="btn ghost sm" style="margin:-4px 0 14px" onclick="${
+          focusMatch.status === "pending_confirmation"
+            ? `openConfirmDialog('${esc(focusMatch.id)}')`
+            : `openResultDialog('${esc(focusMatch.id)}')`
+        }">${focusMatch.status === "pending_confirmation" ? "Uitslag controleren" : "Uitslag doorgeven"}</button>` : ""}
+
+      ${sectionHead("Datum & uur van deze wedstrijd")}
+      ${scheduleCard(focusMatch, proposalHistory)}
+
+      ${opponent ? `
+        ${sectionHead("Onderlinge wedstrijden")}
+        ${headToHeadCard(headToHead, opponent, me.id)}
+      ` : ""}
+    ` : emptyView("Geen open wedstrijden", "Je hebt op dit moment geen wedstrijden om te spelen.", "match")}
+
+    ${sectionHead("Wedstrijden deze week")}
+    ${leagueMatches.length ? leagueMatches.map((m) => `
+        ${matchCard(m)}
+        ${focusMatch && m.id === focusMatch.id
+          ? `<p class="muted" style="margin:-4px 0 14px;font-size:12.5px">Dit is je huidige wedstrijd hierboven.</p>`
+          : `<button class="btn ghost sm" style="margin:-4px 0 14px" onclick="go('mijn-divisie/${esc(m.id)}')">Bekijk wedstrijd</button>`}
+      `).join("")
+      : emptyView("Geen wedstrijden", "", "match")}
+
+    ${sectionHead("Stand")}
+    ${groups.length ? groups.map((g) => divisionStandingsCard(g, { meId: me.id, divisionCount: league.division_count })).join("")
       : emptyView("Nog geen indeling", "", "league")}
   `);
 }
@@ -2123,7 +2221,9 @@ function scheduleProposalBlock(m) {
   const when = fmtDate(p.proposed_at);
   if (p.proposed_by === meId) {
     const label = p.status === "disputed" ? "Probleem gemeld, wacht op reactie" : `Je hebt ${when} voorgesteld, wacht op reactie`;
-    return `<p class="muted" style="margin:-4px 0 10px;font-size:13px">${esc(label)}</p>`;
+    return `
+      <p class="muted" style="margin:-4px 0 6px;font-size:13px">${esc(label)}</p>
+      <button class="btn ghost sm" style="margin:0 0 10px" onclick="withdrawScheduleProposal('${esc(m.id)}')">Intrekken</button>`;
   }
   return `
     <p class="muted" style="margin:-4px 0 6px;font-size:13px">Voorstel: ${esc(when)}${p.note ? " — " + esc(p.note) : ""}</p>
@@ -2160,6 +2260,79 @@ async function respondScheduleProposal(matchId, action) {
     toast(action === "accept" ? "Voorstel geaccepteerd." : "Probleem gemeld bij je tegenstander.");
     router();
   } catch (e) { toast(errText(e)); }
+}
+
+async function withdrawScheduleProposal(matchId) {
+  try {
+    await db.withdrawMatchSchedule(matchId);
+    toast("Voorstel ingetrokken.");
+    router();
+  } catch (e) { toast(errText(e)); }
+}
+
+// Geschiedenis van voorstellen ("Datum & uur"-kaart op Mijn divisie).
+function scheduleHistoryList(history) {
+  if (!history.length) return "";
+  const actionLabels = {
+    proposed: "stelde voor",
+    countered: "deed een tegenvoorstel",
+    accepted: "accepteerde het voorstel",
+    disputed: "meldde een probleem",
+    withdrawn: "trok het voorstel in",
+  };
+  return `
+    <div class="mt16">
+      <div class="muted" style="font-size:12px;font-weight:600;margin-bottom:6px">Geschiedenis</div>
+      ${history.map((h) => `
+        <div class="muted" style="font-size:12.5px;margin-bottom:4px">
+          ${esc(h.actor?.display_name || "Iemand")} ${esc(actionLabels[h.action] || h.action)}${h.proposed_at ? " &middot; " + esc(fmtDate(h.proposed_at)) : ""}
+        </div>`).join("")}
+    </div>`;
+}
+
+// Volledige "Datum & uur van deze wedstrijd"-kaart voor Mijn divisie:
+// uitleg, voorstel/accepteer/tegenvoorstel/intrekken, beschikbaarheid en
+// deadline, en de geschiedenis van alle acties.
+function scheduleCard(m, history) {
+  return `
+    <div class="card">
+      <h2 style="margin-bottom:8px">Datum &amp; uur van deze wedstrijd</h2>
+      <p class="muted" style="font-size:13px;margin:0 0 14px">
+        Stel samen met je tegenstander een datum en tijd voor. Het voorstel wordt naar de andere speler gestuurd. Die speler kan het accepteren of een ander voorstel doen.
+      </p>
+      ${scheduleProposalBlock(m)}
+      ${matchDeadlineLine(m, matchDisplayStatus(m))}
+      ${scheduleHistoryList(history)}
+    </div>`;
+}
+
+// Onderlinge wedstrijden ("head-to-head") tussen de ingelogde speler en de
+// tegenstander van de gefocuste wedstrijd.
+function headToHeadCard(matches, opponent, meId) {
+  if (!matches.length) {
+    return `<div class="card">${emptyView("Nog geen eerdere ontmoetingen", `Dit is de eerste keer dat je het opneemt tegen ${esc(opponent?.display_name || "deze speler")}.`, "match")}</div>`;
+  }
+  return `
+    <div class="card">
+      ${matches.map((m, i) => {
+        const myLegs = m.player_a_id === meId ? m.player_a_legs : m.player_b_legs;
+        const oppLegs = m.player_a_id === meId ? m.player_b_legs : m.player_a_legs;
+        const myAvg = m.player_a_id === meId ? m.player_a_average : m.player_b_average;
+        const won = m.winner_id === meId;
+        const draw = m.winner_id === null;
+        const color = draw ? "#8A93AA" : won ? "#2ECC71" : "#E74C3C";
+        return `
+          <div class="row" style="padding:8px 0;${i > 0 ? "border-top:1px solid var(--line)" : ""}">
+            <div class="row-main">
+              <div class="row-title">${esc(fmtDate(m.confirmed_at, false))}</div>
+              <div class="row-sub">${myLegs}-${oppLegs}${myAvg ? " &middot; gem. " + Number(myAvg).toFixed(1) : ""}</div>
+            </div>
+            <span class="badge" style="color:${color};border-color:${color}66;background:${color}22">
+              ${draw ? "Gelijk" : won ? "Gewonnen" : "Verloren"}
+            </span>
+          </div>`;
+      }).join("")}
+    </div>`;
 }
 
 async function viewMatches() {

@@ -1493,7 +1493,6 @@ async function viewLeagues() {
   const leagues = await db.leagues();
   setView(`
     <h1>Leagues</h1>
-    <p class="sub">Alle competities van de organisatie</p>
     ${leagues.length ? leagues.map((l) => leagueCard(l)).join("")
       : emptyView("Nog geen leagues", "De organisator maakt ze aan.", "league")}
   `);

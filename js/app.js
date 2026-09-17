@@ -92,6 +92,14 @@ function fmtDate(iso, withTime = true) {
   return d.toLocaleDateString("nl-NL", opts);
 }
 
+// Zet een ISO-timestamp om naar de waarde die een <input type="datetime-local">
+// verwacht (lokale tijd van de browser, geen "Z"/offset).
+function fmtDatetimeLocal(iso) {
+  const d = new Date(iso);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 function initials(name) {
   const parts = String(name || "?").trim().split(/\s+/);
   const a = parts[0]?.[0] || "?";
@@ -142,6 +150,7 @@ const icon = {
   warn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>',
   back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg>',
   camera: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8h4l1.5-2h7L17 8h4v12H3z"/><circle cx="12" cy="13" r="3.5"/></svg>',
+  bell: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9a6 6 0 0 1 12 0c0 4 1.5 5.5 1.5 5.5H4.5S6 13 6 9z"/><path d="M10 19a2 2 0 0 0 4 0"/></svg>',
 };
 
 /* -------------------------------------------------------------------------
@@ -301,6 +310,17 @@ function divisionStandingsCard(group) {
     </div>`;
 }
 
+// Label/waarde-rij voor informatieve overzichten (bv. het planningblok).
+// Anders dan .row-title (bedoeld voor één regel naast een avatar/icoon) mag
+// het label hier meerdere woorden lang zijn zonder af te breken.
+function infoRow(label, value) {
+  return `
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:5px 0">
+      <span style="font-weight:600;font-size:15px">${esc(label)}</span>
+      <span class="muted" style="text-align:right">${value}</span>
+    </div>`;
+}
+
 function sectionHead(title, linkLabel, route) {
   return `
     <div class="section">
@@ -398,6 +418,23 @@ const db = {
   async setLeagueStatus(id, status) {
     const { error } = await sb.from("leagues").update({ status }).eq("id", id);
     if (error) throw error;
+  },
+
+  // Planninggegevens van een league bijwerken (en eventueel meteen naar
+  // 'scheduled' zetten). protect_league_schedule_fields bewaakt serverside
+  // dat dit alleen mag zolang de league nog niet actief is.
+  async updateLeagueSchedule(id, fields) {
+    const { error } = await sb.from("leagues").update(fields).eq("id", id);
+    if (error) throw error;
+  },
+
+  // Activeert de league als (en alleen als) het startmoment al voorbij is -
+  // opportunistisch aangeroepen vanuit de UI zodat je niet op de cron-tik
+  // (max. 1 minuut) hoeft te wachten.
+  async activateLeagueIfDue(id) {
+    const { data, error } = await sb.rpc("activate_league_if_due", { p_league_id: id });
+    if (error) throw error;
+    return data;
   },
 
   async divisionsForLeague(leagueId) {
@@ -540,6 +577,40 @@ const db = {
     if (error) throw error;
   },
 
+  // Nieuwste ongelezen generieke melding (league gestart, wedstrijdmoment
+  // voorgesteld/geaccepteerd/betwist), voor de banner op Home.
+  async myPendingNotification() {
+    const { data, error } = await sb
+      .from("notifications")
+      .select("*")
+      .eq("player_id", state.profile.id)
+      .is("read_at", null)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) throw error;
+    return data;
+  },
+
+  async markNotificationRead(id) {
+    const { error } = await sb.from("notifications").update({ read_at: new Date().toISOString() }).eq("id", id);
+    if (error) throw error;
+  },
+
+  async proposeMatchSchedule(matchId, proposedAt, note) {
+    const { error } = await sb.rpc("propose_match_schedule", {
+      p_match_id: matchId, p_proposed_at: proposedAt, p_note: note,
+    });
+    if (error) throw error;
+  },
+
+  async respondMatchSchedule(matchId, action, proposedAt = null, note = null) {
+    const { error } = await sb.rpc("respond_match_schedule", {
+      p_match_id: matchId, p_action: action, p_proposed_at: proposedAt, p_note: note,
+    });
+    if (error) throw error;
+  },
+
   async markPrizeNotificationsReadForClaim(claimId) {
     const { error } = await sb.from("prize_notifications")
       .update({ read_at: new Date().toISOString() })
@@ -638,11 +709,14 @@ const db = {
   async myMatches(playerId) {
     const { data, error } = await sb
       .from("league_matches")
-      .select("*, player_a:player_a_id(*), player_b:player_b_id(*), league:league_id(name)")
+      .select("*, player_a:player_a_id(*), player_b:player_b_id(*), league:league_id(name), schedule_proposal:match_schedule_proposals(*)")
       .or(`player_a_id.eq.${playerId},player_b_id.eq.${playerId}`)
       .order("scheduled_at", { nullsFirst: false });
     if (error) throw error;
-    return data || [];
+    return (data || []).map((m) => ({
+      ...m,
+      schedule_proposal: Array.isArray(m.schedule_proposal) ? (m.schedule_proposal[0] || null) : m.schedule_proposal,
+    }));
   },
 
   async allMatches(limit = 50) {
@@ -1241,17 +1315,23 @@ async function router() {
    7. Schermen
    ------------------------------------------------------------------------- */
 
+function openNotification(id, route) {
+  db.markNotificationRead(id).catch(() => {});
+  if (route) go(route); else router();
+}
+
 async function viewHome() {
   const me = state.profile;
   const firstName = (me?.display_name || "").split(" ")[0];
   const s = me?.stats;
 
-  const [matches, leagues, tournaments, results, prizeNotification] = await Promise.all([
+  const [matches, leagues, tournaments, results, prizeNotification, notification] = await Promise.all([
     db.myMatches(me.id),
     db.leagues("active"),
     db.upcomingTournaments(),
     db.recentResults(3),
     db.myPendingPrizeNotification(),
+    db.myPendingNotification(),
   ]);
 
   const next = matches.find((m) => m.status === "scheduled" || m.status === "in_progress");
@@ -1270,6 +1350,18 @@ async function viewHome() {
           <div class="row-main">
             <div class="row-title">${esc(prizeNotification.title)}</div>
             <div class="row-sub">Bekijk je prijs &rarr;</div>
+          </div>
+        </div>
+      </button>` : ""}
+
+    ${notification ? `
+      <button class="card clickable" style="border-color:#4EA1F766;background:#4EA1F714;margin-bottom:16px"
+        onclick="openNotification('${esc(notification.id)}', '${notification.league_id ? `league/${esc(notification.league_id)}` : (notification.league_match_id ? "wedstrijden" : "")}')">
+        <div class="row">
+          <div class="row-ico" style="background:#4EA1F722;color:#4EA1F7">${icon.bell}</div>
+          <div class="row-main">
+            <div class="row-title">${esc(notification.title)}</div>
+            <div class="row-sub">${esc(notification.body || "")}</div>
           </div>
         </div>
       </button>` : ""}
@@ -1303,13 +1395,42 @@ async function viewLeagues() {
   `);
 }
 
+// Tekst voor "eerstvolgende actie" op het beheerdersblok, bv. "Deze league
+// start op 1 oktober 2026 om 19:00 uur."
+function leagueNextActionText(league) {
+  if (league.status === "draft") {
+    return "Stel een startdatum en -tijd in en klik op 'Inplannen' om de league te plannen.";
+  }
+  if (league.status === "scheduled") {
+    const d = new Date(league.start_at);
+    const datePart = d.toLocaleDateString("nl-NL", { day: "numeric", month: "long", year: "numeric", timeZone: league.timezone });
+    const timePart = d.toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit", timeZone: league.timezone });
+    return `Deze league start op ${datePart} om ${timePart} uur.`;
+  }
+  if (league.status === "active") {
+    return `De league is gestart. Spelers hebben ${league.match_deadline_days} dagen per wedstrijd om te spelen.`;
+  }
+  return "Deze league is afgerond.";
+}
+
 async function viewLeagueDetail(id) {
   const isOrg = state.profile?.role === "organizer";
-  const [league, matches, standings] = await Promise.all([
-    db.league(id), db.matchesForLeague(id), db.standingsForLeague(id),
+  let league = await db.league(id);
+  if (league.status === "scheduled" && await db.activateLeagueIfDue(id).catch(() => false)) {
+    league = await db.league(id);
+  }
+  const [matches, standings, members] = await Promise.all([
+    db.matchesForLeague(id), db.standingsForLeague(id), db.leagueMembers(id),
   ]);
   const winners = (isOrg && league.status === "finished") ? await db.divisionWinnersForLeague(id) : [];
   const groups = groupStandingsByDivision(standings);
+  const canEditSchedule = isOrg && (league.status === "draft" || league.status === "scheduled");
+  const perDivision = {};
+  for (const m of members) {
+    const key = m.division?.name || "Geen divisie";
+    perDivision[key] = (perDivision[key] || 0) + 1;
+  }
+  const perDivisionText = Object.entries(perDivision).map(([name, n]) => `${esc(name)}: ${n}`).join(" · ") || "Nog geen spelers ingedeeld";
 
   setView(`
     <button class="linkbtn" onclick="go('leagues')" style="display:flex;align-items:center;gap:4px;margin-bottom:12px">
@@ -1318,6 +1439,37 @@ async function viewLeagueDetail(id) {
     <h1>${esc(league.name)}</h1>
     <p class="sub">${esc([league.season, `${league.game_type} · best of legs`].filter(Boolean).join(" · "))}</p>
     <div style="margin-bottom:24px">${badge(league.status)}</div>
+
+    ${isOrg ? `
+      ${sectionHead("Planning")}
+      <div class="card">
+        ${infoRow("Status", badge(league.status))}
+        ${infoRow("Aantal divisies", `${esc(league.division_count)} (max 12 spelers per divisie)`)}
+        ${infoRow("Spelers per divisie", perDivisionText)}
+        ${infoRow("Tijdzone", esc(league.timezone))}
+        ${infoRow("Wedstrijden aangemaakt", matches.length)}
+        <p class="muted" style="font-size:13px;margin:12px 0 0">${esc(leagueNextActionText(league))}</p>
+      </div>
+      ${canEditSchedule ? `
+        <div class="card mt16">
+          <div class="field"><label for="lp-desc">Beschrijving <span class="muted" style="font-weight:400">(optioneel)</span></label>
+            <input id="lp-desc" value="${esc(league.description || "")}" placeholder="Bijv. Najaarscompetitie 2026"></div>
+          <div class="field"><label for="lp-dc">Aantal divisies</label>
+            <select id="lp-dc">
+              ${[1, 2, 3, 4].map((n) => `<option value="${n}" ${league.division_count === n ? "selected" : ""}>${n}</option>`).join("")}
+            </select>
+          </div>
+          <div class="field"><label for="lp-start">Startdatum en -tijd</label>
+            <input id="lp-start" type="datetime-local" value="${league.start_at ? fmtDatetimeLocal(league.start_at) : ""}"></div>
+          <div class="field"><label for="lp-end">Einddatum <span class="muted" style="font-weight:400">(optioneel)</span></label>
+            <input id="lp-end" type="date" value="${league.end_at ? league.end_at.slice(0, 10) : ""}"></div>
+          <div class="chips">
+            <button class="chip" onclick="saveLeagueSchedule('${esc(id)}', false)">Opslaan</button>
+            ${league.status === "draft" ? `
+              <button class="chip" onclick="saveLeagueSchedule('${esc(id)}', true)">${icon.clock} Inplannen</button>` : ""}
+          </div>
+        </div>` : ""}
+    ` : ""}
 
     ${sectionHead("Stand")}
     ${groups.length ? groups.map(divisionStandingsCard).join("")
@@ -1366,6 +1518,30 @@ async function viewLeagueDetail(id) {
     ${matches.length ? matches.map(matchCard).join("")
       : emptyView("Nog geen wedstrijden", "Er is nog niets ingepland voor deze league.", "match")}
   `);
+}
+
+async function saveLeagueSchedule(leagueId, schedule) {
+  const start = document.querySelector("#lp-start").value;
+  if (schedule && !start) {
+    return toast("Stel eerst een startdatum en -tijd in om te kunnen plannen.");
+  }
+  const startAt = start ? new Date(start).toISOString() : null;
+  if (schedule && startAt && new Date(startAt) <= new Date()) {
+    return toast("Kies een startmoment in de toekomst.");
+  }
+  const end = document.querySelector("#lp-end").value;
+  const fields = {
+    description: document.querySelector("#lp-desc").value.trim() || null,
+    division_count: Number(document.querySelector("#lp-dc").value),
+    start_at: startAt,
+    end_at: end ? new Date(end + "T23:59:59").toISOString() : null,
+  };
+  if (schedule) fields.status = "scheduled";
+  try {
+    await db.updateLeagueSchedule(leagueId, fields);
+    toast(schedule ? "League ingepland." : "Gegevens opgeslagen.");
+    router();
+  } catch (e) { toast(errText(e)); }
 }
 
 async function determineDivisionWinners(leagueId) {
@@ -1734,6 +1910,58 @@ async function viewTournaments() {
   `);
 }
 
+// Voorstel-status voor een wedstrijd: knop om een moment voor te stellen,
+// of - als er al een voorstel ligt - de status ervan en (voor wie niet zelf
+// heeft voorgesteld) knoppen om te accepteren, een tegenvoorstel te doen of
+// een probleem te melden.
+function scheduleProposalBlock(m) {
+  const meId = state.profile.id;
+  const p = m.schedule_proposal;
+  if (!p || p.status === "accepted") {
+    return `<button class="btn ghost sm" style="margin:-4px 0 8px" onclick="openScheduleProposalDialog('${esc(m.id)}')">${icon.clock} Moment voorstellen</button>`;
+  }
+  const when = fmtDate(p.proposed_at);
+  if (p.proposed_by === meId) {
+    const label = p.status === "disputed" ? "Probleem gemeld, wacht op reactie" : `Je hebt ${when} voorgesteld, wacht op reactie`;
+    return `<p class="muted" style="margin:-4px 0 10px;font-size:13px">${esc(label)}</p>`;
+  }
+  return `
+    <p class="muted" style="margin:-4px 0 6px;font-size:13px">Voorstel: ${esc(when)}${p.note ? " — " + esc(p.note) : ""}</p>
+    <div class="chips" style="margin:0 0 10px">
+      <button class="chip" onclick="respondScheduleProposal('${esc(m.id)}', 'accept')">Accepteren</button>
+      <button class="chip" onclick="openScheduleProposalDialog('${esc(m.id)}', true)">Tegenvoorstel</button>
+      <button class="chip" onclick="respondScheduleProposal('${esc(m.id)}', 'dispute')">Probleem melden</button>
+    </div>`;
+}
+
+function openScheduleProposalDialog(matchId, isCounter = false) {
+  openModal(isCounter ? "Tegenvoorstel doen" : "Moment voorstellen", `
+    <div class="field"><label for="sp-when">Datum en tijd</label><input id="sp-when" type="datetime-local" required></div>
+    <div class="field"><label for="sp-note">Opmerking <span class="muted" style="font-weight:400">(optioneel)</span></label>
+      <input id="sp-note" placeholder="Bijv. reden van het voorstel"></div>`,
+    async (bg) => {
+      const val = bg.querySelector("#sp-when").value;
+      if (!val) throw new Error("Kies een datum en tijd.");
+      const proposedAt = new Date(val).toISOString();
+      const note = bg.querySelector("#sp-note").value.trim() || null;
+      if (isCounter) {
+        await db.respondMatchSchedule(matchId, "counter", proposedAt, note);
+      } else {
+        await db.proposeMatchSchedule(matchId, proposedAt, note);
+      }
+      toast("Voorstel verstuurd.");
+      router();
+    }, isCounter ? "Tegenvoorstel versturen" : "Voorstel versturen");
+}
+
+async function respondScheduleProposal(matchId, action) {
+  try {
+    await db.respondMatchSchedule(matchId, action);
+    toast(action === "accept" ? "Voorstel geaccepteerd." : "Probleem gemeld bij je tegenstander.");
+    router();
+  } catch (e) { toast(errText(e)); }
+}
+
 async function viewMatches() {
   const matches = await db.myMatches(state.profile.id);
   const open = matches.filter((m) => ["scheduled", "in_progress", "pending_confirmation"].includes(m.status));
@@ -1755,6 +1983,7 @@ async function viewMatches() {
     }
     return `
       ${matchCard(m)}
+      ${scheduleProposalBlock(m)}
       <button class="btn ghost sm" style="margin:-4px 0 10px" onclick="openResultDialog('${esc(m.id)}')">Uitslag doorgeven</button>`;
   };
 
@@ -2140,6 +2369,12 @@ function openLeagueDialog() {
     <div class="field"><label for="ls">Seizoen</label><input id="ls" placeholder="Bijv. 2026"></div>
     <div class="field"><label for="lg">Speltype</label>
       <select id="lg"><option value="501">501</option><option value="301">301</option></select>
+    </div>
+    <div class="field"><label for="ldc">Aantal divisies</label>
+      <select id="ldc">
+        <option value="1">1</option><option value="2">2</option><option value="3">3</option>
+        <option value="4" selected>4</option>
+      </select>
     </div>`, async (bg) => {
     const name = bg.querySelector("#ln").value.trim();
     if (!name) throw new Error("Vul een naam in.");
@@ -2147,6 +2382,7 @@ function openLeagueDialog() {
       name,
       season: bg.querySelector("#ls").value.trim() || null,
       game_type: bg.querySelector("#lg").value,
+      division_count: Number(bg.querySelector("#ldc").value),
       match_format: "best_of_legs",
       status: "draft",
       created_by: state.profile.id,

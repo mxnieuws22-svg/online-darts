@@ -16,6 +16,8 @@
 --   8. Divisies binnen een league
 --   9. Spelersgegevens voor de initiële indeling
 --  10. Prijsclaim-systeem voor divisiewinnaars (LWPrints)
+--  11. Startdatum/-tijd van een league, automatische activering en
+--      wedstrijdmoment voorstellen/accepteren
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
@@ -71,20 +73,31 @@ comment on table public.profiles is 'Spelersprofielen, 1-op-1 gekoppeld aan auth
 
 
 -- leagues ----------------------------------------------------------------
+-- 'scheduled': gepland, wacht op het startmoment (start_at) - dan pas
+-- worden wedstrijden aangemaakt en gaat de speeldeadline lopen (zie
+-- sectie 11, activate_league).
 create table if not exists public.leagues (
   id           uuid primary key default gen_random_uuid(),
   name         text        not null,
   season       text,
+  description  text,
   game_type    text        not null default '501'
                  check (game_type in ('501', '301')),
   match_format text        not null default 'best_of_legs'
                  check (match_format in ('best_of_legs')),
   status       text        not null default 'draft'
-                 check (status in ('draft', 'active', 'finished')),
+                 check (status in ('draft', 'scheduled', 'active', 'finished')),
   -- Aantal legs dat een wedstrijd in deze league telt. Er wordt altijd het
   -- volledige aantal gespeeld (niet eerder gestopt bij een meerderheid),
   -- zodat een gelijkspel (bv. 5-5 bij 10) mogelijk is.
   legs_per_match int      not null default 10 check (legs_per_match > 0),
+  -- Aantal divisies (1-4), exact startmoment (UTC) en tijdzone voor
+  -- weergave; zie sectie 11 voor de automatische start/wedstrijdgeneratie.
+  division_count int         not null default 4 check (division_count between 1 and 4),
+  start_at     timestamptz,
+  timezone     text        not null default 'Europe/Amsterdam',
+  end_at       timestamptz,
+  match_deadline_days int  not null default 7 check (match_deadline_days > 0),
   created_by   uuid        not null references public.profiles (id)
                  on delete restrict default auth.uid(),
   created_at   timestamptz not null default now()
@@ -92,6 +105,26 @@ create table if not exists public.leagues (
 
 alter table public.leagues
   add column if not exists legs_per_match int not null default 10 check (legs_per_match > 0);
+
+alter table public.leagues
+  add column if not exists description text,
+  add column if not exists division_count int not null default 4,
+  add column if not exists start_at timestamptz,
+  add column if not exists timezone text not null default 'Europe/Amsterdam',
+  add column if not exists end_at timestamptz,
+  add column if not exists match_deadline_days int not null default 7;
+
+alter table public.leagues drop constraint if exists leagues_division_count_check;
+alter table public.leagues
+  add constraint leagues_division_count_check check (division_count between 1 and 4);
+
+alter table public.leagues drop constraint if exists leagues_match_deadline_days_check;
+alter table public.leagues
+  add constraint leagues_match_deadline_days_check check (match_deadline_days > 0);
+
+alter table public.leagues drop constraint if exists leagues_status_check;
+alter table public.leagues
+  add constraint leagues_status_check check (status in ('draft', 'scheduled', 'active', 'finished'));
 
 -- legs_per_match mag alleen wijzigen zolang de league nog niet actief is
 -- (anders komen lopende/bevestigde uitslagen niet meer overeen met de regel).
@@ -1134,18 +1167,21 @@ $$;
 grant execute on function public.league_confirmed_matches(uuid) to authenticated;
 
 
--- Automatisch indelen op gemiddelde: 1e divisie 70+, 2e divisie 60+, 3e
--- divisie 50+, 4e divisie <50. Max 12 per divisie; wie boven de 12 valt
--- zakt door naar de eerstvolgende lagere divisie. Alleen zolang de league
--- nog op 'draft' staat. Maximaal 48 spelers (4 x 12) te verwerken - anders
--- kan de max-12-regel niet gegarandeerd worden en wordt er niets uitgevoerd.
+-- Automatisch indelen op gemiddelde, met leagues.division_count (1-4)
+-- divisies (zie sectie 11). Vaste drempels van hoog naar laag (70/60/50);
+-- bij minder dan 4 divisies worden de eerste (division_count - 1) drempels
+-- gebruikt en vangt de laatste divisie altijd de rest op (geen ondergrens).
+-- Max 12 per divisie; wie boven de 12 valt zakt door naar de eerstvolgende
+-- lagere divisie. Alleen zolang de league nog op 'draft' staat. Maximaal
+-- division_count x 12 spelers te verwerken - anders kan de max-12-regel
+-- niet gegarandeerd worden en wordt er niets uitgevoerd.
 --
 -- Het gebruikte gemiddelde is player_statistics.average_score zodra dat
 -- betrouwbaar genoeg is (average_sample_count >= 5), anders het zelf
 -- opgegeven player_onboarding.reported_average. Ontbreekt beide (zou niet
 -- moeten voorkomen nu onboarding verplicht is), dan telt 0 en komt de
--- speler in de 4e divisie terecht, gemarkeerd als low_confidence in het
--- resultaat.
+-- speler in de laatste divisie terecht, gemarkeerd als low_confidence in
+-- het resultaat.
 create or replace function public.auto_assign_divisions(p_league_id uuid)
 returns table(
   player_id uuid,
@@ -1160,12 +1196,16 @@ set search_path = public
 as $$
 declare
   v_status text;
+  v_count int;
   v_total int;
   v_div_ids uuid[];
   v_min_avgs numeric[];
-  v_counts int[] := array[0,0,0,0];
+  v_counts int[];
+  v_thresholds numeric[] := array[70, 60, 50];
+  v_name text;
   rec record;
   v_target_rank int;
+  i int;
 begin
   if auth.uid() is null then
     raise exception 'Je moet ingelogd zijn.';
@@ -1174,7 +1214,7 @@ begin
     raise exception 'Alleen de organisator kan automatisch indelen.';
   end if;
 
-  select status into v_status from public.leagues where id = p_league_id;
+  select status, division_count into v_status, v_count from public.leagues where id = p_league_id;
   if v_status is null then
     raise exception 'League niet gevonden.';
   end if;
@@ -1186,26 +1226,38 @@ begin
   if v_total = 0 then
     raise exception 'Er zijn nog geen spelers in deze league.';
   end if;
-  if v_total > 48 then
-    raise exception 'Te veel spelers voor 4 divisies van elk maximaal 12 (% spelers, max 48).', v_total;
+  if v_total > v_count * 12 then
+    raise exception 'Te veel spelers voor % divisie(s) van elk maximaal 12 (% spelers, max %).', v_count, v_total, v_count * 12;
   end if;
 
-  -- Zorg dat de 4 divisies met vaste drempels bestaan (naam blijft
-  -- ongemoeid als de organisator die al had aangepast).
-  insert into public.league_divisions (league_id, name, rank, min_average, max_average)
-  values
-    (p_league_id, '1e divisie', 1, 70, null),
-    (p_league_id, '2e divisie', 2, 60, 70),
-    (p_league_id, '3e divisie', 3, 50, 60),
-    (p_league_id, '4e divisie', 4, null, 50)
-  on conflict (league_id, rank) do update
-    set min_average = excluded.min_average,
-        max_average = excluded.max_average;
+  v_counts := array_fill(0, array[v_count]);
+
+  -- Zorg dat precies v_count divisies met de juiste drempels bestaan (naam
+  -- blijft ongemoeid als de organisator die al had aangepast).
+  for i in 1..v_count loop
+    v_name := i || 'e divisie';
+    insert into public.league_divisions (league_id, name, rank, min_average, max_average)
+    values (
+      p_league_id, v_name, i,
+      case when i < v_count then v_thresholds[i] else null end,
+      case when i > 1 then v_thresholds[i - 1] else null end
+    )
+    on conflict (league_id, rank) do update
+      set min_average = excluded.min_average,
+          max_average = excluded.max_average;
+  end loop;
+
+  -- Overtollige divisies van een eerder hoger ingesteld aantal opruimen,
+  -- maar alleen als ze leeg zijn.
+  delete from public.league_divisions ld
+  where ld.league_id = p_league_id
+    and ld.rank > v_count
+    and not exists (select 1 from public.league_players lp where lp.division_id = ld.id);
 
   select array_agg(id order by rank), array_agg(min_average order by rank)
     into v_div_ids, v_min_avgs
     from public.league_divisions
-    where league_id = p_league_id and rank between 1 and 4;
+    where league_id = p_league_id and rank between 1 and v_count;
 
   for rec in
     select
@@ -1229,12 +1281,12 @@ begin
   loop
     -- Natuurlijke divisie o.b.v. drempel.
     v_target_rank := 1;
-    while v_target_rank < 4 and v_min_avgs[v_target_rank] is not null and rec.eff_avg < v_min_avgs[v_target_rank] loop
+    while v_target_rank < v_count and v_min_avgs[v_target_rank] is not null and rec.eff_avg < v_min_avgs[v_target_rank] loop
       v_target_rank := v_target_rank + 1;
     end loop;
 
     -- Doorval als die divisie al vol zit (max 12).
-    while v_counts[v_target_rank] >= 12 and v_target_rank < 4 loop
+    while v_counts[v_target_rank] >= 12 and v_target_rank < v_count loop
       v_target_rank := v_target_rank + 1;
     end loop;
 
@@ -1246,9 +1298,7 @@ begin
 
     player_id := rec.p_id;
     display_name := rec.p_name;
-    division_name := (case v_target_rank
-      when 1 then '1e divisie' when 2 then '2e divisie'
-      when 3 then '3e divisie' else '4e divisie' end);
+    division_name := v_target_rank || 'e divisie';
     effective_average := rec.eff_avg;
     low_confidence := rec.no_onboarding;
     return next;
@@ -1955,6 +2005,457 @@ end;
 $$;
 
 grant execute on function public.update_prize_claim_status(uuid, text, text) to authenticated;
+
+
+-- ============================================================================
+-- 11. Startdatum/-tijd van een league, automatische activering en wedstrijd-
+--     generatie, en het voorstellen/accepteren van een wedstrijdmoment.
+--     (leagues.description/division_count/start_at/timezone/end_at/
+--     match_deadline_days en het status-check hierboven bij de leagues-
+--     tabel horen ook bij deze sectie, evenals de bijgewerkte
+--     auto_assign_divisions hierboven.)
+-- ============================================================================
+
+-- Wedstrijddeadline: uiterlijke speeldatum (start_at + match_deadline_days).
+alter table public.league_matches
+  add column if not exists deadline_at timestamptz;
+
+-- Voorkomt dubbele wedstrijden tussen hetzelfde paar in dezelfde divisie bij
+-- herhaald genereren (idempotent), ongeacht wie player_a/player_b is.
+create unique index if not exists idx_league_matches_unique_division_pair
+  on public.league_matches (league_id, division_id, least(player_a_id, player_b_id), greatest(player_a_id, player_b_id))
+  where division_id is not null;
+
+
+-- Startdatum/-tijd, tijdzone en aantal divisies liggen vast zodra de league
+-- actief is (of afgerond): dan zijn er al wedstrijden op gebaseerd. Inplannen
+-- ("scheduled") vereist een startmoment in de toekomst. Het aantal divisies
+-- verlagen mag niet als er nog spelers in de divisies zitten die daarmee
+-- zouden vervallen.
+create or replace function public.protect_league_schedule_fields()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+declare
+  v_occupied boolean;
+begin
+  if old.status in ('active', 'finished') then
+    if new.start_at is distinct from old.start_at
+       or new.timezone is distinct from old.timezone
+       or new.division_count is distinct from old.division_count then
+      raise exception 'Startdatum, tijdzone en aantal divisies kunnen niet meer gewijzigd worden nadat de league actief is.';
+    end if;
+  end if;
+
+  if new.status = 'scheduled' and (new.start_at is null or new.start_at <= now()) then
+    raise exception 'Stel een startdatum en -tijd in de toekomst in om de league te plannen.';
+  end if;
+
+  if new.division_count < old.division_count then
+    select exists (
+      select 1
+      from public.league_players lp
+      join public.league_divisions ld on ld.id = lp.division_id
+      where lp.league_id = new.id
+        and ld.rank > new.division_count
+    ) into v_occupied;
+    if v_occupied then
+      raise exception 'Er zitten nog spelers in een divisie die zou vervallen; verplaats hen eerst naar een lagere divisie.';
+    end if;
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists on_leagues_protect_schedule_fields on public.leagues;
+create trigger on_leagues_protect_schedule_fields
+  before update on public.leagues
+  for each row
+  execute function public.protect_league_schedule_fields();
+
+
+-- Generieke meldingen (los van de bestaande prize_notifications).
+create table if not exists public.notifications (
+  id              uuid primary key default gen_random_uuid(),
+  player_id       uuid not null references public.profiles (id) on delete cascade,
+  type            text not null,
+  title           text not null,
+  body            text,
+  league_id       uuid references public.leagues (id) on delete cascade,
+  league_match_id uuid references public.league_matches (id) on delete cascade,
+  read_at         timestamptz,
+  created_at      timestamptz not null default now()
+);
+
+create index if not exists idx_notifications_player on public.notifications (player_id);
+
+alter table public.notifications enable row level security;
+
+drop policy if exists "notifications_select_own_or_organizer" on public.notifications;
+create policy "notifications_select_own_or_organizer"
+  on public.notifications for select
+  to authenticated
+  using (player_id = auth.uid() or public.is_organizer());
+
+drop policy if exists "notifications_update_own" on public.notifications;
+create policy "notifications_update_own"
+  on public.notifications for update
+  to authenticated
+  using (player_id = auth.uid())
+  with check (player_id = auth.uid());
+
+-- Let op: bewust geen insert-policy - meldingen ontstaan uitsluitend via de
+-- security-definer functies hieronder.
+
+
+-- Voorstellen van een wedstrijdmoment (propose/accept/counter/dispute).
+create table if not exists public.match_schedule_proposals (
+  id              uuid primary key default gen_random_uuid(),
+  league_match_id uuid not null unique references public.league_matches (id) on delete cascade,
+  proposed_by     uuid not null references public.profiles (id) on delete cascade,
+  proposed_at     timestamptz not null,
+  status          text not null default 'pending'
+                    check (status in ('pending', 'accepted', 'countered', 'disputed')),
+  note            text,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now()
+);
+
+alter table public.match_schedule_proposals enable row level security;
+
+drop policy if exists "match_schedule_proposals_select_participants" on public.match_schedule_proposals;
+create policy "match_schedule_proposals_select_participants"
+  on public.match_schedule_proposals for select
+  to authenticated
+  using (
+    exists (
+      select 1 from public.league_matches m
+      where m.id = match_schedule_proposals.league_match_id
+        and (m.player_a_id = auth.uid() or m.player_b_id = auth.uid())
+    )
+    or public.is_organizer()
+  );
+
+-- Let op: bewust geen insert/update-policy - uitsluitend via de
+-- security-definer functies hieronder, die bepalen wie wat mag.
+
+create or replace function public.touch_match_schedule_proposals_updated_at()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+drop trigger if exists on_match_schedule_proposals_touch on public.match_schedule_proposals;
+create trigger on_match_schedule_proposals_touch
+  before update on public.match_schedule_proposals
+  for each row
+  execute function public.touch_match_schedule_proposals_updated_at();
+
+
+-- Round-robin binnen elke divisie van minimaal 4 spelers. Elke wedstrijd
+-- krijgt scheduled_at = start_at van de league en deadline_at = start_at +
+-- match_deadline_days. Intern (geen grant naar authenticated/anon): wordt
+-- alleen aangeroepen door activate_league hieronder.
+create or replace function public.generate_league_matches(p_league_id uuid)
+returns int
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_league record;
+  v_deadline timestamptz;
+  v_count int := 0;
+  rec record;
+begin
+  select * into v_league from public.leagues where id = p_league_id;
+  if v_league is null then
+    raise exception 'League niet gevonden.';
+  end if;
+  if v_league.start_at is null then
+    raise exception 'League heeft nog geen startmoment.';
+  end if;
+
+  v_deadline := v_league.start_at + make_interval(days => v_league.match_deadline_days);
+
+  for rec in
+    select a.player_id as a_id, b.player_id as b_id, a.division_id as div_id
+    from public.league_players a
+    join public.league_players b
+      on b.league_id = a.league_id
+     and b.division_id = a.division_id
+     and b.player_id > a.player_id
+    where a.league_id = p_league_id
+      and a.division_id is not null
+      and (select count(*) from public.league_players lp where lp.division_id = a.division_id) >= 4
+  loop
+    insert into public.league_matches
+      (league_id, division_id, player_a_id, player_b_id, scheduled_at, deadline_at, status)
+    values
+      (p_league_id, rec.div_id, rec.a_id, rec.b_id, v_league.start_at, v_deadline, 'scheduled')
+    on conflict (league_id, division_id, least(player_a_id, player_b_id), greatest(player_a_id, player_b_id))
+      where division_id is not null
+      do nothing;
+    v_count := v_count + 1;
+  end loop;
+
+  return v_count;
+end;
+$$;
+
+revoke execute on function public.generate_league_matches(uuid) from public, anon, authenticated;
+
+
+-- Zet de league op 'active' zodra het startmoment is bereikt, genereert dan
+-- de wedstrijden en stuurt iedere speler een melding. Idempotent: de
+-- voorwaardelijke UPDATE ... RETURNING slaagt maar één keer, dus een tweede
+-- aanroep (cron of opportunistisch vanuit de app) doet niets.
+create or replace function public.activate_league(p_league_id uuid)
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_id uuid;
+  v_match_count int;
+begin
+  update public.leagues
+    set status = 'active'
+    where id = p_league_id
+      and status = 'scheduled'
+      and start_at is not null
+      and start_at <= now()
+    returning id into v_id;
+
+  if v_id is null then
+    return false;
+  end if;
+
+  v_match_count := public.generate_league_matches(p_league_id);
+
+  insert into public.notifications (player_id, type, title, body, league_id)
+  select lp.player_id, 'league_started',
+         'De league is gestart: ' || l.name,
+         'Bekijk je wedstrijden - speel ze binnen ' || l.match_deadline_days || ' dagen.',
+         l.id
+  from public.league_players lp
+  join public.leagues l on l.id = lp.league_id
+  where lp.league_id = p_league_id;
+
+  return true;
+end;
+$$;
+
+revoke execute on function public.activate_league(uuid) from public, anon, authenticated;
+
+
+-- Cron-doel: activeert alle leagues waarvan het startmoment voorbij is. Nooit
+-- direct aanroepbaar door gebruikers.
+create or replace function public.activate_due_leagues()
+returns int
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_count int := 0;
+  rec record;
+begin
+  for rec in
+    select id from public.leagues
+    where status = 'scheduled' and start_at is not null and start_at <= now()
+  loop
+    if public.activate_league(rec.id) then
+      v_count := v_count + 1;
+    end if;
+  end loop;
+  return v_count;
+end;
+$$;
+
+revoke execute on function public.activate_due_leagues() from public, anon, authenticated;
+
+
+-- Veilige, door de app aanroepbare wrapper: activeert één specifieke league
+-- als (en alleen als) die al voorbij zijn startmoment is. Gebruikt zodat een
+-- speler die op het exacte moment inlogt niet tot een cron-tik hoeft te
+-- wachten (max. 1 minuut vertraging).
+create or replace function public.activate_league_if_due(p_league_id uuid)
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'Je moet ingelogd zijn.';
+  end if;
+  return public.activate_league(p_league_id);
+end;
+$$;
+
+grant execute on function public.activate_league_if_due(uuid) to authenticated;
+
+
+-- Wedstrijdmoment voorstellen / accepteren / tegenvoorstel / probleem.
+create or replace function public.propose_match_schedule(p_match_id uuid, p_proposed_at timestamptz, p_note text default null)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  m record;
+  v_opponent uuid;
+begin
+  if auth.uid() is null then
+    raise exception 'Je moet ingelogd zijn.';
+  end if;
+
+  select * into m from public.league_matches where id = p_match_id;
+  if m is null then
+    raise exception 'Wedstrijd niet gevonden.';
+  end if;
+  if auth.uid() <> m.player_a_id and auth.uid() <> m.player_b_id then
+    raise exception 'Alleen de deelnemers kunnen een moment voorstellen.';
+  end if;
+  if m.status not in ('scheduled', 'in_progress') then
+    raise exception 'Deze wedstrijd staat niet meer open om te plannen.';
+  end if;
+  if p_proposed_at <= now() then
+    raise exception 'Kies een moment in de toekomst.';
+  end if;
+  if m.deadline_at is not null and p_proposed_at > m.deadline_at then
+    raise exception 'Het voorgestelde moment ligt na de deadline van deze wedstrijd.';
+  end if;
+
+  v_opponent := case when auth.uid() = m.player_a_id then m.player_b_id else m.player_a_id end;
+
+  insert into public.match_schedule_proposals (league_match_id, proposed_by, proposed_at, status, note)
+  values (p_match_id, auth.uid(), p_proposed_at, 'pending', p_note)
+  on conflict (league_match_id) do update
+    set proposed_by = excluded.proposed_by,
+        proposed_at = excluded.proposed_at,
+        status = 'pending',
+        note = excluded.note,
+        updated_at = now();
+
+  insert into public.notifications (player_id, type, title, body, league_match_id)
+  values (
+    v_opponent, 'match_schedule_proposed',
+    'Nieuw voorstel voor jullie wedstrijd',
+    'Reageer: accepteer, doe een tegenvoorstel of meld een probleem.',
+    p_match_id
+  );
+end;
+$$;
+
+grant execute on function public.propose_match_schedule(uuid, timestamptz, text) to authenticated;
+
+
+create or replace function public.respond_match_schedule(
+  p_match_id uuid,
+  p_action text,
+  p_proposed_at timestamptz default null,
+  p_note text default null
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  m record;
+  prop record;
+  v_other uuid;
+begin
+  if auth.uid() is null then
+    raise exception 'Je moet ingelogd zijn.';
+  end if;
+  if p_action not in ('accept', 'counter', 'dispute') then
+    raise exception 'Ongeldige actie.';
+  end if;
+
+  select * into m from public.league_matches where id = p_match_id;
+  if m is null then
+    raise exception 'Wedstrijd niet gevonden.';
+  end if;
+  if auth.uid() <> m.player_a_id and auth.uid() <> m.player_b_id then
+    raise exception 'Alleen de deelnemers kunnen reageren.';
+  end if;
+
+  select * into prop from public.match_schedule_proposals where league_match_id = p_match_id for update;
+  if prop is null then
+    raise exception 'Er is nog geen voorstel voor deze wedstrijd.';
+  end if;
+  if prop.proposed_by = auth.uid() then
+    raise exception 'Je kunt niet op je eigen voorstel reageren.';
+  end if;
+
+  v_other := prop.proposed_by;
+
+  if p_action = 'accept' then
+    update public.match_schedule_proposals
+      set status = 'accepted'
+      where league_match_id = p_match_id;
+    update public.league_matches
+      set scheduled_at = prop.proposed_at
+      where id = p_match_id;
+    insert into public.notifications (player_id, type, title, body, league_match_id)
+    values (v_other, 'match_schedule_accepted', 'Voorstel geaccepteerd',
+            'Jullie wedstrijd staat gepland.', p_match_id);
+
+  elsif p_action = 'counter' then
+    if p_proposed_at is null then
+      raise exception 'Geef een tegenvoorstel-moment op.';
+    end if;
+    if p_proposed_at <= now() then
+      raise exception 'Kies een moment in de toekomst.';
+    end if;
+    if m.deadline_at is not null and p_proposed_at > m.deadline_at then
+      raise exception 'Het voorgestelde moment ligt na de deadline van deze wedstrijd.';
+    end if;
+    update public.match_schedule_proposals
+      set proposed_by = auth.uid(), proposed_at = p_proposed_at,
+          status = 'countered', note = p_note
+      where league_match_id = p_match_id;
+    insert into public.notifications (player_id, type, title, body, league_match_id)
+    values (v_other, 'match_schedule_countered', 'Tegenvoorstel ontvangen',
+            'Reageer op het nieuwe voorgestelde moment.', p_match_id);
+
+  else
+    update public.match_schedule_proposals
+      set status = 'disputed', note = coalesce(p_note, prop.note)
+      where league_match_id = p_match_id;
+    insert into public.notifications (player_id, type, title, body, league_match_id)
+    values (v_other, 'match_schedule_disputed', 'Probleem gemeld',
+            coalesce(p_note, 'Er is een probleem gemeld met het voorgestelde moment.'), p_match_id);
+  end if;
+end;
+$$;
+
+grant execute on function public.respond_match_schedule(uuid, text, timestamptz, text) to authenticated;
+
+
+-- pg_cron: elke minuut controleren op leagues die moeten starten. Idempotent
+-- (cron.schedule met een bestaande jobnaam werkt bij als upsert).
+create extension if not exists pg_cron with schema pg_catalog;
+grant usage on schema cron to postgres;
+grant all privileges on all tables in schema cron to postgres;
+
+select cron.schedule(
+  'activate_due_leagues',
+  '* * * * *',
+  $cron$select public.activate_due_leagues();$cron$
+);
 
 
 -- ----------------------------------------------------------------------------

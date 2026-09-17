@@ -12,6 +12,7 @@
 --   4. Indexen
 --   5. Triggers (automatisch profiel + statistieken bij registratie)
 --   6. Row Level Security (RLS)
+--   7. Uitslagen: doorgeven, bevestigen en afkeuren
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
@@ -94,6 +95,11 @@ create table if not exists public.league_players (
 
 
 -- league_matches ---------------------------------------------------------
+-- Naast de legscore en de winnaar houden we ook een aantal optionele
+-- wedstrijdgegevens bij (gemiddelde, 180's, hoogste finish) die de
+-- rapporterende speler zelf invult, plus wie de uitslag heeft doorgegeven
+-- (reported_by) zodat de tegenstander - en niet de doorgever zelf - hem
+-- moet bevestigen.
 create table if not exists public.league_matches (
   id            uuid primary key default gen_random_uuid(),
   league_id     uuid not null references public.leagues (id) on delete cascade,
@@ -106,7 +112,15 @@ create table if not exists public.league_matches (
                                     'cancelled')),
   player_a_legs int  not null default 0 check (player_a_legs >= 0),
   player_b_legs int  not null default 0 check (player_b_legs >= 0),
+  player_a_average           numeric(5,2),
+  player_b_average           numeric(5,2),
+  player_a_180s              int not null default 0 check (player_a_180s >= 0),
+  player_b_180s              int not null default 0 check (player_b_180s >= 0),
+  player_a_highest_checkout  int not null default 0 check (player_a_highest_checkout >= 0),
+  player_b_highest_checkout  int not null default 0 check (player_b_highest_checkout >= 0),
   winner_id     uuid references public.profiles (id) on delete set null,
+  reported_by   uuid references public.profiles (id) on delete set null,
+  reported_at   timestamptz,
   confirmed_at  timestamptz,
   created_at    timestamptz not null default now(),
 
@@ -120,6 +134,30 @@ create table if not exists public.league_matches (
            or winner_id = player_a_id
            or winner_id = player_b_id)
 );
+
+-- Kolommen ook toevoegen als de tabel al bestond vóór deze wijziging.
+alter table public.league_matches
+  add column if not exists player_a_average numeric(5,2),
+  add column if not exists player_b_average numeric(5,2),
+  add column if not exists player_a_180s int not null default 0,
+  add column if not exists player_b_180s int not null default 0,
+  add column if not exists player_a_highest_checkout int not null default 0,
+  add column if not exists player_b_highest_checkout int not null default 0,
+  add column if not exists reported_by uuid references public.profiles (id) on delete set null,
+  add column if not exists reported_at timestamptz;
+
+alter table public.league_matches
+  drop constraint if exists league_matches_player_a_180s_check,
+  add constraint league_matches_player_a_180s_check check (player_a_180s >= 0);
+alter table public.league_matches
+  drop constraint if exists league_matches_player_b_180s_check,
+  add constraint league_matches_player_b_180s_check check (player_b_180s >= 0);
+alter table public.league_matches
+  drop constraint if exists league_matches_player_a_highest_checkout_check,
+  add constraint league_matches_player_a_highest_checkout_check check (player_a_highest_checkout >= 0);
+alter table public.league_matches
+  drop constraint if exists league_matches_player_b_highest_checkout_check,
+  add constraint league_matches_player_b_highest_checkout_check check (player_b_highest_checkout >= 0);
 
 
 -- tournaments ------------------------------------------------------------
@@ -242,8 +280,9 @@ create table if not exists public.match_turns (
 
 
 -- player_statistics ------------------------------------------------------
--- Geaggregeerde statistieken per speler. Wordt bijgewerkt na het bevestigen
--- van een wedstrijd (zie TODO onderaan dit bestand).
+-- Geaggregeerde statistieken per speler. Wordt bijgewerkt zodra een
+-- league-wedstrijd bevestigd wordt (zie confirm_league_match_result
+-- verderop in dit bestand).
 create table if not exists public.player_statistics (
   id                  uuid primary key default gen_random_uuid(),
   player_id           uuid not null unique references public.profiles (id)
@@ -437,7 +476,7 @@ create policy "league_matches_select_own_or_organizer"
     or public.is_organizer()
   );
 
--- Aanmaken, verwijderen en definitief bevestigen: alleen organisator.
+-- Aanmaken en verwijderen: alleen organisator.
 drop policy if exists "league_matches_insert_organizer" on public.league_matches;
 create policy "league_matches_insert_organizer"
   on public.league_matches for insert
@@ -450,28 +489,18 @@ create policy "league_matches_delete_organizer"
   to authenticated
   using (public.is_organizer());
 
--- Update: de organisator mag alles. Een deelnemende speler mag een uitslag
--- doorgeven, maar alleen zolang de wedstrijd nog niet bevestigd is.
---
--- LET OP: RLS werkt op rijniveau, niet op kolomniveau. Een speler kan met
--- deze policy dus technisch ook status naar 'confirmed' zetten. Wil je dat
--- strikt dichtzetten, laat spelers dan niet rechtstreeks updaten maar via
--- een security definer functie (bv. report_league_match_result). Zie TODO.
+-- Rechtstreeks bijwerken (herplannen, annuleren, ...) is voorbehouden aan de
+-- organisator. Spelers geven een uitslag door, bevestigen of keuren hem af
+-- via de security-definer functies hieronder, die precies bepalen wie wat
+-- mag: dat kan niet betrouwbaar met een rijgebonden RLS-policy alleen,
+-- omdat we willen uitsluiten dat een speler zijn eigen uitslag bevestigt.
 drop policy if exists "league_matches_update_participant_or_organizer" on public.league_matches;
-create policy "league_matches_update_participant_or_organizer"
+drop policy if exists "league_matches_update_organizer" on public.league_matches;
+create policy "league_matches_update_organizer"
   on public.league_matches for update
   to authenticated
-  using (
-    public.is_organizer()
-    or (
-      (player_a_id = auth.uid() or player_b_id = auth.uid())
-      and status in ('scheduled', 'in_progress', 'pending_confirmation')
-    )
-  )
-  with check (
-    public.is_organizer()
-    or (player_a_id = auth.uid() or player_b_id = auth.uid())
-  );
+  using (public.is_organizer())
+  with check (public.is_organizer());
 
 
 -- tournaments ------------------------------------------------------------
@@ -599,9 +628,9 @@ create policy "match_turns_access"
 
 
 -- player_statistics ------------------------------------------------------
--- Statistieken zijn leesbaar voor alle ingelogde gebruikers (ranglijsten),
--- maar niemand mag ze rechtstreeks schrijven: dat gebeurt uitsluitend via
--- de trigger/functie die na een bevestigde wedstrijd draait.
+-- Statistieken zijn leesbaar voor alle ingelogde gebruikers (ranglijsten).
+-- Rechtstreeks schrijven mag alleen de organisator; voor spelers gebeurt dit
+-- uitsluitend via confirm_league_match_result (security definer) hieronder.
 drop policy if exists "player_statistics_select_authenticated" on public.player_statistics;
 create policy "player_statistics_select_authenticated"
   on public.player_statistics for select
@@ -614,6 +643,251 @@ create policy "player_statistics_write_organizer"
   to authenticated
   using (public.is_organizer())
   with check (public.is_organizer());
+
+
+-- ----------------------------------------------------------------------------
+-- 7. Uitslagen: doorgeven, bevestigen en afkeuren
+-- ----------------------------------------------------------------------------
+-- Spelers vullen de uitslag van hun eigen wedstrijd zelf in
+-- (report_league_match_result). Dat zet de wedstrijd op
+-- 'pending_confirmation'. De tegenstander controleert de ingevulde
+-- gegevens en bevestigt (confirm_league_match_result, telt mee voor de
+-- statistieken) of keurt af (reject_league_match_result, terug naar
+-- 'scheduled' zodat de uitslag opnieuw ingevuld kan worden). De organisator
+-- kan in beide gevallen ook zelf ingrijpen, als back-up voor het geval een
+-- tegenstander niet reageert.
+
+-- Interne helper: telt één wedstrijdresultaat mee in player_statistics.
+-- Niet rechtstreeks aanroepbaar door de client (zie grants onderaan).
+create or replace function public.apply_match_stats(
+  p_player_id uuid,
+  p_legs_won int,
+  p_legs_lost int,
+  p_won boolean,
+  p_average numeric,
+  p_count_180 int,
+  p_highest_checkout int
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  s public.player_statistics%rowtype;
+begin
+  select * into s from public.player_statistics where player_id = p_player_id for update;
+  if s.id is null then
+    insert into public.player_statistics (player_id) values (p_player_id)
+    returning * into s;
+  end if;
+
+  update public.player_statistics set
+    matches_played   = s.matches_played + 1,
+    matches_won      = s.matches_won + case when p_won then 1 else 0 end,
+    matches_lost     = s.matches_lost + case when p_won then 0 else 1 end,
+    legs_played      = s.legs_played + p_legs_won + p_legs_lost,
+    legs_won         = s.legs_won + p_legs_won,
+    average_score    = case when p_average is null then s.average_score
+                        else round(((s.average_score * s.matches_played) + p_average)
+                                    / (s.matches_played + 1), 2) end,
+    highest_checkout = greatest(s.highest_checkout, coalesce(p_highest_checkout, 0)),
+    count_180        = s.count_180 + coalesce(p_count_180, 0),
+    updated_at       = now()
+  where player_id = p_player_id;
+end;
+$$;
+
+revoke execute on function public.apply_match_stats(uuid, int, int, boolean, numeric, int, int) from public;
+
+
+-- Uitslag doorgeven. Alleen door één van de twee spelers, alleen zolang de
+-- wedstrijd nog open staat. Onthoudt wie hem invulde (reported_by), zodat
+-- diezelfde speler hem niet ook kan bevestigen.
+create or replace function public.report_league_match_result(
+  p_match_id uuid,
+  p_winner_id uuid,
+  p_player_a_legs int,
+  p_player_b_legs int,
+  p_player_a_average numeric,
+  p_player_b_average numeric,
+  p_player_a_180s int,
+  p_player_b_180s int,
+  p_player_a_highest_checkout int,
+  p_player_b_highest_checkout int
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  m public.league_matches%rowtype;
+begin
+  -- auth.uid() is NULL voor een niet-ingelogde aanroeper. Zonder deze check
+  -- levert `auth.uid() <> m.player_a_id` verderop NULL op (niet true/false),
+  -- en `if NULL then ...` telt in plpgsql als false - waardoor de
+  -- guard-clause niet zou afgaan en een anonieme aanroeper de controle kon
+  -- omzeilen.
+  if auth.uid() is null then
+    raise exception 'Je moet ingelogd zijn.';
+  end if;
+
+  select * into m from public.league_matches where id = p_match_id for update;
+
+  if m.id is null then
+    raise exception 'Wedstrijd niet gevonden.';
+  end if;
+
+  if auth.uid() <> m.player_a_id and auth.uid() <> m.player_b_id and not public.is_organizer() then
+    raise exception 'Alleen de spelers van deze wedstrijd kunnen de uitslag doorgeven.';
+  end if;
+
+  if m.status not in ('scheduled', 'in_progress') then
+    raise exception 'Deze wedstrijd staat niet meer open voor het invullen van een uitslag.';
+  end if;
+
+  if p_winner_id <> m.player_a_id and p_winner_id <> m.player_b_id then
+    raise exception 'De winnaar moet één van beide spelers zijn.';
+  end if;
+
+  if p_player_a_legs = p_player_b_legs then
+    raise exception 'Een wedstrijd kan niet gelijk eindigen.';
+  end if;
+
+  if (p_player_a_legs > p_player_b_legs and p_winner_id <> m.player_a_id)
+     or (p_player_b_legs > p_player_a_legs and p_winner_id <> m.player_b_id) then
+    raise exception 'De gekozen winnaar komt niet overeen met de legscore.';
+  end if;
+
+  update public.league_matches set
+    winner_id                  = p_winner_id,
+    player_a_legs               = p_player_a_legs,
+    player_b_legs               = p_player_b_legs,
+    player_a_average            = p_player_a_average,
+    player_b_average            = p_player_b_average,
+    player_a_180s               = coalesce(p_player_a_180s, 0),
+    player_b_180s               = coalesce(p_player_b_180s, 0),
+    player_a_highest_checkout   = coalesce(p_player_a_highest_checkout, 0),
+    player_b_highest_checkout   = coalesce(p_player_b_highest_checkout, 0),
+    status                       = 'pending_confirmation',
+    reported_by                  = auth.uid(),
+    reported_at                  = now()
+  where id = p_match_id;
+end;
+$$;
+
+grant execute on function public.report_league_match_result(
+  uuid, uuid, int, int, numeric, numeric, int, int, int, int
+) to authenticated;
+
+
+-- Uitslag bevestigen: alleen de tegenstander van wie de uitslag invulde, of
+-- de organisator. Werkt bij bevestiging ook meteen player_statistics bij.
+create or replace function public.confirm_league_match_result(p_match_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  m public.league_matches%rowtype;
+  is_opponent boolean;
+begin
+  -- Zie de toelichting in report_league_match_result: zonder deze check
+  -- kan een niet-ingelogde aanroeper de is_opponent-berekening hieronder
+  -- omzeilen doordat die met een NULL auth.uid() ook NULL oplevert.
+  if auth.uid() is null then
+    raise exception 'Je moet ingelogd zijn.';
+  end if;
+
+  select * into m from public.league_matches where id = p_match_id for update;
+
+  if m.id is null then
+    raise exception 'Wedstrijd niet gevonden.';
+  end if;
+
+  if m.status <> 'pending_confirmation' then
+    raise exception 'Deze wedstrijd wacht niet op bevestiging.';
+  end if;
+
+  is_opponent := (auth.uid() = m.player_a_id or auth.uid() = m.player_b_id)
+                 and auth.uid() <> m.reported_by;
+
+  if not (is_opponent or public.is_organizer()) then
+    raise exception 'Alleen de tegenstander of de organisator kan deze uitslag bevestigen.';
+  end if;
+
+  update public.league_matches
+    set status = 'confirmed', confirmed_at = now()
+    where id = p_match_id;
+
+  perform public.apply_match_stats(
+    m.player_a_id, m.player_a_legs, m.player_b_legs,
+    m.winner_id = m.player_a_id, m.player_a_average, m.player_a_180s, m.player_a_highest_checkout
+  );
+  perform public.apply_match_stats(
+    m.player_b_id, m.player_b_legs, m.player_a_legs,
+    m.winner_id = m.player_b_id, m.player_b_average, m.player_b_180s, m.player_b_highest_checkout
+  );
+end;
+$$;
+
+grant execute on function public.confirm_league_match_result(uuid) to authenticated;
+
+
+-- Uitslag afkeuren: alleen de tegenstander van wie de uitslag invulde, of de
+-- organisator. Zet de wedstrijd terug naar 'scheduled' zodat hij opnieuw
+-- ingevuld kan worden.
+create or replace function public.reject_league_match_result(p_match_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  m public.league_matches%rowtype;
+  is_opponent boolean;
+begin
+  if auth.uid() is null then
+    raise exception 'Je moet ingelogd zijn.';
+  end if;
+
+  select * into m from public.league_matches where id = p_match_id for update;
+
+  if m.id is null then
+    raise exception 'Wedstrijd niet gevonden.';
+  end if;
+
+  if m.status <> 'pending_confirmation' then
+    raise exception 'Deze wedstrijd wacht niet op bevestiging.';
+  end if;
+
+  is_opponent := (auth.uid() = m.player_a_id or auth.uid() = m.player_b_id)
+                 and auth.uid() <> m.reported_by;
+
+  if not (is_opponent or public.is_organizer()) then
+    raise exception 'Alleen de tegenstander of de organisator kan deze uitslag afkeuren.';
+  end if;
+
+  update public.league_matches set
+    status                     = 'scheduled',
+    winner_id                  = null,
+    player_a_legs               = 0,
+    player_b_legs               = 0,
+    player_a_average            = null,
+    player_b_average            = null,
+    player_a_180s               = 0,
+    player_b_180s               = 0,
+    player_a_highest_checkout   = 0,
+    player_b_highest_checkout   = 0,
+    reported_by                  = null,
+    reported_at                  = null
+  where id = p_match_id;
+end;
+$$;
+
+grant execute on function public.reject_league_match_result(uuid) to authenticated;
 
 
 -- ----------------------------------------------------------------------------
@@ -632,17 +906,13 @@ create policy "player_statistics_write_organizer"
 -- ----------------------------------------------------------------------------
 -- TODO's voor een volgende migratie
 -- ----------------------------------------------------------------------------
--- 1. Functie `confirm_league_match(match_id uuid)` (security definer) die de
---    status op 'confirmed' zet, confirmed_at vult en player_statistics
---    bijwerkt voor beide spelers. Alleen aanroepbaar door de organisator.
--- 2. Functie `report_league_match_result(...)` zodat spelers een uitslag
---    kunnen doorgeven zonder update-rechten op de hele rij (zie opmerking
---    bij league_matches_update_... hierboven).
--- 3. Trigger op match_turns die average_score, checkout_percentage,
+-- 1. Trigger op match_turns die average_score, checkout_percentage,
 --    highest_checkout en count_180 herberekent (nodig voor live scoren).
--- 4. View `league_standings` met de stand per league, berekend uit
+-- 2. View `league_standings` met de stand per league, berekend uit
 --    bevestigde wedstrijden.
--- 5. Storage-bucket `avatars` met policies:
+-- 3. Storage-bucket `avatars` met policies:
 --      insert/update: bucket_id = 'avatars'
 --        and (storage.foldername(name))[1] = auth.uid()::text
 --      select: publiek leesbaar
+-- 4. Hetzelfde doorgeven/bevestigen/afkeuren-patroon toepassen op
+--    tournament_matches zodra toernooien live gespeeld worden.

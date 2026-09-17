@@ -2009,7 +2009,7 @@ async function viewTournaments() {
     <h1>Toernooien</h1>
     <p class="sub">Losse toernooien naast de competitie</p>
     ${list.length ? list.map(tournamentCard).join("")
-      : emptyView("Nog geen toernooien", "De organisator maakt ze aan.", "target")}
+      : emptyView("Nog geen toernooien", "", "target")}
   `);
 }
 

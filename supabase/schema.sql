@@ -24,6 +24,7 @@
 --      verval, en organizer-only verlenging
 --  14. Voorstelgeschiedenis + intrekken, vorm in de stand, onderlinge
 --      wedstrijden
+--  15. Privéchat per wedstrijd (alleen de twee spelers)
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
@@ -2974,6 +2975,87 @@ end;
 $$;
 
 grant execute on function public.head_to_head_matches(uuid) to authenticated;
+
+
+-- ============================================================================
+-- 15. Privéchat per wedstrijd (uitsluitend de twee spelers, geen organizer).
+-- ============================================================================
+
+create table if not exists public.match_chat_messages (
+  id              uuid primary key default gen_random_uuid(),
+  league_match_id uuid not null references public.league_matches (id) on delete cascade,
+  sender_id       uuid not null references public.profiles (id) on delete cascade,
+  body            text not null check (char_length(trim(body)) > 0 and char_length(body) <= 1000),
+  created_at      timestamptz not null default now()
+);
+
+create index if not exists idx_match_chat_messages_match
+  on public.match_chat_messages (league_match_id, created_at);
+
+alter table public.match_chat_messages enable row level security;
+
+-- Bewust GEEN "or public.is_organizer()" - dit is een privéchat tussen de
+-- twee spelers, de organisator heeft hier geen toegang toe.
+drop policy if exists "match_chat_messages_select_participants" on public.match_chat_messages;
+create policy "match_chat_messages_select_participants"
+  on public.match_chat_messages for select
+  to authenticated
+  using (
+    exists (
+      select 1 from public.league_matches m
+      where m.id = match_chat_messages.league_match_id
+        and (m.player_a_id = auth.uid() or m.player_b_id = auth.uid())
+    )
+  );
+
+-- Let op: bewust geen insert-policy - uitsluitend via de functie hieronder,
+-- die valideert wie mag schrijven en het bericht opschoont.
+create or replace function public.send_match_chat_message(p_match_id uuid, p_body text)
+returns public.match_chat_messages
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  m record;
+  v_body text;
+  v_other uuid;
+  v_row public.match_chat_messages;
+begin
+  if auth.uid() is null then
+    raise exception 'Je moet ingelogd zijn.';
+  end if;
+
+  select * into m from public.league_matches where id = p_match_id;
+  if m is null then
+    raise exception 'Wedstrijd niet gevonden.';
+  end if;
+  if auth.uid() <> m.player_a_id and auth.uid() <> m.player_b_id then
+    raise exception 'Alleen de twee spelers van deze wedstrijd kunnen hier chatten.';
+  end if;
+
+  v_body := trim(p_body);
+  if v_body = '' then
+    raise exception 'Typ eerst een bericht.';
+  end if;
+  if char_length(v_body) > 1000 then
+    raise exception 'Bericht is te lang (max 1000 tekens).';
+  end if;
+
+  insert into public.match_chat_messages (league_match_id, sender_id, body)
+  values (p_match_id, auth.uid(), v_body)
+  returning * into v_row;
+
+  v_other := case when auth.uid() = m.player_a_id then m.player_b_id else m.player_a_id end;
+
+  insert into public.notifications (player_id, type, title, body, league_match_id)
+  values (v_other, 'match_chat_message', 'Nieuw bericht', left(v_body, 120), p_match_id);
+
+  return v_row;
+end;
+$$;
+
+grant execute on function public.send_match_chat_message(uuid, text) to authenticated;
 
 
 -- ----------------------------------------------------------------------------

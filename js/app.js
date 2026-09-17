@@ -462,6 +462,46 @@ function busy(btn, on, label) {
   btn.innerHTML = on ? `<span class="spinner inline"></span>` : esc(label);
 }
 
+function renderLanding() {
+  const feature = (ico, title, text) => `
+    <div class="landing-feature">
+      <div class="ico">${icon[ico]}</div>
+      <h3>${esc(title)}</h3>
+      <p>${esc(text)}</p>
+    </div>`;
+
+  app.innerHTML = `
+    <div class="landing">
+      <div class="landing-nav">
+        <div class="brand">
+          <div class="brand-mark"></div>
+          <span class="brand-name">Dart League</span>
+        </div>
+        <button class="btn ghost sm" onclick="renderLogin()">Inloggen</button>
+      </div>
+
+      <div class="landing-hero">
+        <div class="landing-hero-inner">
+          <span class="landing-eyebrow">${icon.target}&nbsp;Voor teams en dartverenigingen</span>
+          <h1>Jouw dartcompetitie, overzichtelijk georganiseerd</h1>
+          <p class="sub">Beheer leagues en toernooien, plan wedstrijden en houd scores en statistieken bij &mdash; allemaal op één plek, voor iedereen in je vereniging.</p>
+          <div class="landing-cta">
+            <button class="btn" onclick="renderRegister()">Gratis account aanmaken</button>
+            <button class="btn ghost" onclick="renderLogin()">Inloggen</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="landing-features">
+        ${feature("users", "Leagues", "Stel competities in, volg de stand en laat spelers automatisch tegen elkaar uitkomen.")}
+        ${feature("trophy", "Toernooien", "Organiseer knock-out of poule-toernooien en houd de bracket live bij.")}
+        ${feature("chart", "Statistieken", "Elke speler ziet zijn winratio, gemiddelde en 180's direct terug.")}
+      </div>
+
+      <div class="landing-foot">© ${new Date().getFullYear()} Dart League</div>
+    </div>`;
+}
+
 function renderLogin() {
   app.innerHTML = authShell(
     "Dart League",
@@ -696,7 +736,7 @@ async function router() {
   const route = currentRoute();
 
   if (route === "nieuw-wachtwoord") return renderNewPassword();
-  if (!state.session) return renderLogin();
+  if (!state.session) return renderLanding();
 
   renderShell();
 
@@ -1313,7 +1353,7 @@ function init() {
     state.session = session;
     if (!session) {
       state.profile = null;
-      return renderLogin();
+      return renderLanding();
     }
     if (!wasLoggedIn) {
       state.profile = await db.myProfile(session.user.id).catch(() => null);

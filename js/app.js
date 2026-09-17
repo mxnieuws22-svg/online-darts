@@ -472,6 +472,20 @@ function renderLanding() {
       </div>
     </div>`;
 
+  const feature = (num, title, text) => `
+    <div class="landing-feature">
+      <div class="landing-feature-num">${num}</div>
+      <h3>${esc(title)}</h3>
+      <p>${esc(text)}</p>
+    </div>`;
+
+  const tile = (color, label, value, who) => `
+    <div class="landing-tile" style="--tile-c:${color}">
+      <div class="landing-tile-label"><span class="dot"></span>${esc(label)}</div>
+      <div class="landing-tile-value">${esc(value)}</div>
+      <div class="landing-tile-who">${esc(who)}</div>
+    </div>`;
+
   app.innerHTML = `
     <div class="landing">
       <div class="landing-nav">
@@ -482,50 +496,84 @@ function renderLanding() {
         <button class="btn ghost sm" onclick="renderLogin()">Inloggen</button>
       </div>
 
-      <div class="landing-hero">
-        <div>
-          <span class="landing-eyebrow">${icon.target}&nbsp;Voor elke darter</span>
-          <h1>Jouw dartcompetitie, overzichtelijk georganiseerd</h1>
-          <p class="sub">Speel mee in leagues en toernooien, plan je wedstrijden en houd je scores en statistieken automatisch bij &mdash; allemaal op één plek.</p>
-          <div class="landing-cta">
-            <button class="btn" onclick="renderRegister()">Gratis account aanmaken</button>
-            <button class="btn ghost" onclick="renderLogin()">Inloggen</button>
+      <div class="landing-wrap">
+        <div class="landing-hero-panel">
+          <div class="landing-hero-ring" aria-hidden="true"></div>
+          <div class="landing-hero-inner">
+            <span class="landing-eyebrow">${icon.target}&nbsp;Voor elke darter</span>
+            <h1 class="landing-wordmark">Dart League</h1>
+            <p class="sub">Speel mee in leagues en toernooien, plan je wedstrijden en houd je scores en statistieken automatisch bij &mdash; allemaal op één plek.</p>
+            <div class="landing-cta">
+              <button class="btn" onclick="renderRegister()">Gratis account aanmaken</button>
+              <button class="btn ghost" onclick="renderLogin()">Inloggen</button>
+              <button class="btn ghost" onclick="document.getElementById('hoe-het-werkt').scrollIntoView({behavior:'smooth'})">Zo werkt het</button>
+            </div>
+            <p class="landing-hero-note">Gratis te gebruiken &middot; geen creditcard nodig</p>
           </div>
         </div>
 
-        <div class="landing-preview">
-          <div class="landing-preview-tag">Halve finale &middot; League Zuid</div>
-          <div class="card" style="margin:0">
-            <div class="match-row">
-              <div class="mp winner">
-                ${avatar({ display_name: "Sanne" })}
-                <span class="mp-name">Sanne</span>
+        <div class="landing-notice">
+          ${icon.shield}
+          <span>Log in om de standen, wedstrijden en statistieken van je league te bekijken.</span>
+        </div>
+
+        <div class="landing-section">
+          <h2>Zo ziet jouw stand eruit</h2>
+          <p class="sub">Een voorbeeld &mdash; jouw eigen cijfers verschijnen zodra je meedoet.</p>
+          <div class="landing-highlight">
+            <div class="card" style="margin:0">
+              <div class="match-top">
+                <span class="match-league">Halve finale &middot; League Zuid</span>
               </div>
-              <span class="vs">VS</span>
-              <div class="mp right">
-                ${avatar({ display_name: "Rick" })}
-                <span class="mp-name">Rick</span>
+              <div class="match-row">
+                <div class="mp winner">
+                  ${avatar({ display_name: "Sanne" })}
+                  <span class="mp-name">Sanne</span>
+                </div>
+                <span class="vs">VS</span>
+                <div class="mp right">
+                  ${avatar({ display_name: "Rick" })}
+                  <span class="mp-name">Rick</span>
+                </div>
+              </div>
+              <div class="match-score">
+                <span class="score win">3</span>
+                <span class="score-sep">&ndash;</span>
+                <span class="score">1</span>
               </div>
             </div>
-            <div class="match-score">
-              <span class="score win">3</span>
-              <span class="score-sep">&ndash;</span>
-              <span class="score">1</span>
+            <div class="landing-tile-grid">
+              ${tile("#2ECC71", "Winratio", "68%", "Sanne")}
+              ${tile("#4EA1F7", "Gemiddelde", "58.4", "Rick")}
+              ${tile("#F5B942", "180's", "24", "Sanne")}
+              ${tile("#9B7BD9", "Beste finish", "121", "Rick")}
             </div>
-          </div>
-          <div class="grid">
-            ${statCard({ label: "Winratio", value: "68%", ico: "trophy", color: "#2ECC71" })}
-            ${statCard({ label: "180's", value: "24", ico: "star", color: "#F5B942" })}
           </div>
         </div>
-      </div>
 
-      <div class="landing-steps">
-        <h2>Zo werkt het</h2>
-        <div class="landing-step-list">
-          ${step("01", "Maak een account", "Binnen een minuut aangemeld, zonder gedoe.")}
-          ${step("02", "Sluit je aan bij een league of toernooi", "De beheerder zet ze voor je klaar, jij doet mee.")}
-          ${step("03", "Speel en volg je voortgang", "Standen, uitslagen en statistieken staan direct klaar.")}
+        <div class="landing-section" id="hoe-het-werkt">
+          <h2>Zo werkt het</h2>
+          <div class="landing-step-list">
+            ${step("01", "Maak een account", "Binnen een minuut aangemeld, zonder gedoe.")}
+            ${step("02", "Sluit je aan bij een league of toernooi", "De beheerder zet ze voor je klaar, jij doet mee.")}
+            ${step("03", "Speel en volg je voortgang", "Standen, uitslagen en statistieken staan direct klaar.")}
+          </div>
+        </div>
+
+        <div class="landing-section">
+          <h2>Wat je krijgt</h2>
+          <div class="landing-feature-grid">
+            ${feature("01", "Automatische standen", "Elke afgeronde wedstrijd werkt de ranglijst meteen bij.")}
+            ${feature("02", "Persoonlijke statistieken", "Gemiddelde, 180's, checkouts en winratio per speler.")}
+            ${feature("03", "Organisatordashboard", "Leagues en toernooien beheren vanuit één overzicht.")}
+            ${feature("04", "Overal te gebruiken", "Werkt in de browser, op telefoon, tablet en desktop.")}
+          </div>
+        </div>
+
+        <div class="landing-final">
+          <h2>Klaar om mee te doen?</h2>
+          <p>Maak een gratis account aan en speel je eerste wedstrijd binnen een minuut.</p>
+          <button class="btn" onclick="renderRegister()">Gratis account aanmaken</button>
         </div>
       </div>
 

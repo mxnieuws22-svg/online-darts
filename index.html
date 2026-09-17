@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#0B1736">
+<meta name="theme-color" content="#000000">
 <title>Dart League</title>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -12,18 +12,18 @@
 
 <style>
 :root{
-  --bg:#0B1736;
-  --card:#152347;
-  --card-2:#1B2C57;
-  --line:#223460;
+  --bg:#000000;
+  --card:#0D0D0D;
+  --card-2:#1A1A1A;
+  --line:#2A2A2A;
   --accent:#F47B20;
   --white:#FFFFFF;
-  --grey:#D9DEE8;
-  --muted:#8A93AA;
-  --ok:#2ECC71;
-  --bad:#E74C3C;
-  --warn:#F5B942;
-  --info:#4EA1F7;
+  --grey:#B5B5B5;
+  --muted:#757575;
+  --ok:#FFFFFF;
+  --bad:#FFFFFF;
+  --warn:#C9C9C9;
+  --info:#C9C9C9;
   --r:14px;
   --nav-h:64px;
 }
@@ -85,7 +85,7 @@ button{font-family:inherit}
   background:none;border:0;width:100%;text-align:left;cursor:pointer;
 }
 .navlink:hover{background:var(--card-2);color:var(--white)}
-.navlink.active{background:rgba(244,123,32,.14);color:var(--accent);font-weight:600}
+.navlink.active{background:#1C1C1C;color:var(--accent);font-weight:600}
 .navlink svg{width:20px;height:20px;flex-shrink:0}
 
 .main{flex:1;min-width:0;padding-bottom:calc(var(--nav-h) + env(safe-area-inset-bottom))}
@@ -127,7 +127,7 @@ h2{font-size:17px;font-weight:700;margin:0;letter-spacing:-.01em}
 }
 .card+.card{margin-top:10px}
 .clickable{cursor:pointer;text-align:left;width:100%;font:inherit;color:inherit}
-.clickable:hover{border-color:#31487f}
+.clickable:hover{border-color:#4A4A4A}
 
 .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
 @media(min-width:620px){.grid{grid-template-columns:repeat(4,1fr)}}
@@ -138,7 +138,7 @@ h2{font-size:17px;font-weight:700;margin:0;letter-spacing:-.01em}
 .stat .ico{
   width:32px;height:32px;border-radius:9px;
   display:flex;align-items:center;justify-content:center;
-  background:rgba(244,123,32,.15);color:var(--accent);margin-bottom:10px;
+  background:#1C1C1C;color:var(--white);margin-bottom:10px;
 }
 .stat .ico svg{width:17px;height:17px}
 
@@ -160,7 +160,7 @@ h2{font-size:17px;font-weight:700;margin:0;letter-spacing:-.01em}
 /* ---------- Avatar ---------- */
 .av{
   width:36px;height:36px;border-radius:50%;flex-shrink:0;
-  background:rgba(244,123,32,.2);color:var(--accent);
+  background:#1F1F1F;color:var(--white);
   display:flex;align-items:center;justify-content:center;
   font-weight:700;font-size:13px;overflow:hidden;
 }
@@ -193,7 +193,7 @@ input::placeholder{color:var(--muted)}
   background:var(--accent);color:var(--white);
   font-size:15px;font-weight:600;
 }
-.btn:hover{background:#e06d14}
+.btn:hover{background:#ff8c33}
 .btn:disabled{opacity:.55;cursor:default}
 .btn.block{width:100%}
 .btn.ghost{background:transparent;border:1px solid var(--line);color:var(--white)}
@@ -209,8 +209,8 @@ input::placeholder{color:var(--muted)}
 .chips{display:flex;flex-wrap:wrap;gap:9px}
 
 .alert{padding:12px 14px;border-radius:9px;font-size:14px;margin-bottom:16px}
-.alert.bad{background:rgba(231,76,60,.12);border:1px solid rgba(231,76,60,.4);color:#ffb4ab}
-.alert.ok{background:rgba(46,204,113,.12);border:1px solid rgba(46,204,113,.4);color:#8ef0b8}
+.alert.bad{background:#1A1A1A;border:1px solid #FFFFFF;color:#FFFFFF}
+.alert.ok{background:#1A1A1A;border:1px solid #6E6E6E;color:#D8D8D8}
 
 /* ---------- Auth ---------- */
 .auth-wrap{min-height:100dvh;display:flex;align-items:center;justify-content:center;padding:24px}
@@ -246,14 +246,14 @@ input::placeholder{color:var(--muted)}
 .row-sub{color:var(--grey);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .row-ico{
   width:40px;height:40px;border-radius:10px;flex-shrink:0;
-  background:rgba(244,123,32,.15);color:var(--accent);
+  background:#1C1C1C;color:var(--white);
   display:flex;align-items:center;justify-content:center;
 }
 .row-ico svg{width:20px;height:20px}
 
 /* ---------- Modal ---------- */
 .modal-bg{
-  position:fixed;inset:0;background:rgba(5,10,25,.72);z-index:60;
+  position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:60;
   display:flex;align-items:center;justify-content:center;padding:20px;
 }
 .modal{

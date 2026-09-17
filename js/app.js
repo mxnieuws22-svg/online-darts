@@ -21,8 +21,9 @@ const cfg = window.APP_CONFIG || {};
 let sb = null;
 
 const state = {
-  profile: null,   // profiel van de ingelogde gebruiker
+  profile: null,     // profiel van de ingelogde gebruiker
   session: null,
+  onboarding: null,  // ingevulde spelersgegevens (player_onboarding), of null als nog niet ingevuld
 };
 
 const app = document.getElementById("app");
@@ -321,6 +322,32 @@ const db = {
   async setRole(playerId, role) {
     const { error } = await sb.from("profiles").update({ role }).eq("id", playerId);
     if (error) throw error;
+  },
+
+  // Eenmalig ingevulde spelersgegevens (voor initiële divisie-indeling).
+  // Alleen de speler zelf en de organisator mogen dit lezen.
+  async myOnboarding(playerId) {
+    const { data, error } = await sb
+      .from("player_onboarding")
+      .select("*")
+      .eq("player_id", playerId)
+      .maybeSingle();
+    if (error) throw error;
+    return data;
+  },
+
+  async saveOnboarding(playerId, fields) {
+    const { error } = await sb.from("player_onboarding")
+      .upsert({ player_id: playerId, ...fields }, { onConflict: "player_id" });
+    if (error) throw error;
+  },
+
+  // Alle ingevulde spelersgegevens, voor de organisator (bijv. bij het
+  // indelen van spelers in divisies).
+  async allOnboarding() {
+    const { data, error } = await sb.from("player_onboarding").select("*");
+    if (error) throw error;
+    return data || [];
   },
 
   async leagues(status) {
@@ -872,6 +899,79 @@ function renderNewPassword() {
   };
 }
 
+// Verplicht scherm direct na registratie/inloggen zolang er nog geen
+// player_onboarding-rij is. Deze gegevens zijn alleen zichtbaar voor de
+// speler zelf en de organisator, en worden gebruikt voor de initiële
+// indeling in divisies.
+function renderOnboarding() {
+  app.innerHTML = authShell(
+    "Jouw spelersgegevens",
+    "Nodig voor de organisator om je in te delen",
+    `<form id="f" novalidate>
+      <div class="field">
+        <label for="ob-first">Voornaam</label>
+        <input id="ob-first" required autocomplete="given-name">
+      </div>
+      <div class="field">
+        <label for="ob-last">Achternaam</label>
+        <input id="ob-last" required autocomplete="family-name">
+      </div>
+      <div class="field">
+        <label for="ob-platform">Platform</label>
+        <select id="ob-platform" required>
+          <option value="scolia">Scolia</option>
+          <option value="dartcounter">DartCounter</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="ob-nick">Nickname (Scolia / DartCounter)</label>
+        <input id="ob-nick" required>
+      </div>
+      <div class="field">
+        <label for="ob-avg">Gemiddelde (3 darts)</label>
+        <input id="ob-avg" type="number" step="0.01" min="0" max="180" placeholder="Bijv. 53.08" required>
+        <div class="muted" style="font-size:12.5px;margin-top:6px">
+          Enkel zichtbaar voor de beheerder, gebruikt voor de initiële indeling.
+        </div>
+      </div>
+      <button class="btn block" id="submit" type="submit">Opslaan en verder</button>
+    </form>`,
+    `<div class="auth-alt"><button class="linkbtn" onclick="signOut()">Uitloggen</button></div>`
+  );
+
+  document.getElementById("f").onsubmit = async (e) => {
+    e.preventDefault();
+    const btn = document.getElementById("submit");
+    const firstName = document.getElementById("ob-first").value.trim();
+    const lastName = document.getElementById("ob-last").value.trim();
+    const platform = document.getElementById("ob-platform").value;
+    const nickname = document.getElementById("ob-nick").value.trim();
+    const average = document.getElementById("ob-avg").value;
+
+    if (!firstName || !lastName) return showAuthError("Vul je voor- en achternaam in.");
+    if (!nickname) return showAuthError("Vul je nickname in.");
+    if (average === "" || isNaN(Number(average)) || Number(average) < 0) {
+      return showAuthError("Vul een geldig gemiddelde in.");
+    }
+
+    busy(btn, true);
+    try {
+      await db.saveOnboarding(state.profile.id, {
+        first_name: firstName,
+        last_name: lastName,
+        platform,
+        platform_nickname: nickname,
+        reported_average: Number(average),
+      });
+      state.onboarding = await db.myOnboarding(state.profile.id);
+      router();
+    } catch (err) {
+      busy(btn, false, "Opslaan en verder");
+      showAuthError(errText(err));
+    }
+  };
+}
+
 /* -------------------------------------------------------------------------
    6. Navigatie en router
    ------------------------------------------------------------------------- */
@@ -956,6 +1056,7 @@ async function router() {
 
   if (route === "nieuw-wachtwoord") return renderNewPassword();
   if (!state.session) return renderLanding();
+  if (!state.onboarding) return renderOnboarding();
 
   renderShell();
 
@@ -1082,12 +1183,16 @@ function openDivisionDialog(leagueId) {
 }
 
 async function openAssignPlayerDialog(leagueId) {
-  const [players, divisions] = await Promise.all([db.players(), db.divisionsForLeague(leagueId)]);
+  const [players, divisions, onboardingList] = await Promise.all([
+    db.players(), db.divisionsForLeague(leagueId), db.allOnboarding(),
+  ]);
   if (!players.length) return toast("Er zijn nog geen spelers.");
+  const onboardingByPlayer = Object.fromEntries(onboardingList.map((o) => [o.player_id, o]));
   const opts = (list, val, lab) => list.map((x) => `<option value="${esc(x[val])}">${esc(x[lab])}</option>`).join("");
 
   openModal("Speler indelen", `
     <div class="field"><label for="ap">Speler</label><select id="ap">${opts(players, "id", "display_name")}</select></div>
+    <div id="apInfo" class="muted" style="font-size:13px;margin:-8px 0 16px"></div>
     <div class="field"><label for="ad">Divisie</label>
       <select id="ad">
         <option value="">Geen divisie</option>
@@ -1100,6 +1205,19 @@ async function openAssignPlayerDialog(leagueId) {
     toast("Speler ingedeeld");
     router();
   }, "Opslaan");
+
+  // Toont platform/nickname/gemiddelde van de gekozen speler, zodat de
+  // organisator dit kan gebruiken bij de initiële indeling.
+  const infoEl = document.querySelector("#apInfo");
+  const playerSel = document.querySelector("#ap");
+  const showInfo = () => {
+    const o = onboardingByPlayer[playerSel.value];
+    infoEl.textContent = o
+      ? `${o.platform === "scolia" ? "Scolia" : "DartCounter"} · ${o.platform_nickname} · gem. ${Number(o.reported_average).toFixed(2)}`
+      : "Nog geen spelersgegevens ingevuld.";
+  };
+  playerSel.onchange = showInfo;
+  showInfo();
 }
 
 async function promoteWinners(leagueId) {
@@ -1214,6 +1332,18 @@ async function viewProfile() {
       ${statCard({ label: "Gewonnen", value: s?.matches_won ?? 0, ico: "trophy", color: "#2ECC71" })}
       ${statCard({ label: "Gemiddelde", value: Number(s?.average_score ?? 0).toFixed(1), ico: "trend" })}
       ${statCard({ label: "180's", value: s?.count_180 ?? 0, ico: "star", color: "#F5B942" })}
+    </div>
+
+    ${sectionHead("Spelersgegevens")}
+    <div class="card">
+      <div class="row-sub">Naam</div>
+      <div class="row-title mt8">${esc(state.onboarding.first_name)} ${esc(state.onboarding.last_name)}</div>
+      <div class="row-sub mt16">Platform</div>
+      <div class="row-title mt8">${state.onboarding.platform === "scolia" ? "Scolia" : "DartCounter"} &middot; ${esc(state.onboarding.platform_nickname)}</div>
+      <div class="row-sub mt16">Gemiddelde (3 darts)</div>
+      <div class="row-title mt8">${Number(state.onboarding.reported_average).toFixed(2)}</div>
+      <p class="muted" style="font-size:12.5px;margin:12px 0 0">Enkel zichtbaar voor de beheerder.</p>
+      <button class="btn ghost sm mt16" onclick="openOnboardingEditDialog()">Gegevens wijzigen</button>
     </div>
 
     <button class="btn ghost block mt24" onclick="signOut()">
@@ -1471,6 +1601,44 @@ function openNameDialog() {
     toast("Naam gewijzigd");
     router();
   });
+}
+
+function openOnboardingEditDialog() {
+  const o = state.onboarding;
+  openModal("Spelersgegevens wijzigen", `
+    <div class="field"><label for="eob-first">Voornaam</label><input id="eob-first" value="${esc(o.first_name)}" required></div>
+    <div class="field"><label for="eob-last">Achternaam</label><input id="eob-last" value="${esc(o.last_name)}" required></div>
+    <div class="field"><label for="eob-platform">Platform</label>
+      <select id="eob-platform">
+        <option value="scolia" ${o.platform === "scolia" ? "selected" : ""}>Scolia</option>
+        <option value="dartcounter" ${o.platform === "dartcounter" ? "selected" : ""}>DartCounter</option>
+      </select>
+    </div>
+    <div class="field"><label for="eob-nick">Nickname (Scolia / DartCounter)</label>
+      <input id="eob-nick" value="${esc(o.platform_nickname)}" required></div>
+    <div class="field"><label for="eob-avg">Gemiddelde (3 darts)</label>
+      <input id="eob-avg" type="number" step="0.01" min="0" max="180" value="${esc(o.reported_average)}" required></div>`,
+    async (bg) => {
+      const firstName = bg.querySelector("#eob-first").value.trim();
+      const lastName = bg.querySelector("#eob-last").value.trim();
+      const nickname = bg.querySelector("#eob-nick").value.trim();
+      const average = bg.querySelector("#eob-avg").value;
+      if (!firstName || !lastName) throw new Error("Vul je voor- en achternaam in.");
+      if (!nickname) throw new Error("Vul je nickname in.");
+      if (average === "" || isNaN(Number(average)) || Number(average) < 0) {
+        throw new Error("Vul een geldig gemiddelde in.");
+      }
+      await db.saveOnboarding(state.profile.id, {
+        first_name: firstName,
+        last_name: lastName,
+        platform: bg.querySelector("#eob-platform").value,
+        platform_nickname: nickname,
+        reported_average: Number(average),
+      });
+      state.onboarding = await db.myOnboarding(state.profile.id);
+      toast("Spelersgegevens opgeslagen");
+      router();
+    });
 }
 
 function openLeagueDialog() {
@@ -1755,6 +1923,7 @@ async function boot() {
   if (state.session) {
     try {
       state.profile = await db.myProfile(state.session.user.id);
+      state.onboarding = await db.myOnboarding(state.session.user.id);
     } catch (e) {
       // Meestal: de SQL-migratie is nog niet gedraaid, dus er is geen
       // profielrij voor deze gebruiker.
@@ -1790,10 +1959,12 @@ function init() {
     state.session = session;
     if (!session) {
       state.profile = null;
+      state.onboarding = null;
       return renderLanding();
     }
     if (!wasLoggedIn) {
       state.profile = await db.myProfile(session.user.id).catch(() => null);
+      state.onboarding = await db.myOnboarding(session.user.id).catch(() => null);
       if (!location.hash || location.hash === "#/nieuw-wachtwoord") location.hash = "#/";
       router();
     }

@@ -98,9 +98,14 @@ create table if not exists public.leagues (
   -- volledige aantal gespeeld (niet eerder gestopt bij een meerderheid),
   -- zodat een gelijkspel (bv. 5-5 bij 10) mogelijk is.
   legs_per_match int      not null default 10 check (legs_per_match > 0),
-  -- Aantal divisies (1-4), exact startmoment (UTC) en tijdzone voor
+  -- Elke league is precies één divisie (max 12 spelers, zie
+  -- enforce_division_capacity) - meerdere niveaus worden gemodelleerd als
+  -- aparte leagues (bv. "1e divisie", "2e divisie"), niet als meerdere
+  -- divisies binnen één league. Kolom blijft bestaan voor compatibiliteit
+  -- met bestaande code die league.division_count uitleest, maar kan alleen
+  -- nog de waarde 1 hebben. Exact startmoment (UTC) en tijdzone voor
   -- weergave; zie sectie 11 voor de automatische start/wedstrijdgeneratie.
-  division_count int         not null default 4 check (division_count between 1 and 4),
+  division_count int         not null default 1 check (division_count = 1),
   start_at     timestamptz,
   timezone     text        not null default 'Europe/Amsterdam',
   end_at       timestamptz,
@@ -115,15 +120,20 @@ alter table public.leagues
 
 alter table public.leagues
   add column if not exists description text,
-  add column if not exists division_count int not null default 4,
+  add column if not exists division_count int not null default 1,
   add column if not exists start_at timestamptz,
   add column if not exists timezone text not null default 'Europe/Amsterdam',
   add column if not exists end_at timestamptz,
   add column if not exists match_deadline_days int not null default 7;
 
+-- Bestaande installaties: de kolom bestond al met default 4 - expliciet
+-- bijwerken, "add column if not exists" hierboven raakt een bestaande
+-- kolom niet aan.
+alter table public.leagues alter column division_count set default 1;
+
 alter table public.leagues drop constraint if exists leagues_division_count_check;
 alter table public.leagues
-  add constraint leagues_division_count_check check (division_count between 1 and 4);
+  add constraint leagues_division_count_check check (division_count = 1);
 
 alter table public.leagues drop constraint if exists leagues_match_deadline_days_check;
 alter table public.leagues
@@ -1037,24 +1047,24 @@ grant execute on function public.reject_league_match_result(uuid) to authenticat
 
 
 -- ----------------------------------------------------------------------------
--- 8. Divisies binnen een league
+-- 8. Divisie van een league
 -- ----------------------------------------------------------------------------
--- Spelers worden ingedeeld in een divisie binnen een league: vaste
--- gemiddelde-drempels (1e divisie 70+, 2e 60+, 3e 50+, 4e <50), max 12
--- spelers per divisie, min. 4 om te kunnen starten. "Automatisch indelen"
--- (auto_assign_divisions) doet de allereerste indeling op gemiddelde, zolang
--- de league nog niet actief is. "Promotie/degradatie" (apply_promotion_
--- relegation) is het doorlopende mechanisme: elk seizoen 2 op / 2 neer
--- tussen aangrenzende divisies, op basis van punten uit gespeelde
--- wedstrijden (zie league_standings voor de rangschikking).
+-- Elke league heeft precies één divisie (max 12 spelers, min. 4 om te
+-- kunnen starten). Meerdere niveaus (1e, 2e, 3e divisie, ...) zijn aparte
+-- leagues, geen meerdere divisies binnen één league - de tabel bleef
+-- bestaan (i.p.v. de kolommen rechtstreeks op leagues te zetten) om de
+-- rest van de code (division_id op league_players/league_matches,
+-- league_division_history, division_winners) ongemoeid te laten.
+-- "Automatisch indelen" (auto_assign_divisions) maakt deze ene divisie aan
+-- en plaatst alle spelers erin, gesorteerd op gemiddelde.
 
 create table if not exists public.league_divisions (
   id         uuid primary key default gen_random_uuid(),
   league_id  uuid not null references public.leagues (id) on delete cascade,
   name       text not null,
-  rank       int  not null check (rank between 1 and 4),
-  -- Gemiddelde-drempels voor "Automatisch indelen". null = geen ondergrens
-  -- (4e divisie) resp. geen bovengrens (1e divisie).
+  rank       int  not null check (rank = 1),
+  -- Gemiddelde-drempels: niet meer gebruikt nu een league altijd maar één
+  -- divisie heeft (kolommen blijven bestaan voor bestaande rijen/code).
   min_average numeric(5,2),
   max_average numeric(5,2),
   created_at timestamptz not null default now(),
@@ -1066,7 +1076,7 @@ alter table public.league_divisions
   add column if not exists max_average numeric(5,2);
 
 alter table public.league_divisions drop constraint if exists league_divisions_rank_check;
-alter table public.league_divisions add constraint league_divisions_rank_check check (rank between 1 and 4);
+alter table public.league_divisions add constraint league_divisions_rank_check check (rank = 1);
 
 create index if not exists idx_league_divisions_league on public.league_divisions (league_id);
 
@@ -1201,21 +1211,16 @@ $$;
 grant execute on function public.league_confirmed_matches(uuid) to authenticated;
 
 
--- Automatisch indelen op gemiddelde, met leagues.division_count (1-4)
--- divisies (zie sectie 11). Vaste drempels van hoog naar laag (70/60/50);
--- bij minder dan 4 divisies worden de eerste (division_count - 1) drempels
--- gebruikt en vangt de laatste divisie altijd de rest op (geen ondergrens).
--- Max 12 per divisie; wie boven de 12 valt zakt door naar de eerstvolgende
--- lagere divisie. Alleen zolang de league nog op 'draft' staat. Maximaal
--- division_count x 12 spelers te verwerken - anders kan de max-12-regel
--- niet gegarandeerd worden en wordt er niets uitgevoerd.
+-- Automatisch indelen: plaatst alle spelers van de league in de ene divisie
+-- (zie sectie 8 hierboven - meerdere niveaus zijn aparte leagues, geen
+-- meerdere divisies binnen één league), gesorteerd op gemiddelde. Max 12
+-- spelers per league. Alleen zolang de league nog op 'draft' staat.
 --
 -- Het gebruikte gemiddelde is player_statistics.average_score zodra dat
 -- betrouwbaar genoeg is (average_sample_count >= 5), anders het zelf
 -- opgegeven player_onboarding.reported_average. Ontbreekt beide (zou niet
--- moeten voorkomen nu onboarding verplicht is), dan telt 0 en komt de
--- speler in de laatste divisie terecht, gemarkeerd als low_confidence in
--- het resultaat.
+-- moeten voorkomen nu onboarding verplicht is), dan telt 0, gemarkeerd als
+-- low_confidence in het resultaat.
 --
 -- Logt elke daadwerkelijke wijziging (niet bij herhaald draaien op dezelfde
 -- indeling) naar league_division_history en stuurt de speler een melding
@@ -1234,18 +1239,11 @@ set search_path = public
 as $$
 declare
   v_status text;
-  v_count int;
   v_total int;
   v_league_name text;
   v_season text;
-  v_div_ids uuid[];
-  v_min_avgs numeric[];
-  v_counts int[];
-  v_thresholds numeric[] := array[70, 60, 50];
-  v_name text;
+  v_div_id uuid;
   rec record;
-  v_target_rank int;
-  i int;
 begin
   if auth.uid() is null then
     raise exception 'Je moet ingelogd zijn.';
@@ -1254,7 +1252,7 @@ begin
     raise exception 'Alleen de organisator kan automatisch indelen.';
   end if;
 
-  select status, division_count, name, season into v_status, v_count, v_league_name, v_season
+  select status, name, season into v_status, v_league_name, v_season
     from public.leagues where id = p_league_id;
   if v_status is null then
     raise exception 'League niet gevonden.';
@@ -1267,38 +1265,19 @@ begin
   if v_total = 0 then
     raise exception 'Er zijn nog geen spelers in deze league.';
   end if;
-  if v_total > v_count * 12 then
-    raise exception 'Te veel spelers voor % divisie(s) van elk maximaal 12 (% spelers, max %).', v_count, v_total, v_count * 12;
+  if v_total > 12 then
+    raise exception 'Te veel spelers voor deze league (% spelers, max 12).', v_total;
   end if;
 
-  v_counts := array_fill(0, array[v_count]);
+  insert into public.league_divisions (league_id, name, rank)
+  values (p_league_id, '1e divisie', 1)
+  on conflict (league_id, rank) do nothing
+  returning id into v_div_id;
 
-  -- Zorg dat precies v_count divisies met de juiste drempels bestaan (naam
-  -- blijft ongemoeid als de organisator die al had aangepast).
-  for i in 1..v_count loop
-    v_name := i || 'e divisie';
-    insert into public.league_divisions (league_id, name, rank, min_average, max_average)
-    values (
-      p_league_id, v_name, i,
-      case when i < v_count then v_thresholds[i] else null end,
-      case when i > 1 then v_thresholds[i - 1] else null end
-    )
-    on conflict (league_id, rank) do update
-      set min_average = excluded.min_average,
-          max_average = excluded.max_average;
-  end loop;
-
-  -- Overtollige divisies van een eerder hoger ingesteld aantal opruimen,
-  -- maar alleen als ze leeg zijn.
-  delete from public.league_divisions ld
-  where ld.league_id = p_league_id
-    and ld.rank > v_count
-    and not exists (select 1 from public.league_players lp where lp.division_id = ld.id);
-
-  select array_agg(id order by rank), array_agg(min_average order by rank)
-    into v_div_ids, v_min_avgs
-    from public.league_divisions
-    where league_id = p_league_id and rank between 1 and v_count;
+  if v_div_id is null then
+    select id into v_div_id from public.league_divisions
+      where league_id = p_league_id and rank = 1;
+  end if;
 
   for rec in
     select
@@ -1321,41 +1300,28 @@ begin
       po.reported_average desc nulls last,
       p.display_name
   loop
-    -- Natuurlijke divisie o.b.v. drempel.
-    v_target_rank := 1;
-    while v_target_rank < v_count and v_min_avgs[v_target_rank] is not null and rec.eff_avg < v_min_avgs[v_target_rank] loop
-      v_target_rank := v_target_rank + 1;
-    end loop;
-
-    -- Doorval als die divisie al vol zit (max 12).
-    while v_counts[v_target_rank] >= 12 and v_target_rank < v_count loop
-      v_target_rank := v_target_rank + 1;
-    end loop;
-
     update public.league_players lp
-      set division_id = v_div_ids[v_target_rank]
+      set division_id = v_div_id
       where lp.league_id = p_league_id and lp.player_id = rec.p_id;
 
-    v_counts[v_target_rank] := v_counts[v_target_rank] + 1;
-
-    if rec.old_division_id is distinct from v_div_ids[v_target_rank] then
+    if rec.old_division_id is distinct from v_div_id then
       insert into public.league_division_history
         (player_id, league_id, league_name, season, division_id, division_name, division_rank, reason)
       values
-        (rec.p_id, p_league_id, v_league_name, v_season, v_div_ids[v_target_rank], v_target_rank || 'e divisie', v_target_rank, 'initial');
+        (rec.p_id, p_league_id, v_league_name, v_season, v_div_id, '1e divisie', 1, 'initial');
 
       insert into public.notifications (player_id, type, title, body, league_id)
       values (
         rec.p_id, 'division_assigned',
         'Je bent ingedeeld!',
-        'Je speelt in ' || (v_target_rank || 'e divisie') || ' van ' || v_league_name || '. Bekijk je divisie en tegenstanders.',
+        'Je speelt mee in ' || v_league_name || '. Bekijk de stand en je tegenstanders.',
         p_league_id
       );
     end if;
 
     player_id := rec.p_id;
     display_name := rec.p_name;
-    division_name := v_target_rank || 'e divisie';
+    division_name := '1e divisie';
     effective_average := rec.eff_avg;
     low_confidence := rec.no_onboarding;
     return next;
@@ -1491,146 +1457,14 @@ $$;
 grant execute on function public.league_standings(uuid) to authenticated;
 
 
--- Promotie/degradatie: 2 op / 2 neer tussen aangrenzende divisies, op basis
--- van dezelfde rangschikking als league_standings. Divisie 1 kent geen
--- promotie (niets erboven), divisie 4 geen degradatie (niets eronder). Bij
--- minder dan 4 spelers in een divisie wordt het aantal dat verschuift
--- verlaagd naar min(2, aantal // 2), zodat "beste 2" en "onderste 2"
--- elkaar nooit overlappen. Vervangt de oudere promote_division_winners
--- (die geen degradatie kende). Logt elke verschuiving naar
--- league_division_history en stuurt de speler een melding (zie sectie 12).
+-- Promotie/degradatie tussen divisies binnen één league is vervallen nu
+-- elke league precies één divisie heeft (zie sectie 8) - een niveauwissel
+-- betekent nu dat een speler in een andere league wordt ingedeeld, wat de
+-- organisator handmatig doet (Speler indelen op de doel-league). Deze
+-- functies deden niets meer zodra league_divisions.rank altijd 1 is
+-- (er bestaat nooit een aangrenzende divisie om naartoe te bewegen).
 drop function if exists public.promote_division_winners(uuid);
-
-create or replace function public.apply_promotion_relegation(p_league_id uuid)
-returns table(
-  player_id uuid,
-  display_name text,
-  movement text,
-  from_division text,
-  to_division text
-)
-language plpgsql
-security definer
-set search_path = public
-as $$
-declare
-  rec record;
-  v_div record;
-  v_move_count int;
-  v_league_name text;
-  v_season text;
-begin
-  if auth.uid() is null then
-    raise exception 'Je moet ingelogd zijn.';
-  end if;
-  if not public.is_organizer() then
-    raise exception 'Alleen de organisator kan promotie/degradatie toepassen.';
-  end if;
-
-  select name, season into v_league_name, v_season from public.leagues where id = p_league_id;
-  if v_league_name is null then
-    raise exception 'League niet gevonden.';
-  end if;
-
-  -- Bevroren rangschikking: beide passes (promotie en degradatie) gebruiken
-  -- dezelfde momentopname, zodat een verschuiving in de ene divisiegrens de
-  -- berekening van een andere grens niet beïnvloedt.
-  create temporary table tmp_pr_standings on commit drop as
-  select s.*, count(*) over (partition by s.division_id) as division_size
-  from public.league_standings(p_league_id) s
-  where s.division_id is not null;
-
-  -- Promotie: beste N van elke divisie (behalve rank 1) naar rank - 1.
-  for v_div in
-    select distinct division_id, division_rank, division_size from tmp_pr_standings where division_rank > 1
-  loop
-    v_move_count := least(2, v_div.division_size / 2);
-    if v_move_count > 0 then
-      for rec in
-        select ts.player_id as p_id, p.display_name as p_name,
-               d_from.name as from_name, d_to.id as to_id, d_to.name as to_name, d_to.rank as to_rank
-        from tmp_pr_standings ts
-        join public.profiles p on p.id = ts.player_id
-        join public.league_divisions d_from on d_from.id = ts.division_id
-        join public.league_divisions d_to
-          on d_to.league_id = d_from.league_id and d_to.rank = d_from.rank - 1
-        where ts.division_id = v_div.division_id
-          and ts.position_in_division <= v_move_count
-      loop
-        update public.league_players lp
-          set division_id = rec.to_id
-          where lp.league_id = p_league_id and lp.player_id = rec.p_id;
-
-        insert into public.league_division_history
-          (player_id, league_id, league_name, season, division_id, division_name, division_rank, reason)
-        values
-          (rec.p_id, p_league_id, v_league_name, v_season, rec.to_id, rec.to_name, rec.to_rank, 'promotion');
-
-        insert into public.notifications (player_id, type, title, body, league_id)
-        values (
-          rec.p_id, 'division_promoted',
-          'Gefeliciteerd! Je bent gepromoveerd.',
-          'Je speelt vanaf nu in ' || rec.to_name || ' van ' || v_league_name || '.',
-          p_league_id
-        );
-
-        player_id := rec.p_id;
-        display_name := rec.p_name;
-        movement := 'promotie';
-        from_division := rec.from_name;
-        to_division := rec.to_name;
-        return next;
-      end loop;
-    end if;
-  end loop;
-
-  -- Degradatie: onderste N van elke divisie (behalve rank 4) naar rank + 1.
-  for v_div in
-    select distinct division_id, division_rank, division_size from tmp_pr_standings where division_rank < 4
-  loop
-    v_move_count := least(2, v_div.division_size / 2);
-    if v_move_count > 0 then
-      for rec in
-        select ts.player_id as p_id, p.display_name as p_name,
-               d_from.name as from_name, d_to.id as to_id, d_to.name as to_name, d_to.rank as to_rank
-        from tmp_pr_standings ts
-        join public.profiles p on p.id = ts.player_id
-        join public.league_divisions d_from on d_from.id = ts.division_id
-        join public.league_divisions d_to
-          on d_to.league_id = d_from.league_id and d_to.rank = d_from.rank + 1
-        where ts.division_id = v_div.division_id
-          and ts.position_in_division > (v_div.division_size - v_move_count)
-      loop
-        update public.league_players lp
-          set division_id = rec.to_id
-          where lp.league_id = p_league_id and lp.player_id = rec.p_id;
-
-        insert into public.league_division_history
-          (player_id, league_id, league_name, season, division_id, division_name, division_rank, reason)
-        values
-          (rec.p_id, p_league_id, v_league_name, v_season, rec.to_id, rec.to_name, rec.to_rank, 'relegation');
-
-        insert into public.notifications (player_id, type, title, body, league_id)
-        values (
-          rec.p_id, 'division_relegated',
-          'Divisiewijziging',
-          'Je speelt vanaf nu in ' || rec.to_name || ' van ' || v_league_name || '.',
-          p_league_id
-        );
-
-        player_id := rec.p_id;
-        display_name := rec.p_name;
-        movement := 'degradatie';
-        from_division := rec.from_name;
-        to_division := rec.to_name;
-        return next;
-      end loop;
-    end if;
-  end loop;
-end;
-$$;
-
-grant execute on function public.apply_promotion_relegation(uuid) to authenticated;
+drop function if exists public.apply_promotion_relegation(uuid);
 
 
 -- ----------------------------------------------------------------------------
@@ -1932,8 +1766,8 @@ begin
       insert into public.prize_notifications (player_id, prize_claim_id, title, body)
       values (
         rec.pid, v_claim_id,
-        'Gefeliciteerd! Je hebt ' || rec.dname || ' gewonnen',
-        'Je bent winnaar geworden van ' || rec.dname || '. Je hebt een gepersonaliseerd ' ||
+        'Gefeliciteerd! Je hebt ' || v_league_name || ' gewonnen',
+        'Je bent winnaar geworden van ' || v_league_name || '. Je hebt een gepersonaliseerd ' ||
         'kledingstuk gewonnen, beschikbaar gesteld door LWPrints.'
       );
 
@@ -2615,15 +2449,16 @@ select cron.schedule(
 
 
 -- ============================================================================
--- 12. Divisiehistorie, één-actieve-league-regel, en meldingen bij
---     indeling/promotie/degradatie.
---     (De relevante wijzigingen aan protect_league_schedule_fields(),
---     auto_assign_divisions() en apply_promotion_relegation() staan
---     hierboven, direct bij hun oorspronkelijke definitie.)
+-- 12. Divisiehistorie, één-actieve-league-regel, en meldingen bij indeling.
+--     (De relevante wijzigingen aan protect_league_schedule_fields() en
+--     auto_assign_divisions() staan hierboven, direct bij hun
+--     oorspronkelijke definitie. 'promotion'/'relegation' als reason komen
+--     uit een oudere versie van dit systeem, zie apply_promotion_relegation
+--     hierboven - laten bestaan voor bestaande historierijen.)
 -- ============================================================================
 
 -- Permanente historie van divisie-indelingen (nooit overschreven, ook niet
--- door latere promotie/degradatie of een nieuwe automatische indeling).
+-- door een nieuwe automatische indeling).
 create table if not exists public.league_division_history (
   id             uuid primary key default gen_random_uuid(),
   player_id      uuid not null references public.profiles (id) on delete cascade,
@@ -2650,8 +2485,8 @@ create policy "league_division_history_select_own_or_organizer"
   using (player_id = auth.uid() or public.is_organizer());
 
 -- Let op: bewust geen insert/update-policy - uitsluitend geschreven door
--- auto_assign_divisions() en apply_promotion_relegation() (beide security
--- definer), zodat de historie nooit door een cliënt aangepast kan worden.
+-- auto_assign_divisions() (security definer), zodat de historie nooit door
+-- een cliënt aangepast kan worden.
 
 
 -- Eén speler mag maar in één geplande/actieve league tegelijk zitten. Geldt

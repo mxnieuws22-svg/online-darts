@@ -279,7 +279,7 @@ function matchCard(m) {
   return `
     <div class="card">
       <div class="match-top">
-        <span class="match-league">${esc([m.league?.name, m.division?.name].filter(Boolean).join(" · "))}</span>
+        <span class="match-league">${esc(m.league?.name || "")}</span>
         ${matchStatusBadge(m)}
       </div>
       <div class="match-row">
@@ -596,11 +596,6 @@ const db = {
     return data || [];
   },
 
-  async createDivision(fields) {
-    const { error } = await sb.from("league_divisions").insert(fields);
-    if (error) throw error;
-  },
-
   async leagueMembers(leagueId) {
     const { data, error } = await sb
       .from("league_players")
@@ -661,19 +656,10 @@ const db = {
     }));
   },
 
-  // Eerste, volledige indeling op gemiddelde (1e divisie 70+, 2e 60+, 3e
-  // 50+, 4e <50), max 12 per divisie. Alleen zolang de league nog niet
-  // actief is.
+  // Plaatst alle spelers van de league in de ene divisie, gesorteerd op
+  // gemiddelde (max 12 spelers). Alleen zolang de league nog niet actief is.
   async autoAssignDivisions(leagueId) {
     const { data, error } = await sb.rpc("auto_assign_divisions", { p_league_id: leagueId });
-    if (error) throw error;
-    return data || [];
-  },
-
-  // Promotie/degradatie: 2 op / 2 neer tussen aangrenzende divisies, op
-  // basis van de punten uit gespeelde wedstrijden.
-  async applyPromotionRelegation(leagueId) {
-    const { data, error } = await sb.rpc("apply_promotion_relegation", { p_league_id: leagueId });
     if (error) throw error;
     return data || [];
   },
@@ -1672,7 +1658,7 @@ async function viewHome() {
           <div class="row-ico">${icon.league}</div>
           <div class="row-main">
             <div class="row-title">Mijn competitie</div>
-            <div class="row-sub">${esc(membership.league.name)} &middot; ${esc(membership.division?.name || "Nog niet ingedeeld")}</div>
+            <div class="row-sub">${esc(membership.league.name)}${membership.division ? "" : " &middot; Nog niet ingedeeld"}</div>
           </div>
           ${myDivisionPosition ? `<div class="muted" style="font-size:13px;flex-shrink:0">Plaats ${myDivisionPosition} van ${myDivisionTotal}</div>` : ""}
         </div>
@@ -1749,7 +1735,7 @@ async function viewMyDivision(focusMatchId) {
 
   setView(`
     <h1>Jouw divisie</h1>
-    <p class="sub">${esc(membership.division?.name || "")} &middot; ${esc(league.name)}${league.season ? " &middot; Seizoen: " + esc(league.season) : ""}</p>
+    <p class="sub">${esc(league.name)}${league.season ? " &middot; Seizoen: " + esc(league.season) : ""}</p>
     <button class="linkbtn mt8" style="margin-bottom:16px" onclick="go('league/${esc(league.id)}')">Bekijk de hele league &rarr;</button>
 
     ${focusMatch ? `
@@ -1804,10 +1790,9 @@ async function viewLeagues() {
         </div>
       </summary>
       <div class="muted" style="font-size:13.5px;line-height:1.6;margin-top:14px">
-        <p>Een league bestaat uit maximaal 4 divisies. Spelers worden op basis van hun 3-dart gemiddelde ingedeeld in een divisie. Iedere divisie heeft maximaal 12 spelers.</p>
+        <p>Een league is één groep van maximaal 12 spelers, gerangschikt op punten: 1e, 2e, 3e, enzovoort. Wil je meerdere niveaus (bv. een 1e en 2e divisie), maak daar dan aparte leagues voor aan.</p>
         <p>De wedstrijden worden automatisch ingedeeld. Iedere wedstrijd heeft vanaf het moment waarop deze beschikbaar wordt gesteld 7 dagen de tijd om gespeeld te worden. De deadline geldt afzonderlijk per wedstrijd.</p>
-        <p>Aan het einde van een league-periode wordt de eindstand opgemaakt. De beste spelers kunnen promoveren naar een hogere divisie en de laagst geklasseerde spelers kunnen degraderen.</p>
-        <p>De winnaar van iedere divisie ontvangt een kampioenstitel en een gepersonaliseerde prijs, beschikbaar gesteld door LWPrints. Dit kan bijvoorbeeld een bedrukt T-shirt, hoodie of polo zijn.</p>
+        <p>De winnaar van de league ontvangt een kampioenstitel en een gepersonaliseerde prijs, beschikbaar gesteld door LWPrints. Dit kan bijvoorbeeld een bedrukt T-shirt, hoodie of polo zijn.</p>
       </div>
     </details>
 
@@ -1850,12 +1835,6 @@ async function viewLeagueDetail(id) {
   const winners = (isOrg && league.status === "finished") ? await db.divisionWinnersForLeague(id) : [];
   const groups = groupStandingsByDivision(standings);
   const canEditSchedule = isOrg && (league.status === "draft" || league.status === "scheduled");
-  const perDivision = {};
-  for (const m of members) {
-    const key = m.division?.name || "Geen divisie";
-    perDivision[key] = (perDivision[key] || 0) + 1;
-  }
-  const perDivisionText = Object.entries(perDivision).map(([name, n]) => `${esc(name)}: ${n}`).join(" · ") || "Nog geen spelers ingedeeld";
 
   setView(`
     <button class="linkbtn" onclick="go('leagues')" style="display:flex;align-items:center;gap:4px;margin-bottom:12px">
@@ -1869,8 +1848,7 @@ async function viewLeagueDetail(id) {
       ${sectionHead("Planning")}
       <div class="card">
         ${infoRow("Status", badge(league.status))}
-        ${infoRow("Aantal divisies", `${esc(league.division_count)} (max 12 spelers per divisie)`)}
-        ${infoRow("Spelers per divisie", perDivisionText)}
+        ${infoRow("Spelers", `${members.length}/12`)}
         ${infoRow("Tijdzone", esc(league.timezone))}
         ${infoRow("Wedstrijden aangemaakt", matches.length)}
         <p class="muted" style="font-size:13px;margin:12px 0 0">${esc(leagueNextActionText(league))}</p>
@@ -1879,11 +1857,6 @@ async function viewLeagueDetail(id) {
         <div class="card mt16">
           <div class="field"><label for="lp-desc">Beschrijving <span class="muted" style="font-weight:400">(optioneel)</span></label>
             <input id="lp-desc" value="${esc(league.description || "")}" placeholder="Bijv. Najaarscompetitie 2026"></div>
-          <div class="field"><label for="lp-dc">Aantal divisies</label>
-            <select id="lp-dc">
-              ${[1, 2, 3, 4].map((n) => `<option value="${n}" ${league.division_count === n ? "selected" : ""}>${n}</option>`).join("")}
-            </select>
-          </div>
           <div class="field"><label for="lp-start">Startdatum en -tijd</label>
             <input id="lp-start" type="datetime-local" value="${league.start_at ? fmtDatetimeLocal(league.start_at) : ""}"></div>
           <div class="field"><label for="lp-end">Einddatum <span class="muted" style="font-weight:400">(optioneel)</span></label>
@@ -1901,23 +1874,20 @@ async function viewLeagueDetail(id) {
       : emptyView("Nog geen indeling", "Er zijn nog geen spelers ingedeeld in deze league.", "league")}
 
     ${isOrg ? `
-      ${sectionHead("Divisies en spelers")}
+      ${sectionHead("Spelers")}
       <div class="chips" style="margin-bottom:14px">
         ${league.status === "draft" ? `
           <button class="chip" onclick="autoAssignDivisions('${esc(id)}')">${icon.target} Automatisch indelen</button>` : ""}
-        <button class="chip" onclick="openDivisionDialog('${esc(id)}')">${icon.plus} Nieuwe divisie</button>
         <button class="chip" onclick="openAssignPlayerDialog('${esc(id)}')">${icon.plus} Speler indelen</button>
-        ${league.status === "finished" ? `
-          <button class="chip" onclick="applyPromotionRelegation('${esc(id)}')">${icon.trophy} Promotie/degradatie toepassen</button>` : ""}
       </div>
       ${league.status === "draft" ? `
         <p class="muted" style="font-size:12.5px;margin:-6px 0 14px">
-          Automatisch indelen: 1e divisie 70+ gemiddelde, 2e 60+, 3e 50+, 4e &lt;50 (max 12 per divisie).
+          Automatisch indelen: rangschikt spelers op gemiddelde (max 12 spelers per league).
         </p>` : ""}
     ` : ""}
 
     ${isOrg && league.status === "finished" ? `
-      ${sectionHead("Divisiewinnaars & prijzen")}
+      ${sectionHead("Winnaar & prijs")}
       ${winners.length ? `
         <div class="card">
           ${winners.map((w, i) => `
@@ -1925,16 +1895,15 @@ async function viewLeagueDetail(id) {
               ${avatar(w.player, "sm")}
               <div class="row-main">
                 <div class="row-title">${esc(w.player?.display_name || "?")}</div>
-                <div class="row-sub">${esc(w.division_name)}</div>
               </div>
               ${w.claim ? prizeStatusBadge(w.claim.status) : ""}
             </div>`).join("")}
         </div>
         <button class="btn ghost sm mt8" onclick="go('beheer/prijzen')">Alle prijzen beheren</button>
       ` : `
-        <button class="btn" onclick="determineDivisionWinners('${esc(id)}')">${icon.trophy} Bepaal divisiewinnaars</button>
+        <button class="btn" onclick="determineDivisionWinners('${esc(id)}')">${icon.trophy} Bepaal winnaar</button>
         <p class="muted" style="font-size:12.5px;margin:8px 0 0">
-          Elke divisiewinnaar krijgt automatisch een melding en kan zijn prijs claimen (beschikbaar gesteld door LWPrints).
+          De winnaar krijgt automatisch een melding en kan zijn prijs claimen (beschikbaar gesteld door LWPrints).
         </p>
       `}
     ` : ""}
@@ -1957,7 +1926,6 @@ async function saveLeagueSchedule(leagueId, schedule) {
   const end = document.querySelector("#lp-end").value;
   const fields = {
     description: document.querySelector("#lp-desc").value.trim() || null,
-    division_count: Number(document.querySelector("#lp-dc").value),
     start_at: startAt,
     end_at: end ? new Date(end + "T23:59:59").toISOString() : null,
   };
@@ -1973,8 +1941,8 @@ async function determineDivisionWinners(leagueId) {
   try {
     const winners = await db.determineDivisionWinners(leagueId);
     toast(winners.length
-      ? `${winners.length} divisiewinnaar(s) bepaald en op de hoogte gebracht.`
-      : "Geen winnaars: in geen enkele divisie is nog een wedstrijd gespeeld.");
+      ? "Winnaar bepaald en op de hoogte gebracht."
+      : "Geen winnaar: er is nog geen wedstrijd gespeeld.");
     router();
   } catch (e) { toast(errText(e)); }
 }
@@ -1992,7 +1960,7 @@ async function viewPrizeDetail(id) {
     await db.markPrizeNotificationsReadForClaim(claim.id).catch(() => {});
   }
 
-  const prizeBlurb = "De winnaar van elke divisie ontvangt een gepersonaliseerd bedrukt kledingstuk, " +
+  const prizeBlurb = "De winnaar van de league ontvangt een gepersonaliseerd bedrukt kledingstuk, " +
     "beschikbaar gesteld door LWPrints. Je kunt, in overleg en afhankelijk van de mogelijkheden en " +
     "beschikbaarheid, kiezen uit een bedrukt T-shirt, een hoodie of een polo.";
 
@@ -2006,8 +1974,8 @@ async function viewPrizeDetail(id) {
 
     <div class="card center" style="padding:28px 20px">
       <span style="width:40px;height:40px;color:var(--accent);display:inline-flex;margin:0 auto 12px">${icon.trophy}</span>
-      <h1 style="font-size:22px">${esc(w.division_name)} gewonnen!</h1>
-      <p class="sub" style="margin-bottom:4px">${esc(w.league_name)}${w.season ? " · " + esc(w.season) : ""}</p>
+      <h1 style="font-size:22px">${esc(w.league_name)} gewonnen!</h1>
+      ${w.season ? `<p class="sub" style="margin-bottom:4px">${esc(w.season)}</p>` : ""}
       <p class="muted" style="font-size:13px">Bepaald op ${esc(fmtDate(w.decided_at, false))}</p>
     </div>
 
@@ -2125,7 +2093,7 @@ async function viewManagePrizes() {
           ${avatar(w.player, "sm")}
           <div class="row-main">
             <div class="row-title">${esc(w.player?.display_name || "?")}</div>
-            <div class="row-sub">${esc(w.division_name)} · ${esc(w.league_name)}${w.season ? " · " + esc(w.season) : ""}</div>
+            <div class="row-sub">${esc(w.league_name)}${w.season ? " · " + esc(w.season) : ""}</div>
           </div>
           ${w.claim ? prizeStatusBadge(w.claim.status) : ""}
         </div>
@@ -2155,7 +2123,7 @@ async function viewManagePrizeDetail(claimId) {
     <div class="card center">
       ${avatar(w.player, "lg")}
       <div class="mt16" style="font-size:19px;font-weight:700">${esc(w.player?.display_name || "?")}</div>
-      <div class="muted" style="font-size:14px">${esc(w.division_name)} · ${esc(w.league_name)}${w.season ? " · " + esc(w.season) : ""}</div>
+      <div class="muted" style="font-size:14px">${esc(w.league_name)}${w.season ? " · " + esc(w.season) : ""}</div>
       <div class="mt8">${prizeStatusBadge(c.status)}</div>
     </div>
 
@@ -2233,22 +2201,6 @@ async function saveAdminNotes(claimId) {
   } catch (e) { toast(errText(e)); }
 }
 
-function openDivisionDialog(leagueId) {
-  openModal("Nieuwe divisie", `
-    <div class="field"><label for="dn">Naam</label><input id="dn" required placeholder="Bijv. 1e divisie"></div>
-    <div class="field"><label for="dr">Niveau <span class="muted" style="font-weight:400">(1 = hoogste)</span></label>
-      <input id="dr" type="number" min="1" value="1" required></div>`,
-    async (bg) => {
-      const name = bg.querySelector("#dn").value.trim();
-      const rank = parseInt(bg.querySelector("#dr").value, 10);
-      if (!name) throw new Error("Vul een naam in.");
-      if (isNaN(rank) || rank < 1) throw new Error("Kies een geldig niveau.");
-      await db.createDivision({ league_id: leagueId, name, rank });
-      toast("Divisie aangemaakt");
-      router();
-    }, "Divisie aanmaken");
-}
-
 async function openAssignPlayerDialog(leagueId) {
   const [players, divisions, onboardingList, members] = await Promise.all([
     db.players(), db.divisionsForLeague(leagueId), db.allOnboarding(), db.leagueMembers(leagueId),
@@ -2301,26 +2253,9 @@ async function autoAssignDivisions(leagueId) {
     const lowConfidence = placed.filter((p) => p.low_confidence);
     let msg = `${placed.length} speler(s) ingedeeld.`;
     if (lowConfidence.length) {
-      msg += ` Let op: ${lowConfidence.map((p) => p.display_name).join(", ")} had(den) geen gemiddelde en staat/staan nu in de 4e divisie.`;
+      msg += ` Let op: ${lowConfidence.map((p) => p.display_name).join(", ")} had(den) geen gemiddelde en telt/tellen nu als 0.`;
     }
     toast(msg);
-    router();
-  } catch (e) { toast(errText(e)); }
-}
-
-async function applyPromotionRelegation(leagueId) {
-  try {
-    const moves = await db.applyPromotionRelegation(leagueId);
-    if (!moves.length) {
-      toast("Niemand om te verplaatsen: geen wedstrijden gespeeld, of alle divisies zijn te klein.");
-    } else {
-      const promoted = moves.filter((m) => m.movement === "promotie");
-      const relegated = moves.filter((m) => m.movement === "degradatie");
-      const parts = [];
-      if (promoted.length) parts.push(`${promoted.length} promotie (${promoted.map((p) => p.display_name).join(", ")})`);
-      if (relegated.length) parts.push(`${relegated.length} degradatie (${relegated.map((p) => p.display_name).join(", ")})`);
-      toast(parts.join(" · "));
-    }
     router();
   } catch (e) { toast(errText(e)); }
 }
@@ -2606,7 +2541,7 @@ async function viewProfile() {
     <div class="card">
       ${membership ? `
         ${infoRow("League", esc(membership.league.name))}
-        ${infoRow("Divisie", esc(membership.division?.name || "Nog niet ingedeeld"))}
+        ${!membership.division ? `<p class="muted" style="font-size:13px;margin:-2px 0 0">Nog niet ingedeeld door de organisator.</p>` : ""}
         <button class="btn ghost sm mt16" onclick="go('mijn-divisie')">Bekijk mijn divisie</button>
       ` : `<p class="muted" style="font-size:13.5px;margin:0">Nog niet ingedeeld in een league.</p>`}
     </div>
@@ -2958,18 +2893,14 @@ function openOnboardingEditDialog() {
     });
 }
 
+// Een league is altijd één divisie (max 12 spelers); meerdere niveaus maak
+// je als aparte leagues (bv. "1e divisie", "2e divisie").
 function openLeagueDialog() {
   openModal("Nieuwe league", `
-    <div class="field"><label for="ln">Naam</label><input id="ln" required placeholder="Bijv. Winterleague"></div>
+    <div class="field"><label for="ln">Naam</label><input id="ln" required placeholder="Bijv. 1e divisie"></div>
     <div class="field"><label for="ls">Seizoen</label><input id="ls" placeholder="Bijv. 2026"></div>
     <div class="field"><label for="lg">Speltype</label>
       <select id="lg"><option value="501">501</option><option value="301">301</option></select>
-    </div>
-    <div class="field"><label for="ldc">Aantal divisies</label>
-      <select id="ldc">
-        <option value="1">1</option><option value="2">2</option><option value="3">3</option>
-        <option value="4" selected>4</option>
-      </select>
     </div>`, async (bg) => {
     const name = bg.querySelector("#ln").value.trim();
     if (!name) throw new Error("Vul een naam in.");
@@ -2977,12 +2908,11 @@ function openLeagueDialog() {
       name,
       season: bg.querySelector("#ls").value.trim() || null,
       game_type: bg.querySelector("#lg").value,
-      division_count: Number(bg.querySelector("#ldc").value),
       match_format: "best_of_legs",
       status: "draft",
       created_by: state.profile.id,
     });
-    toast("League aangemaakt. Voeg spelers toe en deel ze in bij divisies.");
+    toast("League aangemaakt. Voeg spelers toe en deel ze in.");
     go("league/" + league.id);
   }, "League aanmaken");
 }

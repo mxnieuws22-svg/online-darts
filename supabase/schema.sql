@@ -13,6 +13,7 @@
 --   5. Triggers (automatisch profiel + statistieken bij registratie)
 --   6. Row Level Security (RLS)
 --   7. Uitslagen: doorgeven, bevestigen en afkeuren
+--   8. Divisies binnen een league
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
@@ -891,6 +892,171 @@ grant execute on function public.reject_league_match_result(uuid) to authenticat
 
 
 -- ----------------------------------------------------------------------------
+-- 8. Divisies binnen een league
+-- ----------------------------------------------------------------------------
+-- Spelers worden ingedeeld in een divisie binnen een league (bijv. 1e, 2e,
+-- 3e divisie; rank 1 = hoogste niveau). Wedstrijden kunnen aan een divisie
+-- gekoppeld worden. De organisator kan de winnaar van elke divisie laten
+-- promoveren naar de divisie één niveau hoger.
+
+create table if not exists public.league_divisions (
+  id         uuid primary key default gen_random_uuid(),
+  league_id  uuid not null references public.leagues (id) on delete cascade,
+  name       text not null,
+  rank       int  not null check (rank >= 1),
+  created_at timestamptz not null default now(),
+  unique (league_id, rank)
+);
+
+create index if not exists idx_league_divisions_league on public.league_divisions (league_id);
+
+alter table public.league_divisions enable row level security;
+
+drop policy if exists "league_divisions_select_authenticated" on public.league_divisions;
+create policy "league_divisions_select_authenticated"
+  on public.league_divisions for select
+  to authenticated
+  using (true);
+
+drop policy if exists "league_divisions_write_organizer" on public.league_divisions;
+create policy "league_divisions_write_organizer"
+  on public.league_divisions for all
+  to authenticated
+  using (public.is_organizer())
+  with check (public.is_organizer());
+
+
+-- Spelers krijgen een (optionele) divisie binnen de league waar ze lid van zijn.
+alter table public.league_players
+  add column if not exists division_id uuid references public.league_divisions (id) on delete set null;
+
+create index if not exists idx_league_players_division on public.league_players (division_id);
+
+-- Wedstrijden kunnen aan een divisie gekoppeld worden (optioneel, voor
+-- leagues die geen divisies gebruiken).
+alter table public.league_matches
+  add column if not exists division_id uuid references public.league_divisions (id) on delete set null;
+
+create index if not exists idx_league_matches_division on public.league_matches (division_id);
+
+
+-- Geeft bevestigde wedstrijden van een league terug, ook aan spelers die er
+-- zelf niet in speelden - nodig om een standenlijst te tonen die voor
+-- iedereen in de league zichtbaar is (de gewone select-policy op
+-- league_matches laat een speler alleen zijn eigen wedstrijden zien). Vereist
+-- wel inloggen, net als de rest van de app: dit is geen publiek endpoint.
+create or replace function public.league_confirmed_matches(p_league_id uuid)
+returns setof public.league_matches
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'Je moet ingelogd zijn.';
+  end if;
+
+  return query
+    select *
+    from public.league_matches
+    where league_id = p_league_id
+      and status = 'confirmed';
+end;
+$$;
+
+grant execute on function public.league_confirmed_matches(uuid) to authenticated;
+
+
+-- Promoveert, voor elke divisie in de league (behalve de hoogste), de
+-- speler met de meeste punten (op basis van bevestigde wedstrijden) naar de
+-- divisie één niveau hoger. Alleen de organisator mag dit aanroepen. Geeft
+-- de lijst gepromoveerde spelers terug zodat de app dat kan tonen.
+create or replace function public.promote_division_winners(p_league_id uuid)
+returns table(player_id uuid, display_name text, from_division text, to_division text)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  rec record;
+begin
+  if auth.uid() is null then
+    raise exception 'Je moet ingelogd zijn.';
+  end if;
+
+  if not public.is_organizer() then
+    raise exception 'Alleen de organisator kan winnaars promoveren.';
+  end if;
+
+  for rec in
+    with results as (
+      select
+        lp.division_id,
+        lp.player_id,
+        case when m.winner_id = lp.player_id then 1 else 0 end as win,
+        case when m.player_a_id = lp.player_id then m.player_a_legs
+             when m.player_b_id = lp.player_id then m.player_b_legs else 0 end as lw,
+        case when m.player_a_id = lp.player_id then m.player_b_legs
+             when m.player_b_id = lp.player_id then m.player_a_legs else 0 end as ll
+      from public.league_players lp
+      join public.league_matches m
+        on m.league_id = lp.league_id
+       and m.status = 'confirmed'
+       and (m.player_a_id = lp.player_id or m.player_b_id = lp.player_id)
+      where lp.league_id = p_league_id
+        and lp.division_id is not null
+    ),
+    agg as (
+      select
+        division_id,
+        player_id,
+        sum(win)     as wins,
+        sum(lw)      as legs_won,
+        sum(ll)      as legs_lost,
+        sum(win) * 2 as points
+      from results
+      group by division_id, player_id
+    ),
+    ranked as (
+      select
+        a.*,
+        row_number() over (
+          partition by division_id
+          order by points desc, (legs_won - legs_lost) desc, player_id
+        ) as rnk
+      from agg a
+    )
+    select
+      r.player_id,
+      p.display_name,
+      d_from.name as from_division,
+      d_to.name   as to_division,
+      d_to.id     as to_division_id
+    from ranked r
+    join public.profiles p on p.id = r.player_id
+    join public.league_divisions d_from on d_from.id = r.division_id
+    join public.league_divisions d_to
+      on d_to.league_id = d_from.league_id and d_to.rank = d_from.rank - 1
+    where r.rnk = 1
+  loop
+    update public.league_players
+      set division_id = rec.to_division_id
+      where league_id = p_league_id and player_id = rec.player_id;
+
+    player_id := rec.player_id;
+    display_name := rec.display_name;
+    from_division := rec.from_division;
+    to_division := rec.to_division;
+    return next;
+  end loop;
+end;
+$$;
+
+grant execute on function public.promote_division_winners(uuid) to authenticated;
+
+
+-- ----------------------------------------------------------------------------
 -- Eerste organisator aanwijzen
 -- ----------------------------------------------------------------------------
 -- Registreer jezelf eerst normaal via de app. Voer daarna dit statement
@@ -908,11 +1074,11 @@ grant execute on function public.reject_league_match_result(uuid) to authenticat
 -- ----------------------------------------------------------------------------
 -- 1. Trigger op match_turns die average_score, checkout_percentage,
 --    highest_checkout en count_180 herberekent (nodig voor live scoren).
--- 2. View `league_standings` met de stand per league, berekend uit
---    bevestigde wedstrijden.
--- 3. Storage-bucket `avatars` met policies:
+-- 2. Storage-bucket `avatars` met policies:
 --      insert/update: bucket_id = 'avatars'
 --        and (storage.foldername(name))[1] = auth.uid()::text
 --      select: publiek leesbaar
--- 4. Hetzelfde doorgeven/bevestigen/afkeuren-patroon toepassen op
+-- 3. Hetzelfde doorgeven/bevestigen/afkeuren-patroon toepassen op
 --    tournament_matches zodra toernooien live gespeeld worden.
+-- 4. Divisies ook voor tournament_matches / tournament_entries, als
+--    toernooien ook in niveaus gespeeld gaan worden.

@@ -463,11 +463,13 @@ function busy(btn, on, label) {
 }
 
 function renderLanding() {
-  const feature = (ico, title, text) => `
-    <div class="landing-feature">
-      <div class="ico">${icon[ico]}</div>
-      <h3>${esc(title)}</h3>
-      <p>${esc(text)}</p>
+  const step = (num, title, text) => `
+    <div class="landing-step">
+      <div class="landing-step-num">${num}</div>
+      <div>
+        <h3>${esc(title)}</h3>
+        <p>${esc(text)}</p>
+      </div>
     </div>`;
 
   app.innerHTML = `
@@ -481,21 +483,50 @@ function renderLanding() {
       </div>
 
       <div class="landing-hero">
-        <div class="landing-hero-inner">
+        <div>
           <span class="landing-eyebrow">${icon.target}&nbsp;Voor elke darter</span>
           <h1>Jouw dartcompetitie, overzichtelijk georganiseerd</h1>
-          <p class="sub">Speel mee in leagues en toernooien, plan je wedstrijden en houd je scores en statistieken bij &mdash; allemaal op één plek.</p>
+          <p class="sub">Speel mee in leagues en toernooien, plan je wedstrijden en houd je scores en statistieken automatisch bij &mdash; allemaal op één plek.</p>
           <div class="landing-cta">
             <button class="btn" onclick="renderRegister()">Gratis account aanmaken</button>
             <button class="btn ghost" onclick="renderLogin()">Inloggen</button>
           </div>
         </div>
+
+        <div class="landing-preview">
+          <div class="landing-preview-tag">Halve finale &middot; League Zuid</div>
+          <div class="card" style="margin:0">
+            <div class="match-row">
+              <div class="mp winner">
+                ${avatar({ display_name: "Sanne" })}
+                <span class="mp-name">Sanne</span>
+              </div>
+              <span class="vs">VS</span>
+              <div class="mp right">
+                ${avatar({ display_name: "Rick" })}
+                <span class="mp-name">Rick</span>
+              </div>
+            </div>
+            <div class="match-score">
+              <span class="score win">3</span>
+              <span class="score-sep">&ndash;</span>
+              <span class="score">1</span>
+            </div>
+          </div>
+          <div class="grid">
+            ${statCard({ label: "Winratio", value: "68%", ico: "trophy", color: "#2ECC71" })}
+            ${statCard({ label: "180's", value: "24", ico: "star", color: "#F5B942" })}
+          </div>
+        </div>
       </div>
 
-      <div class="landing-features">
-        ${feature("users", "Leagues", "Stel competities in, volg de stand en laat spelers automatisch tegen elkaar uitkomen.")}
-        ${feature("trophy", "Toernooien", "Organiseer knock-out of poule-toernooien en houd de bracket live bij.")}
-        ${feature("chart", "Statistieken", "Elke speler ziet zijn winratio, gemiddelde en 180's direct terug.")}
+      <div class="landing-steps">
+        <h2>Zo werkt het</h2>
+        <div class="landing-step-list">
+          ${step("01", "Maak een account", "Binnen een minuut aangemeld, zonder gedoe.")}
+          ${step("02", "Sluit je aan bij een league of toernooi", "Of start er zelf een voor je eigen groep.")}
+          ${step("03", "Speel en volg je voortgang", "Standen, uitslagen en statistieken staan direct klaar.")}
+        </div>
       </div>
 
       <div class="landing-foot">© ${new Date().getFullYear()} Dart League</div>

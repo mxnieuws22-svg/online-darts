@@ -1291,7 +1291,10 @@ function renderShell() {
   const tabs = NAV.map((n) => `
     <button class="${navActive(n.route, cur) ? "active" : ""}" onclick="go('${n.route}')">
       ${icon[n.ico]}<span>${esc(n.label)}</span>
-    </button>`).join("");
+    </button>`).join("") + (isOrg ? `
+    <button class="${cur.startsWith("beheer") ? "active" : ""}" onclick="go('beheer')">
+      ${icon.shield}<span>Beheer</span>
+    </button>` : "");
 
   app.innerHTML = `
     <div class="shell">

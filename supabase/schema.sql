@@ -18,6 +18,8 @@
 --  10. Prijsclaim-systeem voor divisiewinnaars (LWPrints)
 --  11. Startdatum/-tijd van een league, automatische activering en
 --      wedstrijdmoment voorstellen/accepteren
+--  12. Divisiehistorie, één-actieve-league-regel, en meldingen bij
+--      indeling/promotie/degradatie
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
@@ -1182,6 +1184,10 @@ grant execute on function public.league_confirmed_matches(uuid) to authenticated
 -- moeten voorkomen nu onboarding verplicht is), dan telt 0 en komt de
 -- speler in de laatste divisie terecht, gemarkeerd als low_confidence in
 -- het resultaat.
+--
+-- Logt elke daadwerkelijke wijziging (niet bij herhaald draaien op dezelfde
+-- indeling) naar league_division_history en stuurt de speler een melding
+-- (zie sectie 12).
 create or replace function public.auto_assign_divisions(p_league_id uuid)
 returns table(
   player_id uuid,
@@ -1198,6 +1204,8 @@ declare
   v_status text;
   v_count int;
   v_total int;
+  v_league_name text;
+  v_season text;
   v_div_ids uuid[];
   v_min_avgs numeric[];
   v_counts int[];
@@ -1214,7 +1222,8 @@ begin
     raise exception 'Alleen de organisator kan automatisch indelen.';
   end if;
 
-  select status, division_count into v_status, v_count from public.leagues where id = p_league_id;
+  select status, division_count, name, season into v_status, v_count, v_league_name, v_season
+    from public.leagues where id = p_league_id;
   if v_status is null then
     raise exception 'League niet gevonden.';
   end if;
@@ -1263,6 +1272,7 @@ begin
     select
       lp.player_id as p_id,
       p.display_name as p_name,
+      lp.division_id as old_division_id,
       coalesce(
         case when ps.average_sample_count >= 5 then ps.average_score end,
         po.reported_average,
@@ -1295,6 +1305,21 @@ begin
       where lp.league_id = p_league_id and lp.player_id = rec.p_id;
 
     v_counts[v_target_rank] := v_counts[v_target_rank] + 1;
+
+    if rec.old_division_id is distinct from v_div_ids[v_target_rank] then
+      insert into public.league_division_history
+        (player_id, league_id, league_name, season, division_id, division_name, division_rank, reason)
+      values
+        (rec.p_id, p_league_id, v_league_name, v_season, v_div_ids[v_target_rank], v_target_rank || 'e divisie', v_target_rank, 'initial');
+
+      insert into public.notifications (player_id, type, title, body, league_id)
+      values (
+        rec.p_id, 'division_assigned',
+        'Je bent ingedeeld!',
+        'Je speelt in ' || (v_target_rank || 'e divisie') || ' van ' || v_league_name || '. Bekijk je divisie en tegenstanders.',
+        p_league_id
+      );
+    end if;
 
     player_id := rec.p_id;
     display_name := rec.p_name;
@@ -1413,7 +1438,8 @@ grant execute on function public.league_standings(uuid) to authenticated;
 -- minder dan 4 spelers in een divisie wordt het aantal dat verschuift
 -- verlaagd naar min(2, aantal // 2), zodat "beste 2" en "onderste 2"
 -- elkaar nooit overlappen. Vervangt de oudere promote_division_winners
--- (die geen degradatie kende).
+-- (die geen degradatie kende). Logt elke verschuiving naar
+-- league_division_history en stuurt de speler een melding (zie sectie 12).
 drop function if exists public.promote_division_winners(uuid);
 
 create or replace function public.apply_promotion_relegation(p_league_id uuid)
@@ -1432,12 +1458,19 @@ declare
   rec record;
   v_div record;
   v_move_count int;
+  v_league_name text;
+  v_season text;
 begin
   if auth.uid() is null then
     raise exception 'Je moet ingelogd zijn.';
   end if;
   if not public.is_organizer() then
     raise exception 'Alleen de organisator kan promotie/degradatie toepassen.';
+  end if;
+
+  select name, season into v_league_name, v_season from public.leagues where id = p_league_id;
+  if v_league_name is null then
+    raise exception 'League niet gevonden.';
   end if;
 
   -- Bevroren rangschikking: beide passes (promotie en degradatie) gebruiken
@@ -1456,7 +1489,7 @@ begin
     if v_move_count > 0 then
       for rec in
         select ts.player_id as p_id, p.display_name as p_name,
-               d_from.name as from_name, d_to.id as to_id, d_to.name as to_name
+               d_from.name as from_name, d_to.id as to_id, d_to.name as to_name, d_to.rank as to_rank
         from tmp_pr_standings ts
         join public.profiles p on p.id = ts.player_id
         join public.league_divisions d_from on d_from.id = ts.division_id
@@ -1468,6 +1501,19 @@ begin
         update public.league_players lp
           set division_id = rec.to_id
           where lp.league_id = p_league_id and lp.player_id = rec.p_id;
+
+        insert into public.league_division_history
+          (player_id, league_id, league_name, season, division_id, division_name, division_rank, reason)
+        values
+          (rec.p_id, p_league_id, v_league_name, v_season, rec.to_id, rec.to_name, rec.to_rank, 'promotion');
+
+        insert into public.notifications (player_id, type, title, body, league_id)
+        values (
+          rec.p_id, 'division_promoted',
+          'Gefeliciteerd! Je bent gepromoveerd.',
+          'Je speelt vanaf nu in ' || rec.to_name || ' van ' || v_league_name || '.',
+          p_league_id
+        );
 
         player_id := rec.p_id;
         display_name := rec.p_name;
@@ -1487,7 +1533,7 @@ begin
     if v_move_count > 0 then
       for rec in
         select ts.player_id as p_id, p.display_name as p_name,
-               d_from.name as from_name, d_to.id as to_id, d_to.name as to_name
+               d_from.name as from_name, d_to.id as to_id, d_to.name as to_name, d_to.rank as to_rank
         from tmp_pr_standings ts
         join public.profiles p on p.id = ts.player_id
         join public.league_divisions d_from on d_from.id = ts.division_id
@@ -1499,6 +1545,19 @@ begin
         update public.league_players lp
           set division_id = rec.to_id
           where lp.league_id = p_league_id and lp.player_id = rec.p_id;
+
+        insert into public.league_division_history
+          (player_id, league_id, league_name, season, division_id, division_name, division_rank, reason)
+        values
+          (rec.p_id, p_league_id, v_league_name, v_season, rec.to_id, rec.to_name, rec.to_rank, 'relegation');
+
+        insert into public.notifications (player_id, type, title, body, league_id)
+        values (
+          rec.p_id, 'division_relegated',
+          'Divisiewijziging',
+          'Je speelt vanaf nu in ' || rec.to_name || ' van ' || v_league_name || '.',
+          p_league_id
+        );
 
         player_id := rec.p_id;
         display_name := rec.p_name;
@@ -2029,9 +2088,10 @@ create unique index if not exists idx_league_matches_unique_division_pair
 
 -- Startdatum/-tijd, tijdzone en aantal divisies liggen vast zodra de league
 -- actief is (of afgerond): dan zijn er al wedstrijden op gebaseerd. Inplannen
--- ("scheduled") vereist een startmoment in de toekomst. Het aantal divisies
--- verlagen mag niet als er nog spelers in de divisies zitten die daarmee
--- zouden vervallen.
+-- ("scheduled") vereist een startmoment in de toekomst en dat de leden nog
+-- niet al in een andere geplande/actieve league zitten (zie sectie 12, de
+-- één-actieve-league-regel). Het aantal divisies verlagen mag niet als er
+-- nog spelers in de divisies zitten die daarmee zouden vervallen.
 create or replace function public.protect_league_schedule_fields()
 returns trigger
 language plpgsql
@@ -2039,6 +2099,7 @@ set search_path = public
 as $$
 declare
   v_occupied boolean;
+  v_conflict_name text;
 begin
   if old.status in ('active', 'finished') then
     if new.start_at is distinct from old.start_at
@@ -2050,6 +2111,19 @@ begin
 
   if new.status = 'scheduled' and (new.start_at is null or new.start_at <= now()) then
     raise exception 'Stel een startdatum en -tijd in de toekomst in om de league te plannen.';
+  end if;
+
+  if new.status = 'scheduled' and old.status <> 'scheduled' then
+    select p.display_name into v_conflict_name
+      from public.league_players lp
+      join public.profiles p on p.id = lp.player_id
+      join public.league_players lp2 on lp2.player_id = lp.player_id and lp2.league_id <> new.id
+      join public.leagues l2 on l2.id = lp2.league_id and l2.status in ('scheduled', 'active')
+      where lp.league_id = new.id
+      limit 1;
+    if v_conflict_name is not null then
+      raise exception 'Speler % zit al in een andere geplande of actieve league; los dit eerst op voordat je deze league plant.', v_conflict_name;
+    end if;
   end if;
 
   if new.division_count < old.division_count then
@@ -2456,6 +2530,90 @@ select cron.schedule(
   '* * * * *',
   $cron$select public.activate_due_leagues();$cron$
 );
+
+
+-- ============================================================================
+-- 12. Divisiehistorie, één-actieve-league-regel, en meldingen bij
+--     indeling/promotie/degradatie.
+--     (De relevante wijzigingen aan protect_league_schedule_fields(),
+--     auto_assign_divisions() en apply_promotion_relegation() staan
+--     hierboven, direct bij hun oorspronkelijke definitie.)
+-- ============================================================================
+
+-- Permanente historie van divisie-indelingen (nooit overschreven, ook niet
+-- door latere promotie/degradatie of een nieuwe automatische indeling).
+create table if not exists public.league_division_history (
+  id             uuid primary key default gen_random_uuid(),
+  player_id      uuid not null references public.profiles (id) on delete cascade,
+  league_id      uuid not null references public.leagues (id) on delete cascade,
+  league_name    text not null,
+  season         text,
+  division_id    uuid references public.league_divisions (id) on delete set null,
+  division_name  text not null,
+  division_rank  int,
+  reason         text not null check (reason in ('initial', 'promotion', 'relegation', 'correction')),
+  effective_at   timestamptz not null default now(),
+  created_at     timestamptz not null default now()
+);
+
+create index if not exists idx_league_division_history_player on public.league_division_history (player_id);
+create index if not exists idx_league_division_history_league on public.league_division_history (league_id);
+
+alter table public.league_division_history enable row level security;
+
+drop policy if exists "league_division_history_select_own_or_organizer" on public.league_division_history;
+create policy "league_division_history_select_own_or_organizer"
+  on public.league_division_history for select
+  to authenticated
+  using (player_id = auth.uid() or public.is_organizer());
+
+-- Let op: bewust geen insert/update-policy - uitsluitend geschreven door
+-- auto_assign_divisions() en apply_promotion_relegation() (beide security
+-- definer), zodat de historie nooit door een cliënt aangepast kan worden.
+
+
+-- Eén speler mag maar in één geplande/actieve league tegelijk zitten. Geldt
+-- bewust NIET voor 'draft'-leagues (een organisator mag een speler best in
+-- meerdere concept-leagues overwegen voordat hij kiest), en niet voor
+-- 'finished' (die tellen niet meer mee als lopende verplichting). Werkt
+-- samen met de check in protect_league_schedule_fields() hierboven, die
+-- dezelfde regel afdwingt op het moment dat een league zelf naar
+-- 'scheduled' gaat.
+create or replace function public.enforce_single_active_league()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+declare
+  v_status text;
+  v_conflict_name text;
+begin
+  select status into v_status from public.leagues where id = new.league_id;
+  if v_status is null or v_status not in ('scheduled', 'active') then
+    return new;
+  end if;
+
+  select l.name into v_conflict_name
+    from public.league_players lp
+    join public.leagues l on l.id = lp.league_id
+    where lp.player_id = new.player_id
+      and lp.league_id <> new.league_id
+      and l.status in ('scheduled', 'active')
+    limit 1;
+
+  if v_conflict_name is not null then
+    raise exception 'Deze speler zit al in een geplande of actieve league (%) en kan niet ook in deze league zitten.', v_conflict_name;
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists on_league_players_single_active_league on public.league_players;
+create trigger on_league_players_single_active_league
+  before insert or update of league_id on public.league_players
+  for each row
+  execute function public.enforce_single_active_league();
 
 
 -- ----------------------------------------------------------------------------

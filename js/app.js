@@ -151,6 +151,8 @@ const icon = {
   back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg>',
   camera: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8h4l1.5-2h7L17 8h4v12H3z"/><circle cx="12" cy="13" r="3.5"/></svg>',
   bell: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9a6 6 0 0 1 12 0c0 4 1.5 5.5 1.5 5.5H4.5S6 13 6 9z"/><path d="M10 19a2 2 0 0 0 4 0"/></svg>',
+  chevronUp: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 15l7-7 7 7"/></svg>',
+  chevronDown: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 9l7 7 7-7"/></svg>',
 };
 
 /* -------------------------------------------------------------------------
@@ -212,7 +214,7 @@ function matchCard(m) {
   return `
     <div class="card">
       <div class="match-top">
-        <span class="match-league">${esc(m.league?.name || "")}</span>
+        <span class="match-league">${esc([m.league?.name, m.division?.name].filter(Boolean).join(" · "))}</span>
         ${badge(m.status)}
       </div>
       <div class="match-row">
@@ -232,6 +234,7 @@ function matchCard(m) {
         </div>
         ${isDraw ? `<div class="center muted" style="font-size:12.5px;margin-top:4px">Gelijkspel</div>` : ""}` : ""}
       ${m.scheduled_at ? `<div class="match-meta">${icon.clock}<span>${esc(fmtDate(m.scheduled_at))}</span></div>` : ""}
+      ${!played && m.deadline_at ? `<div class="match-meta" style="margin-top:4px">Deadline: ${esc(fmtDate(m.deadline_at, false))}</div>` : ""}
     </div>`;
 }
 
@@ -291,21 +294,46 @@ function groupStandingsByDivision(rows) {
   return list;
 }
 
-function divisionStandingsCard(group) {
+// Toont een divisie als kaart: naam, aantal spelers, en de ranglijst met
+// punten, W-G-V, legsaldo en gemiddelde. `opts.meId` markeert de kaart en de
+// rij van de ingelogde speler ("Jouw divisie"). `opts.divisionCount` bepaalt
+// - samen met group.rank - of promotie/degradatie-pijltjes getoond worden;
+// dit is altijd een voorspelling op basis van de huidige (mogelijk nog
+// lopende) tussenstand, niet een definitief resultaat.
+function divisionStandingsCard(group, opts = {}) {
+  const { meId, divisionCount } = opts;
+  const isMyDivision = meId && group.rows.some((r) => r.player?.id === meId);
+  const moveCount = Math.min(2, Math.floor(group.rows.length / 2));
+  const canPromote = group.rank > 1;
+  const canRelegate = divisionCount ? group.rank < divisionCount : false;
+
   return `
-    <div class="card">
-      <h2 style="margin-bottom:12px">${esc(group.name)}</h2>
-      ${group.rows.length ? group.rows.map((r, i) => `
-        <div class="row" style="padding:7px 0;${i > 0 ? "border-top:1px solid var(--line)" : ""}">
+    <div class="card" style="${isMyDivision ? "border-color:#F47B20" : ""}">
+      <div class="row" style="align-items:flex-start;margin-bottom:12px">
+        <div class="row-main">
+          <h2 style="margin:0">${esc(group.name)}</h2>
+          <div class="muted" style="font-size:12.5px;margin-top:2px">${group.rows.length}/12 spelers</div>
+        </div>
+        ${isMyDivision ? `<span class="badge" style="color:#F47B20;border-color:#F47B2066;background:#F47B2022">Jouw divisie</span>` : ""}
+      </div>
+      ${group.rows.length ? group.rows.map((r, i) => {
+        const isMe = r.player?.id === meId;
+        const promoting = canPromote && i < moveCount;
+        const relegating = canRelegate && i >= group.rows.length - moveCount;
+        return `
+        <div class="row" style="padding:7px 0;${i > 0 ? "border-top:1px solid var(--line)" : ""}${isMe ? ";background:#F47B2014;margin:0 -14px;padding-left:14px;padding-right:14px" : ""}">
           <span class="muted" style="width:18px;font-size:13px">${i + 1}</span>
           ${avatar(r.player, "sm")}
           <div class="row-main">
-            <div class="row-title">${esc(r.player?.display_name || "?")}</div>
-            <div class="row-sub">${r.played} gespeeld &middot; ${r.wins}W-${r.draws}G-${r.losses}V &middot; legs ${r.legsFor}-${r.legsAgainst}</div>
+            <div class="row-title">${esc(r.player?.display_name || "?")}${isMe ? ` <span class="muted" style="font-weight:400">(jij)</span>` : ""}</div>
+            <div class="row-sub">${r.played} gespeeld &middot; ${r.wins}W-${r.draws}G-${r.losses}V &middot; legs ${r.legsFor}-${r.legsAgainst} &middot; gem. ${Number(r.displayAverage ?? 0).toFixed(1)}</div>
           </div>
           <div style="font-weight:700;flex-shrink:0">${r.points} pt</div>
-          ${i === 0 ? `<span style="width:16px;height:16px;color:var(--accent);flex-shrink:0">${icon.trophy}</span>` : ""}
-        </div>`).join("")
+          ${promoting ? `<span title="Promotiezone" style="width:14px;height:14px;color:#2ECC71;flex-shrink:0">${icon.chevronUp}</span>` : ""}
+          ${relegating ? `<span title="Degradatiezone" style="width:14px;height:14px;color:#E74C3C;flex-shrink:0">${icon.chevronDown}</span>` : ""}
+          ${i === 0 ? `<span style="width:16px;height:16px;color:#F47B20;flex-shrink:0">${icon.trophy}</span>` : ""}
+        </div>`;
+      }).join("")
         : `<p class="muted" style="font-size:13.5px;margin:0">Nog geen spelers in deze divisie.</p>`}
     </div>`;
 }
@@ -459,6 +487,20 @@ const db = {
       .eq("league_id", leagueId);
     if (error) throw error;
     return data || [];
+  },
+
+  // De geplande/actieve league waarin de ingelogde speler op dit moment zit
+  // (er kan er maar één zijn, zie enforce_single_active_league). Geeft null
+  // als de speler nergens is ingedeeld.
+  async myLeagueMembership() {
+    const { data, error } = await sb
+      .from("league_players")
+      .select("*, league:league_id(*), division:division_id(*)")
+      .eq("player_id", state.profile.id)
+      .in("league.status", ["scheduled", "active"]);
+    if (error) throw error;
+    const row = (data || []).find((r) => r.league);
+    return row || null;
   },
 
   // Voegt een speler toe aan de league, of wijzigt zijn divisie als hij al
@@ -699,7 +741,7 @@ const db = {
   async matchesForLeague(leagueId) {
     const { data, error } = await sb
       .from("league_matches")
-      .select("*, player_a:player_a_id(*), player_b:player_b_id(*), league:league_id(name)")
+      .select("*, player_a:player_a_id(*), player_b:player_b_id(*), league:league_id(name), division:division_id(name)")
       .eq("league_id", leagueId)
       .order("scheduled_at", { nullsFirst: false });
     if (error) throw error;
@@ -709,7 +751,7 @@ const db = {
   async myMatches(playerId) {
     const { data, error } = await sb
       .from("league_matches")
-      .select("*, player_a:player_a_id(*), player_b:player_b_id(*), league:league_id(name), schedule_proposal:match_schedule_proposals(*)")
+      .select("*, player_a:player_a_id(*), player_b:player_b_id(*), league:league_id(name), division:division_id(name), schedule_proposal:match_schedule_proposals(*)")
       .or(`player_a_id.eq.${playerId},player_b_id.eq.${playerId}`)
       .order("scheduled_at", { nullsFirst: false });
     if (error) throw error;
@@ -1261,6 +1303,7 @@ function setView(html) {
 
 const ROUTES = {
   "": viewHome,
+  "mijn-divisie": viewMyDivision,
   "leagues": viewLeagues,
   "toernooien": viewTournaments,
   "wedstrijden": viewMatches,
@@ -1325,18 +1368,29 @@ async function viewHome() {
   const firstName = (me?.display_name || "").split(" ")[0];
   const s = me?.stats;
 
-  const [matches, leagues, tournaments, results, prizeNotification, notification] = await Promise.all([
+  const [matches, leagues, tournaments, results, prizeNotification, notification, membership] = await Promise.all([
     db.myMatches(me.id),
     db.leagues("active"),
     db.upcomingTournaments(),
     db.recentResults(3),
     db.myPendingPrizeNotification(),
     db.myPendingNotification(),
+    db.myLeagueMembership(),
   ]);
 
   const next = matches.find((m) => m.status === "scheduled" || m.status === "in_progress");
   const winPct = s && s.matches_played > 0
     ? Math.round((s.matches_won / s.matches_played) * 100) : 0;
+
+  let myDivisionPosition = null;
+  let myDivisionTotal = 0;
+  if (membership) {
+    const standings = await db.standingsForLeague(membership.league.id);
+    const inMyDivision = standings.filter((r) => r.divisionId === membership.division?.id);
+    myDivisionTotal = inMyDivision.length;
+    const idx = inMyDivision.findIndex((r) => r.player.id === me.id);
+    myDivisionPosition = idx >= 0 ? idx + 1 : null;
+  }
 
   setView(`
     <h1>Hoi ${esc(firstName)}</h1>
@@ -1366,6 +1420,18 @@ async function viewHome() {
         </div>
       </button>` : ""}
 
+    ${membership ? `
+      <button class="card clickable" style="margin-bottom:16px" onclick="go('mijn-divisie')">
+        <div class="row">
+          <div class="row-ico">${icon.league}</div>
+          <div class="row-main">
+            <div class="row-title">Mijn competitie</div>
+            <div class="row-sub">${esc(membership.league.name)} &middot; ${esc(membership.division?.name || "Nog niet ingedeeld")}</div>
+          </div>
+          ${myDivisionPosition ? `<div class="muted" style="font-size:13px;flex-shrink:0">Plaats ${myDivisionPosition} van ${myDivisionTotal}</div>` : ""}
+        </div>
+      </button>` : ""}
+
     <div class="grid" style="grid-template-columns:repeat(2,1fr)">
       ${statCard({ label: "Gemiddelde", value: (s?.average_score ?? 0).toFixed(1), ico: "trend" })}
       ${statCard({ label: "Gewonnen", value: winPct + "%", ico: "trophy", color: "#2ECC71" })}
@@ -1382,6 +1448,32 @@ async function viewHome() {
 
     ${sectionHead("Laatste uitslagen")}
     ${results.length ? results.map(matchCard).join("") : emptyView("Nog geen uitslagen", "", "match")}
+  `);
+}
+
+// "Mijn divisie": de league/divisie waarin de ingelogde speler op dit
+// moment zit (er kan er maar één zijn, zie enforce_single_active_league),
+// met alle divisies van die league als kaarten en de eigen divisie/rij
+// gemarkeerd - dezelfde weergave als op de leaguepagina, hier alvast
+// gefilterd naar "van mij".
+async function viewMyDivision() {
+  const membership = await db.myLeagueMembership();
+  if (!membership) {
+    return setView(`
+      <h1>Mijn divisie</h1>
+      ${emptyView("Nog niet ingedeeld", "Zodra de organisator je indeelt in een league, zie je hier je divisie.", "league")}
+    `);
+  }
+  const league = membership.league;
+  const standings = await db.standingsForLeague(league.id);
+  const groups = groupStandingsByDivision(standings);
+
+  setView(`
+    <h1>Jouw divisie</h1>
+    <p class="sub">${esc(membership.division?.name || "")} &middot; ${esc(league.name)}${league.season ? " &middot; Seizoen: " + esc(league.season) : ""}</p>
+    <button class="linkbtn mt8" style="margin-bottom:16px" onclick="go('league/${esc(league.id)}')">Bekijk de hele league &rarr;</button>
+    ${groups.length ? groups.map((g) => divisionStandingsCard(g, { meId: state.profile.id, divisionCount: league.division_count })).join("")
+      : emptyView("Nog geen indeling", "", "league")}
   `);
 }
 
@@ -1472,7 +1564,7 @@ async function viewLeagueDetail(id) {
     ` : ""}
 
     ${sectionHead("Stand")}
-    ${groups.length ? groups.map(divisionStandingsCard).join("")
+    ${groups.length ? groups.map((g) => divisionStandingsCard(g, { meId: state.profile.id, divisionCount: league.division_count })).join("")
       : emptyView("Nog geen indeling", "Er zijn nog geen spelers ingedeeld in deze league.", "league")}
 
     ${isOrg ? `
@@ -2025,6 +2117,7 @@ async function viewStats() {
 async function viewProfile() {
   const p = state.profile;
   const s = p.stats;
+  const membership = await db.myLeagueMembership();
   setView(`
     <h1>Profiel</h1>
     <p class="sub">Je gegevens en je rol</p>
@@ -2053,6 +2146,15 @@ async function viewProfile() {
       ${statCard({ label: "Gewonnen", value: s?.matches_won ?? 0, ico: "trophy", color: "#2ECC71" })}
       ${statCard({ label: "Gemiddelde", value: Number(s?.average_score ?? 0).toFixed(1), ico: "trend" })}
       ${statCard({ label: "180's", value: s?.count_180 ?? 0, ico: "star", color: "#F5B942" })}
+    </div>
+
+    ${sectionHead("League-indeling")}
+    <div class="card">
+      ${membership ? `
+        ${infoRow("League", esc(membership.league.name))}
+        ${infoRow("Divisie", esc(membership.division?.name || "Nog niet ingedeeld"))}
+        <button class="btn ghost sm mt16" onclick="go('mijn-divisie')">Bekijk mijn divisie</button>
+      ` : `<p class="muted" style="font-size:13.5px;margin:0">Nog niet ingedeeld in een league.</p>`}
     </div>
 
     ${sectionHead("Spelersgegevens")}

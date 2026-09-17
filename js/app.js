@@ -92,6 +92,25 @@ function fmtDate(iso, withTime = true) {
   return d.toLocaleDateString("nl-NL", opts);
 }
 
+// "Speel deze wedstrijd uiterlijk vóór 8 oktober 2026 om 19:00."
+function fmtDeadlineSentence(iso) {
+  const d = new Date(iso);
+  const datePart = d.toLocaleDateString("nl-NL", { day: "numeric", month: "long", year: "numeric" });
+  const timePart = d.toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" });
+  return `Speel deze wedstrijd uiterlijk vóór ${datePart} om ${timePart}.`;
+}
+
+// Resterende tijd tot een deadline, in mensentaal.
+function remainingTimeText(iso) {
+  const diffMs = new Date(iso) - new Date();
+  if (diffMs <= 0) return "Verlopen";
+  const days = Math.floor(diffMs / 86400000);
+  if (days >= 1) return `Nog ${days} ${days === 1 ? "dag" : "dagen"}`;
+  const hours = Math.floor(diffMs / 3600000);
+  if (hours >= 1) return `Nog ${hours} uur`;
+  return "Nog minder dan een uur";
+}
+
 // Zet een ISO-timestamp om naar de waarde die een <input type="datetime-local">
 // verwacht (lokale tijd van de browser, geen "Z"/offset).
 function fmtDatetimeLocal(iso) {
@@ -205,17 +224,62 @@ function errorView(error) {
     </div>`;
 }
 
+// Vertaalt de ruwe wedstrijdstatus + beschikbaarheid/deadline/voorstel naar
+// een van de spelersvriendelijke statussen. Puur berekend voor weergave -
+// de onderliggende status-kolom (die rapporteren/bevestigen/statistieken
+// aanstuurt) blijft ongewijzigd.
+function matchDisplayStatus(m) {
+  if (m.status === "cancelled") return { label: "Geannuleerd", color: "#E74C3C" };
+  if (m.status === "confirmed") return { label: "Gespeeld", color: "#2ECC71" };
+  if (m.deadline_at && new Date(m.deadline_at) < new Date()) {
+    return { label: "Deadline verstreken", color: "#E74C3C" };
+  }
+  if (m.available_at && new Date(m.available_at) > new Date()) {
+    return { label: "Nog niet gestart", color: "#6B7280" };
+  }
+  const p = m.schedule_proposal;
+  if (p) {
+    if (p.status === "accepted") return { label: "Afspraak bevestigd", color: "#2ECC71" };
+    if (p.status === "pending" || p.status === "countered" || p.status === "disputed") {
+      return { label: "Afspraak voorgesteld", color: "#F5B942" };
+    }
+  }
+  return { label: "Beschikbaar", color: "#4EA1F7" };
+}
+
+function matchStatusBadge(m) {
+  const s = matchDisplayStatus(m);
+  return `<span class="badge" style="color:${s.color};border-color:${s.color}66;background:${s.color}22">${esc(s.label)}</span>`;
+}
+
+// Beschikbaarheids-/deadlinetekst onder een nog niet gespeelde wedstrijd.
+function matchDeadlineLine(m, status) {
+  if (status.label === "Deadline verstreken") {
+    return `<div class="match-meta" style="margin-top:4px;color:#E74C3C">De deadline is verstreken.</div>`;
+  }
+  if (status.label === "Nog niet gestart" && m.available_at) {
+    return `<div class="match-meta" style="margin-top:4px">Beschikbaar vanaf ${esc(fmtDate(m.available_at))}</div>`;
+  }
+  if (m.deadline_at) {
+    return `
+      <div class="match-meta" style="margin-top:4px">${esc(fmtDeadlineSentence(m.deadline_at))}</div>
+      <div class="match-meta" style="margin-top:2px">${esc(remainingTimeText(m.deadline_at))}</div>`;
+  }
+  return "";
+}
+
 function matchCard(m) {
   const a = m.player_a, b = m.player_b;
   const played = m.player_a_legs > 0 || m.player_b_legs > 0;
   const isDraw = played && m.player_a_legs === m.player_b_legs;
   const aWin = m.winner_id && m.winner_id === m.player_a_id;
   const bWin = m.winner_id && m.winner_id === m.player_b_id;
+  const status = matchDisplayStatus(m);
   return `
     <div class="card">
       <div class="match-top">
         <span class="match-league">${esc([m.league?.name, m.division?.name].filter(Boolean).join(" · "))}</span>
-        ${badge(m.status)}
+        ${matchStatusBadge(m)}
       </div>
       <div class="match-row">
         <div class="mp ${aWin ? "winner" : ""}">
@@ -234,7 +298,7 @@ function matchCard(m) {
         </div>
         ${isDraw ? `<div class="center muted" style="font-size:12.5px;margin-top:4px">Gelijkspel</div>` : ""}` : ""}
       ${m.scheduled_at ? `<div class="match-meta">${icon.clock}<span>${esc(fmtDate(m.scheduled_at))}</span></div>` : ""}
-      ${!played && m.deadline_at ? `<div class="match-meta" style="margin-top:4px">Deadline: ${esc(fmtDate(m.deadline_at, false))}</div>` : ""}
+      ${!played && m.status !== "cancelled" ? matchDeadlineLine(m, status) : ""}
     </div>`;
 }
 
@@ -360,6 +424,15 @@ function sectionHead(title, linkLabel, route) {
 /* -------------------------------------------------------------------------
    4. Data-laag
    ------------------------------------------------------------------------- */
+
+// match_schedule_proposals komt als array terug uit de embed (1-op-1 relatie
+// vanuit league_matches gezien); hier plat naar een enkel object of null.
+function flattenScheduleProposal(rows) {
+  return (rows || []).map((m) => ({
+    ...m,
+    schedule_proposal: Array.isArray(m.schedule_proposal) ? (m.schedule_proposal[0] || null) : m.schedule_proposal,
+  }));
+}
 
 const db = {
   async myProfile(userId) {
@@ -750,11 +823,11 @@ const db = {
   async matchesForLeague(leagueId) {
     const { data, error } = await sb
       .from("league_matches")
-      .select("*, player_a:player_a_id(*), player_b:player_b_id(*), league:league_id(name), division:division_id(name)")
+      .select("*, player_a:player_a_id(*), player_b:player_b_id(*), league:league_id(name), division:division_id(name), schedule_proposal:match_schedule_proposals(*)")
       .eq("league_id", leagueId)
       .order("scheduled_at", { nullsFirst: false });
     if (error) throw error;
-    return data || [];
+    return flattenScheduleProposal(data);
   },
 
   async myMatches(playerId) {
@@ -764,20 +837,24 @@ const db = {
       .or(`player_a_id.eq.${playerId},player_b_id.eq.${playerId}`)
       .order("scheduled_at", { nullsFirst: false });
     if (error) throw error;
-    return (data || []).map((m) => ({
-      ...m,
-      schedule_proposal: Array.isArray(m.schedule_proposal) ? (m.schedule_proposal[0] || null) : m.schedule_proposal,
-    }));
+    return flattenScheduleProposal(data);
   },
 
   async allMatches(limit = 50) {
     const { data, error } = await sb
       .from("league_matches")
-      .select("*, player_a:player_a_id(*), player_b:player_b_id(*), league:league_id(name)")
+      .select("*, player_a:player_a_id(*), player_b:player_b_id(*), league:league_id(name), division:division_id(name), schedule_proposal:match_schedule_proposals(*)")
       .order("created_at", { ascending: false })
       .limit(limit);
     if (error) throw error;
-    return data || [];
+    return flattenScheduleProposal(data);
+  },
+
+  async extendMatchDeadline(matchId, newDeadlineIso) {
+    const { error } = await sb.rpc("extend_match_deadline", {
+      p_match_id: matchId, p_new_deadline: newDeadlineIso,
+    });
+    if (error) throw error;
   },
 
   async recentResults(limit = 5) {
@@ -1504,7 +1581,7 @@ async function viewLeagues() {
       </summary>
       <div class="muted" style="font-size:13.5px;line-height:1.6;margin-top:14px">
         <p>Een league bestaat uit maximaal 4 divisies. Spelers worden op basis van hun 3-dart gemiddelde ingedeeld in een divisie. Iedere divisie heeft maximaal 12 spelers.</p>
-        <p>Binnen je divisie speel je wedstrijden tegen de andere spelers. De wedstrijden worden automatisch ingedeeld. Na de start van de league hebben spelers 7 dagen de tijd om hun wedstrijden te spelen.</p>
+        <p>De wedstrijden worden automatisch ingedeeld. Iedere wedstrijd heeft vanaf het moment waarop deze beschikbaar wordt gesteld 7 dagen de tijd om gespeeld te worden. De deadline geldt afzonderlijk per wedstrijd.</p>
         <p>Aan het einde van een league-periode wordt de eindstand opgemaakt. De beste spelers kunnen promoveren naar een hogere divisie en de laagst geklasseerde spelers kunnen degraderen.</p>
         <p>De winnaar van iedere divisie ontvangt een kampioenstitel en een gepersonaliseerde prijs, beschikbaar gesteld door LWPrints. Dit kan bijvoorbeeld een bedrukt T-shirt, hoodie of polo zijn.</p>
       </div>
@@ -2392,9 +2469,31 @@ async function viewManageMatches() {
       `).join("")}` : ""}
 
     ${sectionHead("Alle wedstrijden")}
-    ${matches.length ? matches.map(matchCard).join("")
+    ${matches.length ? matches.map((m) => `
+        ${matchCard(m)}
+        ${!["confirmed", "cancelled"].includes(m.status) && m.deadline_at ? `
+          <button class="btn ghost sm" style="margin:-4px 0 14px" onclick="openExtendDeadlineDialog('${esc(m.id)}', '${esc(m.deadline_at)}')">${icon.clock} Deadline verlengen</button>` : ""}
+      `).join("")
       : emptyView("Nog geen wedstrijden", "Plan je eerste wedstrijd in.", "match")}
   `);
+}
+
+function openExtendDeadlineDialog(matchId, currentDeadlineIso) {
+  openModal("Deadline verlengen", `
+    <p class="muted" style="font-size:13px;margin:0 0 14px">Huidige deadline: ${esc(fmtDate(currentDeadlineIso))}</p>
+    <div class="field"><label for="ed-when">Nieuwe deadline</label>
+      <input id="ed-when" type="datetime-local" value="${esc(fmtDatetimeLocal(currentDeadlineIso))}" required></div>`,
+    async (bg) => {
+      const val = bg.querySelector("#ed-when").value;
+      if (!val) throw new Error("Kies een nieuwe deadline.");
+      const newDeadline = new Date(val).toISOString();
+      if (new Date(newDeadline) <= new Date(currentDeadlineIso)) {
+        throw new Error("De nieuwe deadline moet na de huidige deadline liggen.");
+      }
+      await db.extendMatchDeadline(matchId, newDeadline);
+      toast("Deadline verlengd.");
+      router();
+    }, "Verlengen");
 }
 
 async function viewSettings() {

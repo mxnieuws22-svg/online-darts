@@ -137,6 +137,12 @@ h2{font-size:17px;font-weight:700;margin:0;letter-spacing:-.01em}
 .clickable{cursor:pointer;text-align:left;width:100%;font:inherit;color:inherit}
 .clickable:hover{border-color:#4A4A4A}
 
+.info-card summary{cursor:pointer;list-style:none}
+.info-card summary::-webkit-details-marker{display:none}
+.info-card summary::marker{content:""}
+.info-card p{margin:0 0 10px}
+.info-card p:last-child{margin-bottom:0}
+
 .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
 @media(min-width:620px){.grid{grid-template-columns:repeat(4,1fr)}}
 

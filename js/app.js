@@ -367,15 +367,19 @@ function groupStandingsByDivision(rows) {
 // lopende) tussenstand, niet een definitief resultaat.
 // Kleine stip-reeks voor de "vorm" van een speler: laatste (max 5) bevestigde
 // resultaten, oudste eerst.
-function formDots(form) {
-  if (!form || !form.length) return "";
+function formDots(form, compact = false) {
   const colorFor = { W: "#2ECC71", D: "#8A93AA", L: "#E74C3C" };
   const labelFor = { W: "Gewonnen", D: "Gelijk", L: "Verloren" };
-  return `<div style="display:flex;gap:3px;margin-top:4px">
+  if (!form || !form.length) return compact ? `<span class="muted">&mdash;</span>` : "";
+  return `<div style="display:flex;gap:3px;${compact ? "" : "margin-top:4px"}">
     ${form.map((f) => `<span style="width:7px;height:7px;border-radius:50%;background:${colorFor[f] || "#8A93AA"};display:inline-block" title="${labelFor[f] || f}"></span>`).join("")}
   </div>`;
 }
 
+// Volledige standentabel van een divisie: #, speler, punten, gespeeld,
+// W/G/V, vorm, legs voor/tegen, saldo en gemiddelde - horizontaal
+// scrollbaar op smalle schermen. Promotie-/degradatiezone en de eigen rij
+// krijgen een subtiele achtergrondkleur; de koploper krijgt een kroontje.
 function divisionStandingsCard(group, opts = {}) {
   const { meId, divisionCount } = opts;
   const isMyDivision = meId && group.rows.some((r) => r.player?.id === meId);
@@ -392,25 +396,44 @@ function divisionStandingsCard(group, opts = {}) {
         </div>
         ${isMyDivision ? `<span class="badge" style="color:#F47B20;border-color:#F47B2066;background:#F47B2022">Jouw divisie</span>` : ""}
       </div>
-      ${group.rows.length ? group.rows.map((r, i) => {
-        const isMe = r.player?.id === meId;
-        const promoting = canPromote && i < moveCount;
-        const relegating = canRelegate && i >= group.rows.length - moveCount;
-        return `
-        <div class="row" style="padding:7px 0;${i > 0 ? "border-top:1px solid var(--line)" : ""}${isMe ? ";background:#F47B2014;margin:0 -14px;padding-left:14px;padding-right:14px" : ""}">
-          <span class="muted" style="width:18px;font-size:13px">${i + 1}</span>
-          ${avatar(r.player, "sm")}
-          <div class="row-main">
-            <div class="row-title">${esc(r.player?.display_name || "?")}${isMe ? ` <span class="muted" style="font-weight:400">(jij)</span>` : ""}</div>
-            <div class="row-sub">${r.played} gespeeld &middot; ${r.wins}W-${r.draws}G-${r.losses}V &middot; legs ${r.legsFor}-${r.legsAgainst} &middot; gem. ${Number(r.displayAverage ?? 0).toFixed(1)}</div>
-            ${formDots(r.form)}
-          </div>
-          <div style="font-weight:700;flex-shrink:0">${r.points} pt</div>
-          ${promoting ? `<span title="Promotiezone" style="width:14px;height:14px;color:#2ECC71;flex-shrink:0">${icon.chevronUp}</span>` : ""}
-          ${relegating ? `<span title="Degradatiezone" style="width:14px;height:14px;color:#E74C3C;flex-shrink:0">${icon.chevronDown}</span>` : ""}
-          ${i === 0 ? `<span style="width:16px;height:16px;color:#F47B20;flex-shrink:0">${icon.trophy}</span>` : ""}
-        </div>`;
-      }).join("")
+      ${group.rows.length ? `
+      <div class="table-scroll">
+        <table class="standings-table">
+          <thead>
+            <tr>
+              <th>#</th><th>Speler</th><th>Ptn</th><th>Gesp.</th><th>W</th><th>G</th><th>V</th>
+              <th>Vorm</th><th>Legs+</th><th>Legs-</th><th>Saldo</th><th>Gem.</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${group.rows.map((r, i) => {
+              const isMe = r.player?.id === meId;
+              const promoting = canPromote && i < moveCount;
+              const relegating = canRelegate && i >= group.rows.length - moveCount;
+              const saldo = (r.legsFor ?? 0) - (r.legsAgainst ?? 0);
+              const rowClass = [isMe && "me", promoting && "promo", relegating && "relegate"].filter(Boolean).join(" ");
+              return `
+                <tr class="${rowClass}">
+                  <td>${i === 0 ? `<span style="display:inline-flex;width:13px;height:13px;color:#F47B20;vertical-align:-2px;margin-right:3px">${icon.trophy}</span>` : ""}${i + 1}</td>
+                  <td class="player-cell">
+                    ${avatar(r.player, "sm")}
+                    <span>${esc(r.player?.display_name || "?")}${isMe ? ` <span class="muted" style="font-weight:400">(jij)</span>` : ""}</span>
+                  </td>
+                  <td style="font-weight:700">${r.points}</td>
+                  <td>${r.played}</td>
+                  <td>${r.wins}</td>
+                  <td>${r.draws}</td>
+                  <td>${r.losses}</td>
+                  <td>${formDots(r.form, true)}</td>
+                  <td>${r.legsFor}</td>
+                  <td>${r.legsAgainst}</td>
+                  <td>${saldo > 0 ? "+" + saldo : saldo}</td>
+                  <td>${Number(r.displayAverage ?? 0).toFixed(1)}</td>
+                </tr>`;
+            }).join("")}
+          </tbody>
+        </table>
+      </div>`
         : `<p class="muted" style="font-size:13.5px;margin:0">Nog geen spelers in deze divisie.</p>`}
     </div>`;
 }

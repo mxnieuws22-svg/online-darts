@@ -482,9 +482,9 @@ function renderLanding() {
 
       <div class="landing-hero">
         <div class="landing-hero-inner">
-          <span class="landing-eyebrow">${icon.target}&nbsp;Voor teams en dartverenigingen</span>
+          <span class="landing-eyebrow">${icon.target}&nbsp;Voor elke darter</span>
           <h1>Jouw dartcompetitie, overzichtelijk georganiseerd</h1>
-          <p class="sub">Beheer leagues en toernooien, plan wedstrijden en houd scores en statistieken bij &mdash; allemaal op één plek, voor iedereen in je vereniging.</p>
+          <p class="sub">Speel mee in leagues en toernooien, plan je wedstrijden en houd je scores en statistieken bij &mdash; allemaal op één plek.</p>
           <div class="landing-cta">
             <button class="btn" onclick="renderRegister()">Gratis account aanmaken</button>
             <button class="btn ghost" onclick="renderLogin()">Inloggen</button>

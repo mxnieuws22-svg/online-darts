@@ -3003,6 +3003,523 @@ $$;
 grant execute on function public.withdraw_from_tournament(uuid) to authenticated;
 
 
+-- ============================================================================
+-- 17. Betaalde toernooien: inschrijfgeld, prijzenpot, handmatige Tikkie-
+--     betalingen (geen PSP/webhook/wallet) en handmatige uitbetalingen.
+-- ============================================================================
+-- Betalingen lopen buiten de app om (Tikkie). Spelers melden zelf dat ze
+-- betaald hebben, de organisator bevestigt of wijst af na controle van zijn
+-- eigen Tikkie-overzicht. Er wordt nergens kaart- of bankgegevens
+-- opgeslagen, en er is geen intern saldo/wallet - alleen een boekhouding
+-- van wat er zou moeten zijn gebeurd.
+
+alter table public.tournaments
+  add column if not exists entry_fee numeric(10,2) check (entry_fee is null or entry_fee >= 0),
+  add column if not exists min_players int check (min_players is null or min_players > 0),
+  add column if not exists prize_pool_type text check (prize_pool_type is null or prize_pool_type in ('fixed', 'entry_fee_based')),
+  add column if not exists payment_deadline_hours int check (payment_deadline_hours is null or payment_deadline_hours > 0),
+  add column if not exists payment_instructions text,
+  add column if not exists refund_policy text,
+  add column if not exists refund_cutoff_hours int check (refund_cutoff_hours is null or refund_cutoff_hours >= 0);
+
+comment on column public.tournaments.entry_fee is 'Inschrijfgeld per speler. NULL of 0 = gratis toernooi.';
+comment on column public.tournaments.prize_pool_type is 'fixed = vast bedrag (prize_amount), entry_fee_based = pot berekend uit inschrijfgeld x aantal betaalde deelnemers.';
+comment on column public.tournaments.payment_deadline_hours is 'Aantal uur na inschrijving waarbinnen betaald moet zijn, anders wordt de plek automatisch vrijgegeven.';
+comment on column public.tournaments.payment_instructions is 'Vrije tekst met betaalinstructies (bv. Tikkie-link/telefoonnummer), getoond na reserveren van een plek.';
+
+-- prize_distribution was vrije tekst (sectie 16); vervangen door gestructureerde
+-- data zodat de verdeling gevalideerd kan worden. Kolom stond nog nergens
+-- mee gevuld, dus veilig om te droppen en opnieuw aan te maken.
+alter table public.tournaments drop column if exists prize_distribution;
+alter table public.tournaments add column prize_distribution jsonb;
+comment on column public.tournaments.prize_distribution is
+  'Array van {position, type, value}. type = percentage (van de pot) of amount (vast bedrag, alleen toegestaan bij prize_pool_type = fixed).';
+
+-- Immutable helpers, nodig om in CHECK-constraints te gebruiken.
+create or replace function public.prize_distribution_percentage_sum(dist jsonb)
+returns numeric language sql immutable as $$
+  select coalesce(sum((elem->>'value')::numeric), 0)
+  from jsonb_array_elements(coalesce(dist, '[]'::jsonb)) elem
+  where elem->>'type' = 'percentage';
+$$;
+
+create or replace function public.prize_distribution_amount_sum(dist jsonb)
+returns numeric language sql immutable as $$
+  select coalesce(sum((elem->>'value')::numeric), 0)
+  from jsonb_array_elements(coalesce(dist, '[]'::jsonb)) elem
+  where elem->>'type' = 'amount';
+$$;
+
+create or replace function public.prize_distribution_has_only_percentage(dist jsonb)
+returns boolean language sql immutable as $$
+  select not exists (
+    select 1 from jsonb_array_elements(coalesce(dist, '[]'::jsonb)) elem
+    where elem->>'type' <> 'percentage'
+  );
+$$;
+
+alter table public.tournaments drop constraint if exists tournaments_prize_percentage_sum_check;
+alter table public.tournaments add constraint tournaments_prize_percentage_sum_check
+  check (public.prize_distribution_percentage_sum(prize_distribution) <= 100);
+
+alter table public.tournaments drop constraint if exists tournaments_prize_amount_sum_check;
+alter table public.tournaments add constraint tournaments_prize_amount_sum_check
+  check (prize_pool_type is distinct from 'fixed' or prize_amount is null
+         or public.prize_distribution_amount_sum(prize_distribution) <= prize_amount);
+
+-- Vaste bedragen zijn niet zinvol te valideren tegen een pot die pas na
+-- afloop van de inschrijving vaststaat, dus bij entry_fee_based staan
+-- alleen percentages toe.
+alter table public.tournaments drop constraint if exists tournaments_prize_entry_fee_based_percentage_check;
+alter table public.tournaments add constraint tournaments_prize_entry_fee_based_percentage_check
+  check (prize_pool_type is distinct from 'entry_fee_based'
+         or public.prize_distribution_has_only_percentage(prize_distribution));
+
+-- tournament_entries: betaalstatus, volledig los van de deelnamestatus
+-- (status: registered/confirmed/withdrawn). Een niet-betaalde inschrijving
+-- telt niet mee als definitieve aanmelding in "Mijn toernooien".
+alter table public.tournament_entries
+  add column if not exists payment_status text not null default 'not_required'
+    check (payment_status in ('not_required', 'pending', 'submitted', 'paid', 'failed', 'refunded')),
+  add column if not exists payment_reference text,
+  add column if not exists amount_paid numeric(10,2),
+  add column if not exists submitted_at timestamptz,
+  add column if not exists paid_at timestamptz,
+  add column if not exists refunded_at timestamptz;
+
+comment on column public.tournament_entries.payment_status is
+  'not_required (gratis toernooi) / pending (wacht op betaling) / submitted (speler meldt betaald te hebben) / paid (organisator bevestigd) / failed (afgewezen of verlopen) / refunded.';
+
+-- register_for_tournament (sectie 16) opnieuw gedefinieerd: zet meteen de
+-- juiste payment_status en reset de betaalvelden bij heraanmelden na
+-- uitschrijven.
+create or replace function public.register_for_tournament(p_tournament_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_status text;
+  v_max int;
+  v_opens timestamptz;
+  v_closes timestamptz;
+  v_entry_fee numeric;
+  v_count int;
+  v_payment_status text;
+begin
+  if auth.uid() is null then
+    raise exception 'Je moet ingelogd zijn.';
+  end if;
+
+  select status, max_players, registration_opens_at, registration_closes_at, entry_fee
+    into v_status, v_max, v_opens, v_closes, v_entry_fee
+    from public.tournaments where id = p_tournament_id;
+  if v_status is null then
+    raise exception 'Toernooi niet gevonden.';
+  end if;
+  if v_status <> 'active' then
+    raise exception 'Inschrijven kan niet (meer) voor dit toernooi.';
+  end if;
+  if v_opens is not null and v_opens > now() then
+    raise exception 'Inschrijving is nog niet geopend.';
+  end if;
+  if v_closes is not null and v_closes <= now() then
+    raise exception 'Inschrijving is gesloten.';
+  end if;
+  if v_max is not null then
+    select count(*) into v_count from public.tournament_entries
+      where tournament_id = p_tournament_id and status <> 'withdrawn';
+    if v_count >= v_max then
+      raise exception 'Dit toernooi zit vol.';
+    end if;
+  end if;
+
+  v_payment_status := case when v_entry_fee is not null and v_entry_fee > 0 then 'pending' else 'not_required' end;
+
+  insert into public.tournament_entries (tournament_id, player_id, status, payment_status)
+  values (p_tournament_id, auth.uid(), 'registered', v_payment_status)
+  on conflict (tournament_id, player_id) do update
+    set status = 'registered',
+        payment_status = v_payment_status,
+        submitted_at = null,
+        paid_at = null,
+        refunded_at = null,
+        payment_reference = null,
+        amount_paid = null
+    where tournament_entries.status = 'withdrawn';
+end;
+$$;
+
+grant execute on function public.register_for_tournament(uuid) to authenticated;
+
+
+-- Speler meldt zelf dat hij/zij betaald heeft (na een Tikkie te hebben
+-- gestuurd). Zet de inschrijving op 'submitted' zodat de organisator het
+-- kan controleren en bevestigen.
+create or replace function public.submit_tournament_payment(p_entry_id uuid, p_reference text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'Je moet ingelogd zijn.';
+  end if;
+
+  update public.tournament_entries
+    set payment_status = 'submitted',
+        payment_reference = nullif(trim(p_reference), ''),
+        submitted_at = now()
+    where id = p_entry_id
+      and player_id = auth.uid()
+      and payment_status = 'pending';
+
+  if not found then
+    raise exception 'Geen openstaande betaling gevonden om te melden.';
+  end if;
+end;
+$$;
+
+grant execute on function public.submit_tournament_payment(uuid, text) to authenticated;
+
+
+-- Organisator bevestigt een gemelde betaling na controle in eigen
+-- Tikkie-overzicht.
+create or replace function public.confirm_tournament_payment(p_entry_id uuid, p_amount numeric)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_tournament_id uuid;
+  v_player_id uuid;
+begin
+  if auth.uid() is null then
+    raise exception 'Je moet ingelogd zijn.';
+  end if;
+  if not public.is_organizer() then
+    raise exception 'Alleen de organisator kan een betaling bevestigen.';
+  end if;
+
+  update public.tournament_entries
+    set payment_status = 'paid',
+        amount_paid = p_amount,
+        paid_at = now()
+    where id = p_entry_id
+      and payment_status in ('pending', 'submitted')
+    returning tournament_id, player_id into v_tournament_id, v_player_id;
+
+  if not found then
+    raise exception 'Geen openstaande betaling gevonden om te bevestigen.';
+  end if;
+
+  insert into public.notifications (player_id, type, title, body)
+  values (v_player_id, 'tournament_payment_confirmed', 'Betaling bevestigd', 'Je inschrijving is definitief.');
+end;
+$$;
+
+grant execute on function public.confirm_tournament_payment(uuid, numeric) to authenticated;
+
+
+-- Organisator wijst een gemelde betaling af (bv. niet ontvangen). Geeft de
+-- plek meteen vrij, net als bij het verlopen van de betaaldeadline, en laat
+-- de speler weten waarom via een melding.
+create or replace function public.reject_tournament_payment(p_entry_id uuid, p_reason text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_player_id uuid;
+begin
+  if auth.uid() is null then
+    raise exception 'Je moet ingelogd zijn.';
+  end if;
+  if not public.is_organizer() then
+    raise exception 'Alleen de organisator kan een betaling afwijzen.';
+  end if;
+
+  update public.tournament_entries
+    set payment_status = 'failed', status = 'withdrawn'
+    where id = p_entry_id and payment_status in ('pending', 'submitted')
+    returning player_id into v_player_id;
+
+  if not found then
+    raise exception 'Geen openstaande betaling gevonden om af te wijzen.';
+  end if;
+
+  insert into public.notifications (player_id, type, title, body)
+  values (v_player_id, 'tournament_payment_rejected', 'Betaling niet gevonden',
+    coalesce(nullif(trim(p_reason), ''), 'Je gemelde betaling kon niet worden bevestigd. Je inschrijving is vervallen.'));
+end;
+$$;
+
+grant execute on function public.reject_tournament_payment(uuid, text) to authenticated;
+
+
+-- Terugbetaling: de organisator maakt handmatig het bedrag over via Tikkie
+-- en registreert dat hier. Geen geautomatiseerde geldstroom - dit is puur
+-- boekhouding van wat er buiten de app om is gebeurd.
+create or replace function public.refund_tournament_entry(p_entry_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_player_id uuid;
+begin
+  if auth.uid() is null then
+    raise exception 'Je moet ingelogd zijn.';
+  end if;
+  if not public.is_organizer() then
+    raise exception 'Alleen de organisator kan een terugbetaling registreren.';
+  end if;
+
+  update public.tournament_entries
+    set payment_status = 'refunded', status = 'withdrawn', refunded_at = now()
+    where id = p_entry_id and payment_status = 'paid'
+    returning player_id into v_player_id;
+
+  if not found then
+    raise exception 'Geen betaalde inschrijving gevonden om terug te betalen.';
+  end if;
+
+  insert into public.notifications (player_id, type, title, body)
+  values (v_player_id, 'tournament_refunded', 'Terugbetaling geregistreerd', 'Je inschrijfgeld is teruggestort.');
+end;
+$$;
+
+grant execute on function public.refund_tournament_entry(uuid) to authenticated;
+
+
+-- Automatisch vrijgeven van plekken waarvoor niet op tijd betaald is.
+-- Uitsluitend voor de cron-job hieronder - geen enkele rol mag dit zelf
+-- aanroepen.
+create or replace function public.expire_unpaid_tournament_entries()
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  with due as (
+    select e.id, e.player_id, t.name as tournament_name
+    from public.tournament_entries e
+    join public.tournaments t on t.id = e.tournament_id
+    where e.payment_status = 'pending'
+      and t.payment_deadline_hours is not null
+      and e.created_at + make_interval(hours => t.payment_deadline_hours) <= now()
+  )
+  insert into public.notifications (player_id, type, title, body)
+  select player_id, 'tournament_payment_expired', 'Reservering verlopen',
+         'Je hebt niet op tijd betaald voor ' || tournament_name || '. Je plek is vrijgegeven.'
+  from due;
+
+  update public.tournament_entries e
+    set payment_status = 'failed', status = 'withdrawn'
+    from public.tournaments t
+    where t.id = e.tournament_id
+      and e.payment_status = 'pending'
+      and t.payment_deadline_hours is not null
+      and e.created_at + make_interval(hours => t.payment_deadline_hours) <= now();
+end;
+$$;
+
+revoke all on function public.expire_unpaid_tournament_entries() from public, anon, authenticated;
+
+select cron.schedule(
+  'expire_unpaid_tournament_entries',
+  '*/5 * * * *',
+  $$select public.expire_unpaid_tournament_entries();$$
+);
+
+
+-- Handmatige uitbetalingen na afloop (organisator maakt zelf over via
+-- Tikkie en legt het hier vast). Zelfde soort patroon als division_winners/
+-- prize_claims elders in dit schema.
+create table if not exists public.tournament_payouts (
+  id               uuid primary key default gen_random_uuid(),
+  tournament_id    uuid not null references public.tournaments (id) on delete cascade,
+  player_id        uuid not null references public.profiles (id) on delete cascade,
+  placement        int not null check (placement > 0),
+  prize_amount     numeric(10,2) not null check (prize_amount >= 0),
+  currency         text not null default 'EUR',
+  payout_status    text not null default 'pending_approval'
+    check (payout_status in ('pending_approval', 'approved', 'paid', 'cancelled')),
+  payout_reference text,
+  approved_by      uuid references public.profiles (id) on delete set null,
+  approved_at      timestamptz,
+  paid_at          timestamptz,
+  created_by       uuid not null default auth.uid() references public.profiles (id) on delete restrict,
+  created_at       timestamptz not null default now(),
+  unique (tournament_id, placement)
+);
+
+alter table public.tournament_payouts enable row level security;
+
+drop policy if exists "tournament_payouts_select_own_or_organizer" on public.tournament_payouts;
+create policy "tournament_payouts_select_own_or_organizer"
+  on public.tournament_payouts for select
+  to authenticated
+  using (player_id = auth.uid() or public.is_organizer());
+
+drop policy if exists "tournament_payouts_write_organizer" on public.tournament_payouts;
+create policy "tournament_payouts_write_organizer"
+  on public.tournament_payouts for all
+  to authenticated
+  using (public.is_organizer())
+  with check (public.is_organizer());
+
+
+-- Organisator wijst een plaatsing/bedrag toe. Upsert op (tournament_id,
+-- placement); een reeds uitbetaalde prijs kan niet meer gewijzigd worden.
+create or replace function public.set_tournament_payout(
+  p_tournament_id uuid,
+  p_player_id uuid,
+  p_placement int,
+  p_prize_amount numeric,
+  p_currency text default 'EUR'
+) returns public.tournament_payouts
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_existing public.tournament_payouts;
+  v_row public.tournament_payouts;
+begin
+  if auth.uid() is null then
+    raise exception 'Je moet ingelogd zijn.';
+  end if;
+  if not public.is_organizer() then
+    raise exception 'Alleen de organisator kan een uitbetaling vastleggen.';
+  end if;
+  if p_placement is null or p_placement <= 0 then
+    raise exception 'Plaatsing moet groter dan 0 zijn.';
+  end if;
+  if p_prize_amount is null or p_prize_amount < 0 then
+    raise exception 'Bedrag mag niet negatief zijn.';
+  end if;
+  if not exists (select 1 from public.tournaments where id = p_tournament_id) then
+    raise exception 'Toernooi niet gevonden.';
+  end if;
+  if not exists (
+    select 1 from public.tournament_entries
+    where tournament_id = p_tournament_id and player_id = p_player_id
+  ) then
+    raise exception 'Deze speler staat niet ingeschreven voor dit toernooi.';
+  end if;
+
+  select * into v_existing
+    from public.tournament_payouts
+    where tournament_id = p_tournament_id and placement = p_placement;
+
+  if v_existing.id is not null and v_existing.payout_status = 'paid' then
+    raise exception 'Deze prijs is al uitbetaald en kan niet meer gewijzigd worden.';
+  end if;
+
+  insert into public.tournament_payouts
+    (tournament_id, player_id, placement, prize_amount, currency, payout_status, created_by)
+  values
+    (p_tournament_id, p_player_id, p_placement, p_prize_amount, coalesce(p_currency, 'EUR'), 'pending_approval', auth.uid())
+  on conflict (tournament_id, placement) do update
+    set player_id = excluded.player_id,
+        prize_amount = excluded.prize_amount,
+        currency = excluded.currency,
+        payout_status = 'pending_approval',
+        approved_by = null,
+        approved_at = null,
+        payout_reference = null,
+        paid_at = null
+  returning * into v_row;
+
+  return v_row;
+end;
+$$;
+
+grant execute on function public.set_tournament_payout(uuid, uuid, int, numeric, text) to authenticated;
+
+
+-- Organisator keurt een openstaande uitbetaling goed (tweede stap voordat
+-- het geld daadwerkelijk overgemaakt wordt).
+create or replace function public.approve_tournament_payout(p_payout_id uuid)
+returns public.tournament_payouts
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_row public.tournament_payouts;
+begin
+  if auth.uid() is null then
+    raise exception 'Je moet ingelogd zijn.';
+  end if;
+  if not public.is_organizer() then
+    raise exception 'Alleen de organisator kan een uitbetaling goedkeuren.';
+  end if;
+
+  update public.tournament_payouts
+    set payout_status = 'approved',
+        approved_by = auth.uid(),
+        approved_at = now()
+    where id = p_payout_id and payout_status = 'pending_approval'
+    returning * into v_row;
+
+  if v_row.id is null then
+    raise exception 'Geen openstaande uitbetaling gevonden om goed te keuren.';
+  end if;
+
+  return v_row;
+end;
+$$;
+
+grant execute on function public.approve_tournament_payout(uuid) to authenticated;
+
+
+-- Organisator registreert dat een goedgekeurde uitbetaling daadwerkelijk
+-- (handmatig, via Tikkie) is overgemaakt.
+create or replace function public.mark_tournament_payout_paid(p_payout_id uuid, p_payout_reference text)
+returns public.tournament_payouts
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_row public.tournament_payouts;
+  v_reference text;
+begin
+  if auth.uid() is null then
+    raise exception 'Je moet ingelogd zijn.';
+  end if;
+  if not public.is_organizer() then
+    raise exception 'Alleen de organisator kan een uitbetaling als betaald registreren.';
+  end if;
+
+  v_reference := nullif(trim(p_payout_reference), '');
+
+  update public.tournament_payouts
+    set payout_status = 'paid',
+        payout_reference = v_reference,
+        paid_at = now()
+    where id = p_payout_id and payout_status = 'approved'
+    returning * into v_row;
+
+  if v_row.id is null then
+    raise exception 'Geen goedgekeurde uitbetaling gevonden om als betaald te markeren.';
+  end if;
+
+  return v_row;
+end;
+$$;
+
+grant execute on function public.mark_tournament_payout_paid(uuid, text) to authenticated;
+
+
 -- ----------------------------------------------------------------------------
 -- Eerste organisator aanwijzen
 -- ----------------------------------------------------------------------------

@@ -1132,7 +1132,8 @@ function renderLanding() {
               <button class="btn ghost" onclick="renderLogin()">Inloggen</button>
               <button class="btn ghost" onclick="document.getElementById('hoe-het-werkt').scrollIntoView({behavior:'smooth'})">Zo werkt het</button>
             </div>
-            <p class="landing-hero-note">Gratis te gebruiken &middot; geen creditcard nodig &middot; werkt met Scolia en DartCounter</p>
+            <p class="landing-hero-note">Gratis te gebruiken &middot; geen creditcard nodig</p>
+            <p class="landing-hero-note" style="margin-top:4px">Voor Scolia en DartCounter</p>
           </div>
         </div>
 

@@ -3860,9 +3860,11 @@ alter publication supabase_realtime add table public.notifications;
 
 
 -- ============================================================================
--- 20. E-mail als tweede kanaal naast de pop-up uit sectie 19, voor dezelfde
---     twee gebeurtenissen (wedstrijd ingepland / nieuwe ronde beschikbaar).
---     Verstuurd via het eigen Gmail-account van de organisator - geen los
+-- 20. E-mail als tweede kanaal naast de pop-up uit sectie 19: wedstrijd
+--     ingepland, nieuwe ronde beschikbaar, en alles rond een speelmoment-
+--     voorstel (voorgesteld/geaccepteerd/tegenvoorstel/probleem/
+--     ingetrokken - zie de type-lijst in de Edge Function zelf). Verstuurd
+--     via het eigen Gmail-account van de organisator - geen los
 --     e-mailplatform. Zie supabase/functions/send-pending-emails/index.ts
 --     voor de Edge Function die dit daadwerkelijk verstuurt; hieronder alleen
 --     het databasegedeelte (kolom + cron-job die de functie aanroept).
@@ -3873,7 +3875,7 @@ create extension if not exists pg_net;
 alter table public.notifications
   add column if not exists email_sent_at timestamptz;
 
-comment on column public.notifications.email_sent_at is 'Gezet zodra deze melding (alleen match_scheduled/match_available) per e-mail is verstuurd door send-pending-emails.';
+comment on column public.notifications.email_sent_at is 'Gezet zodra deze melding per e-mail is verstuurd door send-pending-emails - alleen voor de melding-types die de functie zelf whitelist (wedstrijd ingepland/beschikbaar, speelmoment-voorstel).';
 
 -- BELANGRIJK: dit vereist drie Edge Function-secrets die niet in dit
 -- bestand staan en die je zelf instelt (Project Settings -> Edge Functions

@@ -898,19 +898,6 @@ const db = {
     return data;
   },
 
-  // Voor het "Laatste activiteit"-blok op Home - ongeacht gelezen-status,
-  // in tegenstelling tot myPendingNotification() hierboven.
-  async myRecentNotifications(limit = 8) {
-    const { data, error } = await sb
-      .from("notifications")
-      .select("*")
-      .eq("player_id", state.profile.id)
-      .order("created_at", { ascending: false })
-      .limit(limit);
-    if (error) throw error;
-    return data || [];
-  },
-
   async markNotificationRead(id) {
     const { error } = await sb.from("notifications").update({ read_at: new Date().toISOString() }).eq("id", id);
     if (error) throw error;
@@ -1932,72 +1919,15 @@ function quickActionsGrid() {
     </div>`;
 }
 
-// Vertaalt een notificatie-type naar een icoon voor de activiteitenlijst.
-const ACTIVITY_ICON = {
-  division_assigned: "league",
-  league_started: "darts",
-  match_schedule_proposed: "clock",
-  match_schedule_accepted: "clock",
-  match_schedule_countered: "clock",
-  match_schedule_disputed: "warn",
-  match_schedule_withdrawn: "clock",
-  match_deadline_reminder: "clock",
-  match_deadline_expired: "warn",
-};
-
-// "Laatste activiteit" combineert echte notificaties met resultaat-
-// gebeurtenissen die (nog) geen eigen notificatie hebben (report_league_
-// match_result/confirm_league_match_result sturen er geen) - afgeleid uit
-// reported_at/confirmed_at op de wedstrijden van de speler zelf, zodat dit
-// zonder databasewijziging kan. Chatberichten (match_chat_message) horen
-// hier niet thuis: die hebben al hun eigen plek op de wedstrijdpagina.
-function recentActivityItems(notifications, matches, meId) {
-  const items = notifications
-    .filter((n) => n.type !== "match_chat_message")
-    .map((n) => ({ at: n.created_at, title: n.title, body: n.body, ico: ACTIVITY_ICON[n.type] || "bell" }));
-
-  for (const m of matches) {
-    const opponent = m.player_a_id === meId ? m.player_b : m.player_a;
-    const oppName = opponent?.display_name || "je tegenstander";
-    if (m.confirmed_at) {
-      items.push({ at: m.confirmed_at, title: "Uitslag bevestigd", body: `Tegen ${oppName}: ${m.player_a_legs}-${m.player_b_legs}`, ico: "darts" });
-    } else if (m.reported_at) {
-      items.push({ at: m.reported_at, title: "Uitslag doorgegeven", body: `Tegen ${oppName}, wacht op bevestiging`, ico: "darts" });
-    }
-  }
-
-  return items
-    .filter((i) => i.at)
-    .sort((a, b) => new Date(b.at) - new Date(a.at))
-    .slice(0, 6);
-}
-
-function activityList(items) {
-  if (!items.length) return `<div class="card">${emptyView("Nog geen activiteit", "Zodra er iets gebeurt in je league, zie je het hier.", "bell")}</div>`;
-  return `
-    <div class="card">
-      ${items.map((item, i) => `
-        <div class="row" style="padding:8px 0;${i > 0 ? "border-top:1px solid var(--line)" : ""}">
-          <div class="row-ico">${icon[item.ico]}</div>
-          <div class="row-main">
-            <div class="row-title" style="font-size:14px">${esc(item.title)}</div>
-            ${item.body ? `<div class="row-sub">${esc(item.body)}</div>` : ""}
-          </div>
-          <div class="muted" style="font-size:11.5px;flex-shrink:0">${esc(fmtDate(item.at, false))}</div>
-        </div>`).join("")}
-    </div>`;
-}
-
 async function viewHome() {
   const me = state.profile;
   const firstName = (me?.display_name || "").split(" ")[0];
 
-  const [matches, prizeNotification, notification, membership, recentNotifications] = await Promise.all([
+  const [matches, prizeNotification, notification, membership] = await Promise.all([
     db.myMatches(me.id),
     db.myPendingPrizeNotification(),
     db.myPendingNotification(),
     db.myLeagueMembership(),
-    db.myRecentNotifications(8),
   ]);
 
   const next = matches.find((m) => m.status === "scheduled" || m.status === "in_progress");
@@ -2011,8 +1941,6 @@ async function viewHome() {
     position = idx >= 0 ? idx + 1 : null;
     myRow = inMyDivision[idx] || null;
   }
-
-  const activity = recentActivityItems(recentNotifications, matches, me.id);
 
   setView(`
     <h1>Welkom terug, ${esc(firstName)}</h1>
@@ -2068,9 +1996,6 @@ async function viewHome() {
 
     ${sectionHead("Snelle acties")}
     ${quickActionsGrid()}
-
-    ${sectionHead("Laatste activiteit")}
-    ${activityList(activity)}
   `);
 }
 

@@ -1192,8 +1192,17 @@ const db = {
     return data || [];
   },
 
+  // Draait via een security-definer functie i.p.v. een kale insert, zodat
+  // de twee betrokken spelers meteen een melding krijgen dat er een
+  // wedstrijd voor ze is ingepland.
   async createMatch(fields) {
-    const { error } = await sb.from("league_matches").insert(fields);
+    const { error } = await sb.rpc("create_league_match", {
+      p_league_id: fields.league_id,
+      p_division_id: fields.division_id,
+      p_player_a_id: fields.player_a_id,
+      p_player_b_id: fields.player_b_id,
+      p_scheduled_at: fields.scheduled_at,
+    });
     if (error) throw error;
   },
 
@@ -4367,6 +4376,29 @@ function parseAuthRedirectParams() {
   return new URLSearchParams(raw);
 }
 
+// Live pop-up zodra er een nieuwe melding binnenkomt (bv. "wedstrijd
+// ingepland" of "nieuwe wedstrijd beschikbaar"), zonder dat de speler de
+// pagina hoeft te verversen. RLS blijft van toepassing op de stream.
+let notificationsChannel = null;
+
+function subscribeToNotifications(playerId) {
+  notificationsChannel?.unsubscribe();
+  notificationsChannel = sb
+    .channel(`notifications:${playerId}`)
+    .on("postgres_changes", {
+      event: "INSERT", schema: "public", table: "notifications", filter: `player_id=eq.${playerId}`,
+    }, (payload) => {
+      const n = payload.new;
+      toast(n.body ? `${n.title} — ${n.body}` : n.title);
+    })
+    .subscribe();
+}
+
+function unsubscribeFromNotifications() {
+  notificationsChannel?.unsubscribe();
+  notificationsChannel = null;
+}
+
 function init() {
   if (!cfg.SUPABASE_URL || cfg.SUPABASE_URL.includes("JOUW-PROJECT")) {
     return configMissing();
@@ -4402,6 +4434,7 @@ function init() {
     if (!session) {
       state.profile = null;
       state.onboarding = null;
+      unsubscribeFromNotifications();
       if (skipNextSignedOutRender) { skipNextSignedOutRender = false; return; }
       return renderLanding();
     }
@@ -4417,6 +4450,7 @@ function init() {
         sb.auth.signOut();
         return renderSignupConfirmed();
       }
+      if (state.profile) subscribeToNotifications(session.user.id);
       if (!location.hash || location.hash === "#/nieuw-wachtwoord") location.hash = "#/";
       router();
     }

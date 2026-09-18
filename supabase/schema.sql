@@ -3617,6 +3617,12 @@ drop function if exists public.report_league_match_result(
 -- checkout_attempts, darts_thrown, best_leg_darts, score_60_plus,
 -- score_80_plus, score_100_plus, score_140_plus). jsonb i.p.v. nog 20 losse
 -- parameters.
+--
+-- Legs: een wedstrijd is beslist zodra een speler de meerderheid van
+-- legs_per_match heeft gewonnen (v_legs_to_win = legs_per_match/2 + 1), dus
+-- niet alle legs hoeven gespeeld te worden (bv. bij "best of 10" is 6-3 een
+-- geldige, complete uitslag). Een gelijkspel kan alleen ontstaan wanneer
+-- legs_per_match even is en geen van beiden v_legs_to_win haalt (bv. 5-5).
 create or replace function public.report_league_match_result(
   p_match_id uuid,
   p_winner_id uuid,
@@ -3639,6 +3645,7 @@ as $$
 declare
   m public.league_matches%rowtype;
   v_legs_per_match int;
+  v_legs_to_win int;
   v_required_keys text[] := array['scoring_average', 'first9_average', 'checkouts_hit',
     'checkout_attempts', 'darts_thrown', 'best_leg_darts', 'score_60_plus',
     'score_80_plus', 'score_100_plus', 'score_140_plus'];
@@ -3663,16 +3670,24 @@ begin
   end if;
 
   select legs_per_match into v_legs_per_match from public.leagues where id = m.league_id;
+  v_legs_to_win := v_legs_per_match / 2 + 1;
 
-  if p_player_a_legs + p_player_b_legs <> v_legs_per_match then
-    raise exception 'Samen moeten de legs precies % zijn.', v_legs_per_match;
+  if p_player_a_legs + p_player_b_legs > v_legs_per_match then
+    raise exception 'Samen mogen de legs niet meer dan % zijn.', v_legs_per_match;
   end if;
 
   if p_player_a_legs = p_player_b_legs then
+    if p_player_a_legs * 2 <> v_legs_per_match then
+      raise exception 'Een gelijkspel kan alleen bij % - % (de helft van % legs).',
+        v_legs_per_match / 2, v_legs_per_match / 2, v_legs_per_match;
+    end if;
     if p_winner_id is not null then
       raise exception 'Bij een gelijkspel mag er geen winnaar opgegeven worden.';
     end if;
   else
+    if greatest(p_player_a_legs, p_player_b_legs) <> v_legs_to_win then
+      raise exception 'Zodra een speler % legs heeft gewonnen is de wedstrijd beslist.', v_legs_to_win;
+    end if;
     if p_winner_id is null or (p_winner_id <> m.player_a_id and p_winner_id <> m.player_b_id) then
       raise exception 'De winnaar moet één van beide spelers zijn.';
     end if;

@@ -3998,9 +3998,16 @@ async function openResultDialog(matchId) {
   const aName = a?.display_name || "Speler A";
   const bName = b?.display_name || "Speler B";
   const legsPerMatch = m.league?.legs_per_match || 10;
+  const legsToWin = Math.floor(legsPerMatch / 2) + 1;
+  const drawLegs = legsPerMatch / 2;
+  const canDraw = Number.isInteger(drawLegs);
 
   openModal("Uitslag doorgeven", `
-    <p class="sub" style="margin-bottom:18px">Jullie spelen altijd alle ${legsPerMatch} legs. Je tegenstander moet dit bevestigen voor het meetelt.</p>
+    <p class="sub" style="margin-bottom:18px">
+      Zodra een speler ${legsToWin} legs wint is de wedstrijd beslist - jullie hoeven dan niet alle ${legsPerMatch} legs te spelen.
+      ${canDraw ? `Bij ${drawLegs}-${drawLegs} is het gelijkspel.` : ""}
+      Je tegenstander moet de uitslag bevestigen voor het meetelt.
+    </p>
 
     <div class="field">
       <label>Wie heeft gewonnen?</label>
@@ -4012,10 +4019,10 @@ async function openResultDialog(matchId) {
     </div>
 
     <div class="field">
-      <label>Gewonnen legs <span class="muted" style="font-weight:400">(samen ${legsPerMatch})</span></label>
+      <label>Gewonnen legs <span class="muted" style="font-weight:400">(max ${legsToWin} per speler)</span></label>
       <div class="field-pair">
-        <div><div class="field-pair-label">${esc(aName)}</div><input id="ra" type="number" min="0" max="${legsPerMatch}" value="0" required></div>
-        <div><div class="field-pair-label">${esc(bName)}</div><input id="rb" type="number" min="0" max="${legsPerMatch}" value="0" required></div>
+        <div><div class="field-pair-label">${esc(aName)}</div><input id="ra" type="number" min="0" max="${legsToWin}" value="0" required></div>
+        <div><div class="field-pair-label">${esc(bName)}</div><input id="rb" type="number" min="0" max="${legsToWin}" value="0" required></div>
       </div>
     </div>
 
@@ -4119,10 +4126,12 @@ async function openResultDialog(matchId) {
     const aLegs = parseInt(bg.querySelector("#ra").value, 10);
     const bLegs = parseInt(bg.querySelector("#rb").value, 10);
     if (isNaN(aLegs) || isNaN(bLegs)) throw new Error("Vul beide legscores in.");
-    if (aLegs + bLegs !== legsPerMatch) throw new Error(`Samen moeten de legs precies ${legsPerMatch} zijn.`);
+    if (aLegs + bLegs > legsPerMatch) throw new Error(`Samen mogen de legs niet meer dan ${legsPerMatch} zijn.`);
     if (aLegs === bLegs) {
+      if (aLegs !== drawLegs) throw new Error(canDraw ? `Een gelijkspel kan alleen bij ${drawLegs}-${drawLegs}.` : `Bij ${legsPerMatch} legs is een gelijkspel niet mogelijk.`);
       if (winner !== "draw") throw new Error("Bij gelijke legs is het een gelijkspel.");
     } else {
+      if (Math.max(aLegs, bLegs) !== legsToWin) throw new Error(`Zodra een speler ${legsToWin} legs wint is de wedstrijd beslist.`);
       if (winner === "draw") throw new Error("De legs zijn niet gelijk, dus kies wie er gewonnen heeft.");
       if ((aLegs > bLegs && winner !== a.id) || (bLegs > aLegs && winner !== b.id)) {
         throw new Error("De gekozen winnaar komt niet overeen met de legscore.");

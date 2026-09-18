@@ -1094,8 +1094,18 @@ function fmtPrizeAmount(t) {
   return fmtMoney(t.prize_amount, t.prize_currency);
 }
 
-const ORDINALS = { 1: "1e", 2: "2e", 3: "3e", 4: "4e", 5: "5e", 6: "6e", 7: "7e", 8: "8e" };
-function ordinal(n) { return ORDINALS[n] || `${n}e`; }
+const ORDINALS_NL = { 1: "1e", 2: "2e", 3: "3e", 4: "4e", 5: "5e", 6: "6e", 7: "7e", 8: "8e" };
+function ordinal(n) {
+  if (locale === "en") {
+    const mod100 = n % 100;
+    if (mod100 >= 11 && mod100 <= 13) return `${n}th`;
+    if (n % 10 === 1) return `${n}st`;
+    if (n % 10 === 2) return `${n}nd`;
+    if (n % 10 === 3) return `${n}rd`;
+    return `${n}th`;
+  }
+  return ORDINALS_NL[n] || `${n}e`;
+}
 
 // De prijzenpot: vast bedrag (staat meteen vast), of berekend uit
 // inschrijfgeld x aantal betaalde deelnemers (staat pas vast zodra de

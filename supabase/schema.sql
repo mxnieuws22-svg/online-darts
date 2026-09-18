@@ -3682,8 +3682,14 @@ begin
     end if;
   end if;
 
-  -- De uitgebreide statistieken (sectie 18) zijn verplicht voor beide
-  -- spelers - alleen Gemiddelde/180's/Hoogste finish blijven optioneel.
+  -- Gemiddelde/180's/Hoogste finish waren voorheen optioneel - nu net als
+  -- de uitgebreide statistieken hieronder verplicht voor beide spelers.
+  if p_player_a_average is null or p_player_b_average is null
+     or p_player_a_180s is null or p_player_b_180s is null
+     or p_player_a_highest_checkout is null or p_player_b_highest_checkout is null then
+    raise exception 'Vul Gemiddelde, 180''s en Hoogste finish in voor beide spelers.';
+  end if;
+
   foreach v_key in array v_required_keys loop
     if (p_extra_a->>v_key) is null or (p_extra_b->>v_key) is null then
       raise exception 'Vul alle statistieken in voor beide spelers (Scoring, Eerste 9 gem., Checkouts, Worpen, Beste leg, 60+/80+/100+/140+).';
@@ -3696,10 +3702,10 @@ begin
     player_b_legs                = p_player_b_legs,
     player_a_average             = p_player_a_average,
     player_b_average             = p_player_b_average,
-    player_a_180s                = coalesce(p_player_a_180s, 0),
-    player_b_180s                = coalesce(p_player_b_180s, 0),
-    player_a_highest_checkout    = coalesce(p_player_a_highest_checkout, 0),
-    player_b_highest_checkout    = coalesce(p_player_b_highest_checkout, 0),
+    player_a_180s                = p_player_a_180s,
+    player_b_180s                = p_player_b_180s,
+    player_a_highest_checkout    = p_player_a_highest_checkout,
+    player_b_highest_checkout    = p_player_b_highest_checkout,
     player_a_scoring_average     = (p_extra_a->>'scoring_average')::numeric,
     player_b_scoring_average     = (p_extra_b->>'scoring_average')::numeric,
     player_a_first9_average      = (p_extra_a->>'first9_average')::numeric,

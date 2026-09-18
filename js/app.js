@@ -4060,26 +4060,26 @@ async function openResultDialog(matchId) {
     </div>
 
     <div class="field">
-      <label>Gemiddelde <span class="muted" style="font-weight:400">(optioneel)</span></label>
+      <label>Gemiddelde</label>
       <div class="field-pair">
-        <input id="avga" type="number" step="0.1" min="0" max="180" placeholder="${esc(aName)}">
-        <input id="avgb" type="number" step="0.1" min="0" max="180" placeholder="${esc(bName)}">
+        <input id="avga" type="number" step="0.1" min="0" max="180" placeholder="${esc(aName)}" required>
+        <input id="avgb" type="number" step="0.1" min="0" max="180" placeholder="${esc(bName)}" required>
       </div>
     </div>
 
     <div class="field">
-      <label>180's <span class="muted" style="font-weight:400">(optioneel)</span></label>
+      <label>180's</label>
       <div class="field-pair">
-        <input id="s180a" type="number" min="0" max="99" placeholder="${esc(aName)}">
-        <input id="s180b" type="number" min="0" max="99" placeholder="${esc(bName)}">
+        <input id="s180a" type="number" min="0" max="99" placeholder="${esc(aName)}" required>
+        <input id="s180b" type="number" min="0" max="99" placeholder="${esc(bName)}" required>
       </div>
     </div>
 
     <div class="field">
-      <label>Hoogste finish <span class="muted" style="font-weight:400">(optioneel)</span></label>
+      <label>Hoogste finish</label>
       <div class="field-pair">
-        <input id="coa" type="number" min="0" max="170" placeholder="${esc(aName)}">
-        <input id="cob" type="number" min="0" max="170" placeholder="${esc(bName)}">
+        <input id="coa" type="number" min="0" max="170" placeholder="${esc(aName)}" required>
+        <input id="cob" type="number" min="0" max="170" placeholder="${esc(bName)}" required>
       </div>
     </div>
 
@@ -4172,18 +4172,19 @@ async function openResultDialog(matchId) {
       const v = bg.querySelector(sel).value;
       return v === "" ? null : Number(v);
     };
-    const extraIds = ["#scora", "#scorb", "#f9a", "#f9b", "#cha", "#chb", "#caa", "#cab",
+    const requiredIds = ["#avga", "#avgb", "#s180a", "#s180b", "#coa", "#cob",
+      "#scora", "#scorb", "#f9a", "#f9b", "#cha", "#chb", "#caa", "#cab",
       "#dta", "#dtb", "#bla", "#blb", "#s60a", "#s60b", "#s80a", "#s80b",
       "#s100a", "#s100b", "#s140a", "#s140b"];
-    if (extraIds.some((sel) => num(sel) === null)) {
-      throw new Error("Vul alle statistieken in voor beide spelers (Scoring, Eerste 9 gem., Checkouts, Worpen, Beste leg, 60+/80+/100+/140+).");
+    if (requiredIds.some((sel) => num(sel) === null)) {
+      throw new Error("Vul alle statistieken in voor beide spelers (Gemiddelde, 180's, Hoogste finish, Scoring, Eerste 9 gem., Checkouts, Worpen, Beste leg, 60+/80+/100+/140+).");
     }
     await db.reportResult(matchId, {
       winnerId: winner === "draw" ? null : winner,
       aLegs, bLegs,
       aAverage: num("#avga"), bAverage: num("#avgb"),
-      a180s: num("#s180a") ?? 0, b180s: num("#s180b") ?? 0,
-      aCheckout: num("#coa") ?? 0, bCheckout: num("#cob") ?? 0,
+      a180s: num("#s180a"), b180s: num("#s180b"),
+      aCheckout: num("#coa"), bCheckout: num("#cob"),
       extraA: {
         scoring_average: num("#scora"), first9_average: num("#f9a"),
         checkouts_hit: num("#cha"), checkout_attempts: num("#caa"),

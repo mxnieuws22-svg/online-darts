@@ -4083,86 +4083,77 @@ async function openResultDialog(matchId) {
       </div>
     </div>
 
-    <details class="card info-card" style="margin-bottom:16px">
-      <summary>
-        <div class="row">
-          <div class="row-main"><div class="row-title" style="white-space:normal;font-size:14px">Meer statistieken</div></div>
-          <span class="muted toggle-label" style="font-size:13px;flex-shrink:0">Optioneel &darr;</span>
-        </div>
-      </summary>
-      <div style="margin-top:14px">
-        <div class="field">
-          <label>Scoring <span class="muted" style="font-weight:400">(optioneel)</span></label>
-          <div class="field-pair">
-            <input id="scora" type="number" step="0.1" min="0" max="180" placeholder="${esc(aName)}">
-            <input id="scorb" type="number" step="0.1" min="0" max="180" placeholder="${esc(bName)}">
-          </div>
-        </div>
-        <div class="field">
-          <label>Eerste 9 gem. <span class="muted" style="font-weight:400">(optioneel)</span></label>
-          <div class="field-pair">
-            <input id="f9a" type="number" step="0.1" min="0" max="180" placeholder="${esc(aName)}">
-            <input id="f9b" type="number" step="0.1" min="0" max="180" placeholder="${esc(bName)}">
-          </div>
-        </div>
-        <div class="field">
-          <label>Checkouts geraakt <span class="muted" style="font-weight:400">(optioneel)</span></label>
-          <div class="field-pair">
-            <input id="cha" type="number" min="0" placeholder="${esc(aName)}">
-            <input id="chb" type="number" min="0" placeholder="${esc(bName)}">
-          </div>
-        </div>
-        <div class="field">
-          <label>Checkout pogingen <span class="muted" style="font-weight:400">(optioneel)</span></label>
-          <div class="field-pair">
-            <input id="caa" type="number" min="0" placeholder="${esc(aName)}">
-            <input id="cab" type="number" min="0" placeholder="${esc(bName)}">
-          </div>
-        </div>
-        <div class="field">
-          <label>Worpen <span class="muted" style="font-weight:400">(optioneel)</span></label>
-          <div class="field-pair">
-            <input id="dta" type="number" min="0" placeholder="${esc(aName)}">
-            <input id="dtb" type="number" min="0" placeholder="${esc(bName)}">
-          </div>
-        </div>
-        <div class="field">
-          <label>Beste leg <span class="muted" style="font-weight:400">(darts, optioneel)</span></label>
-          <div class="field-pair">
-            <input id="bla" type="number" min="0" placeholder="${esc(aName)}">
-            <input id="blb" type="number" min="0" placeholder="${esc(bName)}">
-          </div>
-        </div>
-        <div class="field">
-          <label>60+ <span class="muted" style="font-weight:400">(optioneel)</span></label>
-          <div class="field-pair">
-            <input id="s60a" type="number" min="0" placeholder="${esc(aName)}">
-            <input id="s60b" type="number" min="0" placeholder="${esc(bName)}">
-          </div>
-        </div>
-        <div class="field">
-          <label>80+ <span class="muted" style="font-weight:400">(optioneel)</span></label>
-          <div class="field-pair">
-            <input id="s80a" type="number" min="0" placeholder="${esc(aName)}">
-            <input id="s80b" type="number" min="0" placeholder="${esc(bName)}">
-          </div>
-        </div>
-        <div class="field">
-          <label>100+ <span class="muted" style="font-weight:400">(optioneel)</span></label>
-          <div class="field-pair">
-            <input id="s100a" type="number" min="0" placeholder="${esc(aName)}">
-            <input id="s100b" type="number" min="0" placeholder="${esc(bName)}">
-          </div>
-        </div>
-        <div class="field" style="margin-bottom:0">
-          <label>140+ <span class="muted" style="font-weight:400">(optioneel)</span></label>
-          <div class="field-pair">
-            <input id="s140a" type="number" min="0" placeholder="${esc(aName)}">
-            <input id="s140b" type="number" min="0" placeholder="${esc(bName)}">
-          </div>
-        </div>
+    <div class="row-title" style="font-size:14px;margin:4px 0 12px">Meer statistieken</div>
+    <div class="field">
+      <label>Scoring</label>
+      <div class="field-pair">
+        <input id="scora" type="number" step="0.1" min="0" max="180" placeholder="${esc(aName)}" required>
+        <input id="scorb" type="number" step="0.1" min="0" max="180" placeholder="${esc(bName)}" required>
       </div>
-    </details>`, async (bg) => {
+    </div>
+    <div class="field">
+      <label>Eerste 9 gem.</label>
+      <div class="field-pair">
+        <input id="f9a" type="number" step="0.1" min="0" max="180" placeholder="${esc(aName)}" required>
+        <input id="f9b" type="number" step="0.1" min="0" max="180" placeholder="${esc(bName)}" required>
+      </div>
+    </div>
+    <div class="field">
+      <label>Checkouts geraakt</label>
+      <div class="field-pair">
+        <input id="cha" type="number" min="0" placeholder="${esc(aName)}" required>
+        <input id="chb" type="number" min="0" placeholder="${esc(bName)}" required>
+      </div>
+    </div>
+    <div class="field">
+      <label>Checkout pogingen</label>
+      <div class="field-pair">
+        <input id="caa" type="number" min="0" placeholder="${esc(aName)}" required>
+        <input id="cab" type="number" min="0" placeholder="${esc(bName)}" required>
+      </div>
+    </div>
+    <div class="field">
+      <label>Worpen</label>
+      <div class="field-pair">
+        <input id="dta" type="number" min="0" placeholder="${esc(aName)}" required>
+        <input id="dtb" type="number" min="0" placeholder="${esc(bName)}" required>
+      </div>
+    </div>
+    <div class="field">
+      <label>Beste leg <span class="muted" style="font-weight:400">(darts)</span></label>
+      <div class="field-pair">
+        <input id="bla" type="number" min="0" placeholder="${esc(aName)}" required>
+        <input id="blb" type="number" min="0" placeholder="${esc(bName)}" required>
+      </div>
+    </div>
+    <div class="field">
+      <label>60+</label>
+      <div class="field-pair">
+        <input id="s60a" type="number" min="0" placeholder="${esc(aName)}" required>
+        <input id="s60b" type="number" min="0" placeholder="${esc(bName)}" required>
+      </div>
+    </div>
+    <div class="field">
+      <label>80+</label>
+      <div class="field-pair">
+        <input id="s80a" type="number" min="0" placeholder="${esc(aName)}" required>
+        <input id="s80b" type="number" min="0" placeholder="${esc(bName)}" required>
+      </div>
+    </div>
+    <div class="field">
+      <label>100+</label>
+      <div class="field-pair">
+        <input id="s100a" type="number" min="0" placeholder="${esc(aName)}" required>
+        <input id="s100b" type="number" min="0" placeholder="${esc(bName)}" required>
+      </div>
+    </div>
+    <div class="field">
+      <label>140+</label>
+      <div class="field-pair">
+        <input id="s140a" type="number" min="0" placeholder="${esc(aName)}" required>
+        <input id="s140b" type="number" min="0" placeholder="${esc(bName)}" required>
+      </div>
+    </div>`, async (bg) => {
     const winner = bg.querySelector("input[name=winner]:checked")?.value;
     if (!winner) throw new Error("Kies wie er gewonnen heeft, of gelijkspel.");
     const aLegs = parseInt(bg.querySelector("#ra").value, 10);
@@ -4181,6 +4172,12 @@ async function openResultDialog(matchId) {
       const v = bg.querySelector(sel).value;
       return v === "" ? null : Number(v);
     };
+    const extraIds = ["#scora", "#scorb", "#f9a", "#f9b", "#cha", "#chb", "#caa", "#cab",
+      "#dta", "#dtb", "#bla", "#blb", "#s60a", "#s60b", "#s80a", "#s80b",
+      "#s100a", "#s100b", "#s140a", "#s140b"];
+    if (extraIds.some((sel) => num(sel) === null)) {
+      throw new Error("Vul alle statistieken in voor beide spelers (Scoring, Eerste 9 gem., Checkouts, Worpen, Beste leg, 60+/80+/100+/140+).");
+    }
     await db.reportResult(matchId, {
       winnerId: winner === "draw" ? null : winner,
       aLegs, bLegs,

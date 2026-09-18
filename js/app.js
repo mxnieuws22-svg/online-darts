@@ -1224,6 +1224,8 @@ const db = {
       p_player_b_180s: r.b180s,
       p_player_a_highest_checkout: r.aCheckout,
       p_player_b_highest_checkout: r.bCheckout,
+      p_extra_a: r.extraA || {},
+      p_extra_b: r.extraB || {},
     });
     if (error) throw error;
   },
@@ -4079,7 +4081,88 @@ async function openResultDialog(matchId) {
         <input id="coa" type="number" min="0" max="170" placeholder="${esc(aName)}">
         <input id="cob" type="number" min="0" max="170" placeholder="${esc(bName)}">
       </div>
-    </div>`, async (bg) => {
+    </div>
+
+    <details class="card info-card" style="margin-bottom:16px">
+      <summary>
+        <div class="row">
+          <div class="row-main"><div class="row-title" style="white-space:normal;font-size:14px">Meer statistieken</div></div>
+          <span class="muted toggle-label" style="font-size:13px;flex-shrink:0">Optioneel &darr;</span>
+        </div>
+      </summary>
+      <div style="margin-top:14px">
+        <div class="field">
+          <label>Scoring <span class="muted" style="font-weight:400">(optioneel)</span></label>
+          <div class="field-pair">
+            <input id="scora" type="number" step="0.1" min="0" max="180" placeholder="${esc(aName)}">
+            <input id="scorb" type="number" step="0.1" min="0" max="180" placeholder="${esc(bName)}">
+          </div>
+        </div>
+        <div class="field">
+          <label>Eerste 9 gem. <span class="muted" style="font-weight:400">(optioneel)</span></label>
+          <div class="field-pair">
+            <input id="f9a" type="number" step="0.1" min="0" max="180" placeholder="${esc(aName)}">
+            <input id="f9b" type="number" step="0.1" min="0" max="180" placeholder="${esc(bName)}">
+          </div>
+        </div>
+        <div class="field">
+          <label>Checkouts geraakt <span class="muted" style="font-weight:400">(optioneel)</span></label>
+          <div class="field-pair">
+            <input id="cha" type="number" min="0" placeholder="${esc(aName)}">
+            <input id="chb" type="number" min="0" placeholder="${esc(bName)}">
+          </div>
+        </div>
+        <div class="field">
+          <label>Checkout pogingen <span class="muted" style="font-weight:400">(optioneel)</span></label>
+          <div class="field-pair">
+            <input id="caa" type="number" min="0" placeholder="${esc(aName)}">
+            <input id="cab" type="number" min="0" placeholder="${esc(bName)}">
+          </div>
+        </div>
+        <div class="field">
+          <label>Worpen <span class="muted" style="font-weight:400">(optioneel)</span></label>
+          <div class="field-pair">
+            <input id="dta" type="number" min="0" placeholder="${esc(aName)}">
+            <input id="dtb" type="number" min="0" placeholder="${esc(bName)}">
+          </div>
+        </div>
+        <div class="field">
+          <label>Beste leg <span class="muted" style="font-weight:400">(darts, optioneel)</span></label>
+          <div class="field-pair">
+            <input id="bla" type="number" min="0" placeholder="${esc(aName)}">
+            <input id="blb" type="number" min="0" placeholder="${esc(bName)}">
+          </div>
+        </div>
+        <div class="field">
+          <label>60+ <span class="muted" style="font-weight:400">(optioneel)</span></label>
+          <div class="field-pair">
+            <input id="s60a" type="number" min="0" placeholder="${esc(aName)}">
+            <input id="s60b" type="number" min="0" placeholder="${esc(bName)}">
+          </div>
+        </div>
+        <div class="field">
+          <label>80+ <span class="muted" style="font-weight:400">(optioneel)</span></label>
+          <div class="field-pair">
+            <input id="s80a" type="number" min="0" placeholder="${esc(aName)}">
+            <input id="s80b" type="number" min="0" placeholder="${esc(bName)}">
+          </div>
+        </div>
+        <div class="field">
+          <label>100+ <span class="muted" style="font-weight:400">(optioneel)</span></label>
+          <div class="field-pair">
+            <input id="s100a" type="number" min="0" placeholder="${esc(aName)}">
+            <input id="s100b" type="number" min="0" placeholder="${esc(bName)}">
+          </div>
+        </div>
+        <div class="field" style="margin-bottom:0">
+          <label>140+ <span class="muted" style="font-weight:400">(optioneel)</span></label>
+          <div class="field-pair">
+            <input id="s140a" type="number" min="0" placeholder="${esc(aName)}">
+            <input id="s140b" type="number" min="0" placeholder="${esc(bName)}">
+          </div>
+        </div>
+      </div>
+    </details>`, async (bg) => {
     const winner = bg.querySelector("input[name=winner]:checked")?.value;
     if (!winner) throw new Error("Kies wie er gewonnen heeft, of gelijkspel.");
     const aLegs = parseInt(bg.querySelector("#ra").value, 10);
@@ -4104,6 +4187,20 @@ async function openResultDialog(matchId) {
       aAverage: num("#avga"), bAverage: num("#avgb"),
       a180s: num("#s180a") ?? 0, b180s: num("#s180b") ?? 0,
       aCheckout: num("#coa") ?? 0, bCheckout: num("#cob") ?? 0,
+      extraA: {
+        scoring_average: num("#scora"), first9_average: num("#f9a"),
+        checkouts_hit: num("#cha"), checkout_attempts: num("#caa"),
+        darts_thrown: num("#dta"), best_leg_darts: num("#bla"),
+        score_60_plus: num("#s60a"), score_80_plus: num("#s80a"),
+        score_100_plus: num("#s100a"), score_140_plus: num("#s140a"),
+      },
+      extraB: {
+        scoring_average: num("#scorb"), first9_average: num("#f9b"),
+        checkouts_hit: num("#chb"), checkout_attempts: num("#cab"),
+        darts_thrown: num("#dtb"), best_leg_darts: num("#blb"),
+        score_60_plus: num("#s60b"), score_80_plus: num("#s80b"),
+        score_100_plus: num("#s100b"), score_140_plus: num("#s140b"),
+      },
     });
     toast("Doorgegeven. Je tegenstander bevestigt de uitslag.");
     router();
@@ -4124,6 +4221,12 @@ async function openConfirmDialog(matchId) {
       <span class="row-sub">${esc(label)}</span>
       <span style="font-weight:600">${esc(av ?? "–")} &ndash; ${esc(bv ?? "–")}</span>
     </div>`;
+  // Extra statistieken alleen tonen als er voor minstens één speler iets is
+  // ingevuld - anders een lange rij "– – –" voor wedstrijden waar alleen de
+  // basis (legs/gemiddelde) is doorgegeven.
+  const rowIf = (label, av, bv) => (av != null || bv != null) ? row(label, av, bv) : "";
+  const checkoutPct = (hit, attempts) => (hit != null && attempts) ? `${((hit / attempts) * 100).toFixed(2)}%` : null;
+  const checkoutFraction = (hit, attempts) => (hit != null || attempts != null) ? `${hit ?? "–"}/${attempts ?? "–"}` : null;
 
   const bg = document.createElement("div");
   bg.className = "modal-bg";
@@ -4143,8 +4246,18 @@ async function openConfirmDialog(matchId) {
         </div>
         ${row("Legs", m.player_a_legs, m.player_b_legs)}
         ${row("Gemiddelde", m.player_a_average, m.player_b_average)}
-        ${row("180's", m.player_a_180s, m.player_b_180s)}
+        ${rowIf("Scoring", m.player_a_scoring_average, m.player_b_scoring_average)}
+        ${rowIf("Eerste 9 gem.", m.player_a_first9_average, m.player_b_first9_average)}
+        ${rowIf("Checkout %", checkoutPct(m.player_a_checkouts_hit, m.player_a_checkout_attempts), checkoutPct(m.player_b_checkouts_hit, m.player_b_checkout_attempts))}
+        ${rowIf("Checkouts", checkoutFraction(m.player_a_checkouts_hit, m.player_a_checkout_attempts), checkoutFraction(m.player_b_checkouts_hit, m.player_b_checkout_attempts))}
         ${row("Hoogste finish", m.player_a_highest_checkout, m.player_b_highest_checkout)}
+        ${rowIf("Worpen", m.player_a_darts_thrown, m.player_b_darts_thrown)}
+        ${rowIf("Beste leg", m.player_a_best_leg_darts, m.player_b_best_leg_darts)}
+        ${rowIf("60+", m.player_a_score_60_plus, m.player_b_score_60_plus)}
+        ${rowIf("80+", m.player_a_score_80_plus, m.player_b_score_80_plus)}
+        ${rowIf("100+", m.player_a_score_100_plus, m.player_b_score_100_plus)}
+        ${rowIf("140+", m.player_a_score_140_plus, m.player_b_score_140_plus)}
+        ${row("180's", m.player_a_180s, m.player_b_180s)}
       </div>
       <div id="confirmError"></div>
       <div class="modal-actions" style="justify-content:space-between">

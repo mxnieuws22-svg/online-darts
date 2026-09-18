@@ -3900,6 +3900,68 @@ select cron.schedule(
 );
 
 
+-- ============================================================================
+-- 21. Pushmeldingen op mobiel/desktop (Web Push), als derde kanaal naast de
+--     pop-up (sectie 19) en e-mail (sectie 20), voor dezelfde gebeurtenissen
+--     (wedstrijd ingepland/beschikbaar, speelmoment-voorstel). Werkt in de
+--     browser zonder installatie op Android/desktop; op iPhone moet de site
+--     eerst via Safari op het beginscherm gezet worden (vereist iOS 16.4+).
+--     Zie supabase/functions/send-push-notifications/index.ts voor de Edge
+--     Function; sw.js (repo-root) voor de service worker die de melding
+--     toont. Geen provider-account nodig, alleen een zelf gegenereerd
+--     VAPID-sleutelpaar.
+-- ============================================================================
+
+create table if not exists public.push_subscriptions (
+  id         uuid primary key default gen_random_uuid(),
+  player_id  uuid not null references public.profiles (id) on delete cascade,
+  endpoint   text not null,
+  p256dh     text not null,
+  auth       text not null,
+  created_at timestamptz not null default now(),
+  unique (player_id, endpoint)
+);
+
+alter table public.push_subscriptions enable row level security;
+
+-- Puur eigen-apparaat-beheer (aanmaken/verwijderen van je eigen
+-- pushabonnement) - geen security-definer functie nodig, dit vereist geen
+-- extra validatielogica.
+drop policy if exists "push_subscriptions_own" on public.push_subscriptions;
+create policy "push_subscriptions_own"
+  on public.push_subscriptions for all
+  to authenticated
+  using (player_id = auth.uid())
+  with check (player_id = auth.uid());
+
+alter table public.notifications
+  add column if not exists push_sent_at timestamptz;
+
+comment on column public.notifications.push_sent_at is 'Gezet zodra deze melding als pushmelding is verstuurd door send-push-notifications (zelfde melding-types als email_sent_at).';
+
+-- BELANGRIJK: dit vereist twee extra Edge Function-secrets naast de drie uit
+-- sectie 20 (Project Settings -> Edge Functions -> Secrets):
+--   VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY - een sleutelpaar specifiek voor
+--   Web Push (geen account bij een provider nodig, gewoon een gegenereerd
+--   sleutelpaar, bv. via `npx web-push generate-vapid-keys`). Hetzelfde
+--   CRON_SECRET als sectie 20 wordt hergebruikt. Vervang de project-URL
+--   door je eigen project-URL.
+select cron.schedule(
+  'send_push_notifications',
+  '*/5 * * * *',
+  $cron$
+  select net.http_post(
+    url := 'https://JOUW-PROJECT.supabase.co/functions/v1/send-push-notifications',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'x-cron-secret', 'VERVANG-DOOR-JE-EIGEN-CRON_SECRET'
+    ),
+    body := '{}'::jsonb
+  );
+  $cron$
+);
+
+
 -- ----------------------------------------------------------------------------
 -- Eerste organisator aanwijzen
 -- ----------------------------------------------------------------------------

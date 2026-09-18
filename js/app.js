@@ -260,7 +260,7 @@ function matchDeadlineLine(m, status) {
     return `<div class="match-meta" style="margin-top:4px;color:#E74C3C">De deadline is verstreken.</div>`;
   }
   if (status.label === "Nog niet gestart" && m.available_at) {
-    return `<div class="match-meta" style="margin-top:4px">Beschikbaar vanaf ${esc(fmtDate(m.available_at))}</div>`;
+    return `<div class="match-meta" style="margin-top:4px">Beschikbaar vanaf ${esc(fmtDate(m.available_at, false))}</div>`;
   }
   if (m.deadline_at) {
     return `

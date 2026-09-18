@@ -3738,6 +3738,127 @@ grant execute on function public.report_league_match_result(
 ) to authenticated;
 
 
+-- ============================================================================
+-- 19. Meldingen bij het inplannen van wedstrijden: organisator plant
+--     handmatig een wedstrijd, een nieuwe ronde komt beschikbaar, en een
+--     live pop-up in de app zodra zo'n melding binnenkomt.
+-- ============================================================================
+
+-- Organisator plant handmatig een wedstrijd ("Wedstrijden inplannen") - dit
+-- was een kale insert zonder melding aan de twee betrokken spelers. Nu via
+-- een RPC die de insert + melding atomisch doet.
+create or replace function public.create_league_match(
+  p_league_id uuid,
+  p_division_id uuid,
+  p_player_a_id uuid,
+  p_player_b_id uuid,
+  p_scheduled_at timestamptz
+)
+returns public.league_matches
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_league_name text;
+  v_row public.league_matches;
+begin
+  if auth.uid() is null then
+    raise exception 'Je moet ingelogd zijn.';
+  end if;
+  if not public.is_organizer() then
+    raise exception 'Alleen de organisator kan een wedstrijd inplannen.';
+  end if;
+  if p_player_a_id = p_player_b_id then
+    raise exception 'Kies twee verschillende spelers.';
+  end if;
+
+  select name into v_league_name from public.leagues where id = p_league_id;
+  if v_league_name is null then
+    raise exception 'League niet gevonden.';
+  end if;
+
+  insert into public.league_matches
+    (league_id, division_id, player_a_id, player_b_id, scheduled_at, status)
+  values
+    (p_league_id, p_division_id, p_player_a_id, p_player_b_id, p_scheduled_at, 'scheduled')
+  returning * into v_row;
+
+  insert into public.notifications (player_id, type, title, body, league_match_id)
+  values
+    (p_player_a_id, 'match_scheduled', 'Nieuwe wedstrijd ingepland',
+     'Er is een wedstrijd voor je ingepland in ' || v_league_name || '.', v_row.id),
+    (p_player_b_id, 'match_scheduled', 'Nieuwe wedstrijd ingepland',
+     'Er is een wedstrijd voor je ingepland in ' || v_league_name || '.', v_row.id);
+
+  return v_row;
+end;
+$$;
+
+grant execute on function public.create_league_match(uuid, uuid, uuid, uuid, timestamptz) to authenticated;
+
+-- Bij de wekelijkse round-robin-indeling (sectie 18... eigenlijk de
+-- generate_league_matches uit sectie 11/16) kregen spelers alleen bij de
+-- allereerste ronde een melding (via on_league_activated - "league
+-- gestart"). Voor elke volgende ronde die beschikbaar komt gebeurde tot nu
+-- toe niets. Nieuwe cron-job die dit per ronde opvangt zodra available_at
+-- bereikt is.
+alter table public.league_matches
+  add column if not exists available_notified_at timestamptz;
+
+comment on column public.league_matches.available_notified_at is 'Gezet zodra de "nieuwe wedstrijd beschikbaar"-melding voor deze wedstrijd is verstuurd (voor idempotentie).';
+
+create or replace function public.notify_available_matches()
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  with due as (
+    select m.id, m.player_a_id, m.player_b_id, l.name as league_name
+    from public.league_matches m
+    join public.leagues l on l.id = m.league_id
+    where m.status not in ('confirmed', 'cancelled')
+      and m.available_at is not null
+      and m.available_at <= now()
+      and m.available_notified_at is null
+      -- Ronde 1 wordt al gemeld via on_league_activated ("league gestart").
+      and m.round_number is distinct from 1
+  )
+  insert into public.notifications (player_id, type, title, body, league_match_id)
+  select player_a_id, 'match_available', 'Nieuwe wedstrijd beschikbaar',
+         'Je hebt een nieuwe wedstrijd om te spelen in ' || league_name || '.', id
+  from due
+  union all
+  select player_b_id, 'match_available', 'Nieuwe wedstrijd beschikbaar',
+         'Je hebt een nieuwe wedstrijd om te spelen in ' || league_name || '.', id
+  from due;
+
+  update public.league_matches m
+    set available_notified_at = now()
+    where m.status not in ('confirmed', 'cancelled')
+      and m.available_at is not null
+      and m.available_at <= now()
+      and m.available_notified_at is null
+      and m.round_number is distinct from 1;
+end;
+$$;
+
+revoke execute on function public.notify_available_matches() from public, anon, authenticated;
+
+select cron.schedule(
+  'notify_available_matches',
+  '*/5 * * * *',
+  $cron$select public.notify_available_matches();$cron$
+);
+
+-- Nodig zodat de app een live pop-up kan tonen zodra er een nieuwe melding
+-- binnenkomt, zonder dat de speler de pagina hoeft te verversen. RLS blijft
+-- normaal van toepassing op de realtime-stream (alleen eigen meldingen).
+alter publication supabase_realtime add table public.notifications;
+
+
 -- ----------------------------------------------------------------------------
 -- Eerste organisator aanwijzen
 -- ----------------------------------------------------------------------------

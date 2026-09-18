@@ -92,12 +92,11 @@ function fmtDate(iso, withTime = true) {
   return d.toLocaleDateString("nl-NL", opts);
 }
 
-// "Speel deze wedstrijd uiterlijk vóór 8 oktober 2026 om 19:00."
+// "Speel deze wedstrijd uiterlijk vóór 8 oktober 2026."
 function fmtDeadlineSentence(iso) {
   const d = new Date(iso);
   const datePart = d.toLocaleDateString("nl-NL", { day: "numeric", month: "long", year: "numeric" });
-  const timePart = d.toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" });
-  return `Speel deze wedstrijd uiterlijk vóór ${datePart} om ${timePart}.`;
+  return `Speel deze wedstrijd uiterlijk vóór ${datePart}.`;
 }
 
 // Resterende tijd tot een deadline, in mensentaal.

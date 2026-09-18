@@ -324,21 +324,113 @@ function leagueCard(l, clickable = true) {
     : `<div class="card">${inner}</div>`;
 }
 
-function tournamentCard(t) {
+// Vriendelijke toernooistatus, puur berekend voor weergave (net als
+// matchDisplayStatus voor wedstrijden) - de echte status-kolom
+// (draft/active/finished) blijft ongewijzigd en stuurt niets extra aan.
+const TOURNAMENT_STATUS_LABELS = {
+  draft: "Concept",
+  upcoming: "Binnenkort",
+  registration_open: "Inschrijving geopend",
+  registration_closed: "Inschrijving gesloten",
+  full: "Vol",
+  in_progress: "Bezig",
+  finished: "Afgerond",
+};
+const TOURNAMENT_STATUS_COLORS = {
+  draft: "#6B7280",
+  upcoming: "#4EA1F7",
+  registration_open: "#2ECC71",
+  registration_closed: "#6B7280",
+  full: "#E74C3C",
+  in_progress: "#F47B20",
+  finished: "#9B7BD9",
+};
+
+function tournamentDisplayStatus(t, entryCount = 0) {
+  let key;
+  if (t.status === "draft") key = "draft";
+  else if (t.status === "finished") key = "finished";
+  else {
+    const now = new Date();
+    const starts = t.start_at ? new Date(t.start_at) : null;
+    const opens = t.registration_opens_at ? new Date(t.registration_opens_at) : null;
+    const closes = t.registration_closes_at ? new Date(t.registration_closes_at) : null;
+    if (starts && starts <= now) key = "in_progress";
+    else if (opens && opens > now) key = "upcoming";
+    else if (closes && closes <= now) key = "registration_closed";
+    else if (t.max_players != null && entryCount >= t.max_players) key = "full";
+    else key = "registration_open";
+  }
+  return { key, label: TOURNAMENT_STATUS_LABELS[key], color: TOURNAMENT_STATUS_COLORS[key] };
+}
+
+function tournamentStatusBadge(t, entryCount) {
+  const s = tournamentDisplayStatus(t, entryCount);
+  return `<span class="badge" style="color:${s.color};border-color:${s.color}66;background:${s.color}22">${esc(s.label)}</span>`;
+}
+
+function registrationClosedReason(status) {
+  return {
+    upcoming: "Inschrijving is nog niet geopend.",
+    registration_closed: "Inschrijving is gesloten.",
+    full: "Dit toernooi zit vol.",
+    in_progress: "Dit toernooi is al begonnen.",
+    finished: "Dit toernooi is afgerond.",
+    draft: "Dit toernooi is nog niet gepubliceerd.",
+  }[status.key] || "";
+}
+
+function fmtPrizeAmount(t) {
+  const n = Number(t.prize_amount);
+  const formatted = n % 1 === 0 ? n.toFixed(0) : n.toFixed(2);
+  return t.prize_currency === "EUR" ? `€ ${formatted}` : `${formatted} ${t.prize_currency}`;
+}
+
+// Prijsinformatie in vier mogelijke vormen - toont nooit fictieve bedragen,
+// alleen wat er daadwerkelijk is ingevuld.
+function prizeLine(t) {
+  if (t.prize_type === "money") {
+    return `
+      <div class="row-title" style="font-size:14px">Prijzengeld</div>
+      ${t.prize_amount != null ? `<div class="row-sub" style="white-space:normal">${esc(fmtPrizeAmount(t))}</div>` : ""}
+      ${t.prize_distribution ? `<div class="muted" style="font-size:12.5px;margin-top:2px">${esc(t.prize_distribution)}</div>` : ""}`;
+  }
+  if (t.prize_type === "physical") {
+    return `
+      <div class="row-title" style="font-size:14px">Fysieke prijs</div>
+      ${t.prize_description ? `<div class="row-sub" style="white-space:normal">${esc(t.prize_description)}</div>` : ""}`;
+  }
+  if (t.prize_type === "unknown") {
+    return `<div class="row-title" style="font-size:14px;white-space:normal">Prijs wordt later bekendgemaakt</div>`;
+  }
+  return `<div class="muted" style="font-size:14px">Geen prijs</div>`;
+}
+
+function tournamentCard(t, opts = {}) {
+  const { entryCount = 0, isMine = false } = opts;
   const meta = [
     TOURNAMENT_TYPES[t.tournament_type] || t.tournament_type,
-    t.start_at ? fmtDate(t.start_at, false) : null,
+    t.start_at ? fmtDate(t.start_at) : null,
   ].filter(Boolean).join(" · ");
+  const platformLabel = t.platform === "online" ? "Online" : t.platform === "offline" ? "Offline" : null;
+  const scoringLabel = t.scoring_platform === "scolia" ? "Scolia" : t.scoring_platform === "dartcounter" ? "DartCounter" : null;
   return `
     <div class="card">
-      <div class="row">
+      <div class="row" style="margin-bottom:8px">
         <div class="row-ico">${icon.tournament}</div>
         <div class="row-main">
           <div class="row-title">${esc(t.name)}</div>
           <div class="row-sub">${esc(meta)}</div>
         </div>
-        ${badge(t.status)}
       </div>
+      <div style="margin:0 0 10px">${tournamentStatusBadge(t, entryCount)}</div>
+      <div class="muted" style="font-size:13px;display:flex;flex-wrap:wrap;gap:4px 12px;margin-bottom:12px">
+        ${platformLabel ? `<span>${esc(platformLabel)}${scoringLabel ? " · " + esc(scoringLabel) : ""}</span>` : ""}
+        <span>${entryCount}${t.max_players ? `/${t.max_players}` : ""} spelers</span>
+        ${isMine ? `<span style="color:var(--accent);font-weight:600">Jij doet mee</span>` : ""}
+      </div>
+      <div style="margin-bottom:14px">${prizeLine(t)}</div>
+      <button class="btn ghost sm block" onclick="go('toernooien/${esc(t.id)}')">Bekijk toernooi</button>
     </div>`;
 }
 
@@ -873,26 +965,72 @@ const db = {
     if (error) throw error;
   },
 
-  async tournaments() {
-    const { data, error } = await sb
-      .from("tournaments").select("*")
-      .order("start_at", { ascending: true, nullsFirst: false });
+  async tournaments({ excludeDrafts = false } = {}) {
+    let q = sb.from("tournaments").select("*");
+    if (excludeDrafts) q = q.neq("status", "draft");
+    const { data, error } = await q.order("start_at", { ascending: true, nullsFirst: false });
     if (error) throw error;
     return data || [];
+  },
+
+  async tournament(id) {
+    const { data, error } = await sb.from("tournaments").select("*").eq("id", id).maybeSingle();
+    if (error) throw error;
+    return data;
   },
 
   async createTournament(fields) {
-    const { error } = await sb.from("tournaments").insert(fields);
+    const { data, error } = await sb.from("tournaments").insert(fields).select().single();
+    if (error) throw error;
+    return data;
+  },
+
+  async updateTournament(id, fields) {
+    const { error } = await sb.from("tournaments").update(fields).eq("id", id);
     if (error) throw error;
   },
 
-  async upcomingTournaments() {
+  // Alle (niet-ingetrokken + ingetrokken) inschrijvingen voor een set
+  // toernooien in één keer - voor aantallen/"Mijn toernooien" op de
+  // overzichtspagina, zonder N+1 query's.
+  async tournamentEntryCounts(tournamentIds) {
+    if (!tournamentIds.length) return [];
     const { data, error } = await sb
-      .from("tournaments").select("*")
-      .gte("start_at", new Date().toISOString())
-      .order("start_at").limit(3);
+      .from("tournament_entries")
+      .select("tournament_id, player_id, status")
+      .in("tournament_id", tournamentIds);
     if (error) throw error;
     return data || [];
+  },
+
+  async tournamentEntries(tournamentId) {
+    const { data, error } = await sb
+      .from("tournament_entries")
+      .select("*, player:player_id(*)")
+      .eq("tournament_id", tournamentId)
+      .order("created_at", { ascending: true });
+    if (error) throw error;
+    return data || [];
+  },
+
+  async tournamentMatchesFor(tournamentId) {
+    const { data, error } = await sb
+      .from("tournament_matches")
+      .select("*, player_a:player_a_id(*), player_b:player_b_id(*)")
+      .eq("tournament_id", tournamentId)
+      .order("match_number", { ascending: true });
+    if (error) throw error;
+    return data || [];
+  },
+
+  async registerForTournament(tournamentId) {
+    const { error } = await sb.rpc("register_for_tournament", { p_tournament_id: tournamentId });
+    if (error) throw error;
+  },
+
+  async withdrawFromTournament(tournamentId) {
+    const { error } = await sb.rpc("withdraw_from_tournament", { p_tournament_id: tournamentId });
+    if (error) throw error;
   },
 
   // De join-syntax hieronder: player_a:player_a_id(*) betekent
@@ -1581,6 +1719,9 @@ async function router() {
     }
     if (route.startsWith("prijs/")) {
       return await viewPrizeDetail(route.split("/")[1]);
+    }
+    if (route.startsWith("toernooien/")) {
+      return await viewTournamentDetail(route.split("/")[1]);
     }
     if (route.startsWith("beheer/prijs/")) {
       if (state.profile?.role !== "organizer") {
@@ -2374,11 +2515,171 @@ async function autoAssignDivisions(leagueId) {
 }
 
 async function viewTournaments() {
-  const list = await db.tournaments();
+  const me = state.profile;
+  const list = await db.tournaments({ excludeDrafts: true });
+  const entryRows = await db.tournamentEntryCounts(list.map((t) => t.id));
+
+  const countByTournament = {};
+  const mineSet = new Set();
+  for (const e of entryRows) {
+    if (e.status === "withdrawn") continue;
+    countByTournament[e.tournament_id] = (countByTournament[e.tournament_id] || 0) + 1;
+    if (e.player_id === me.id) mineSet.add(e.tournament_id);
+  }
+
+  const filters = [
+    { key: "all", label: "Alle toernooien" },
+    { key: "upcoming", label: "Aankomende toernooien" },
+    { key: "registration_open", label: "Inschrijving geopend" },
+    { key: "mine", label: "Mijn toernooien" },
+    { key: "finished", label: "Afgeronde toernooien" },
+  ];
+
+  const matchesFilter = (t, key) => {
+    if (key === "all") return true;
+    if (key === "mine") return mineSet.has(t.id);
+    const statusKey = tournamentDisplayStatus(t, countByTournament[t.id] || 0).key;
+    if (key === "upcoming") return ["upcoming", "registration_open", "registration_closed", "full"].includes(statusKey);
+    if (key === "registration_open") return statusKey === "registration_open";
+    if (key === "finished") return statusKey === "finished";
+    return true;
+  };
+
+  let active = "all";
+
+  const renderList = () => {
+    const shown = list.filter((t) => matchesFilter(t, active));
+    document.getElementById("tournaments-results").innerHTML = shown.length
+      ? `<div class="tournament-grid">${shown.map((t) => tournamentCard(t, {
+          entryCount: countByTournament[t.id] || 0,
+          isMine: mineSet.has(t.id),
+        })).join("")}</div>`
+      : emptyView("Nog geen toernooien beschikbaar", "Er zijn momenteel geen toernooien beschikbaar. Kom later terug om mee te doen aan een nieuw toernooi.", "tournament");
+    document.querySelectorAll(".tournament-filter-chip").forEach((el) => {
+      el.classList.toggle("active", el.dataset.key === active);
+    });
+  };
+
   setView(`
     <h1>Toernooien</h1>
-    ${list.length ? list.map(tournamentCard).join("")
-      : emptyView("Nog geen toernooien", "", "tournament")}
+    <p class="sub">Strijd tegen andere spelers en maak kans op mooie prijzen.</p>
+
+    <div class="card" style="margin-bottom:16px">
+      <div class="row">
+        <div class="row-ico">${icon.trophy}</div>
+        <div class="row-main">
+          <div class="row-title" style="white-space:normal">Toernooien met mogelijk prijzengeld</div>
+          <div class="row-sub" style="white-space:normal">Neem deel aan darttoernooien en strijd tegen andere spelers. Afhankelijk van het toernooi kunnen er prijzen of prijzengeld beschikbaar zijn.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="chips" style="margin-bottom:20px">
+      ${filters.map((f) => `<button type="button" class="chip tournament-filter-chip" data-key="${f.key}">${esc(f.label)}</button>`).join("")}
+    </div>
+
+    <div id="tournaments-results"></div>
+  `);
+
+  document.querySelectorAll(".tournament-filter-chip").forEach((el) => {
+    el.onclick = () => { active = el.dataset.key; renderList(); };
+  });
+  renderList();
+}
+
+function tournamentMatchRow(m) {
+  const played = m.player_a_legs > 0 || m.player_b_legs > 0;
+  const aWin = m.winner_id && m.winner_id === m.player_a_id;
+  const bWin = m.winner_id && m.winner_id === m.player_b_id;
+  return `
+    <div class="card">
+      ${m.round_name ? `<div class="muted" style="font-size:12px;font-weight:600;margin-bottom:8px">${esc(m.round_name)}</div>` : ""}
+      <div class="match-row">
+        <div class="mp ${aWin ? "winner" : ""}"><span class="mp-name">${esc(m.player_a?.display_name || "Nog onbekend")}</span></div>
+        <span class="vs">VS</span>
+        <div class="mp right ${bWin ? "winner" : ""}"><span class="mp-name">${esc(m.player_b?.display_name || "Nog onbekend")}</span></div>
+      </div>
+      ${played ? `
+        <div class="match-score">
+          <span class="score ${aWin ? "win" : ""}">${m.player_a_legs}</span>
+          <span class="score-sep">-</span>
+          <span class="score ${bWin ? "win" : ""}">${m.player_b_legs}</span>
+        </div>` : ""}
+      ${m.scheduled_at ? `<div class="match-meta">${icon.clock}<span>${esc(fmtDate(m.scheduled_at))}</span></div>` : ""}
+    </div>`;
+}
+
+async function viewTournamentDetail(id) {
+  const me = state.profile;
+  const isOrg = me?.role === "organizer";
+
+  const [t, entries, matches] = await Promise.all([
+    db.tournament(id),
+    db.tournamentEntries(id),
+    db.tournamentMatchesFor(id),
+  ]);
+  if (!t) {
+    return setView(emptyView("Toernooi niet gevonden", "Dit toernooi bestaat niet (meer).", "tournament"));
+  }
+  if (t.status === "draft" && !isOrg) {
+    return setView(emptyView("Toernooi niet gevonden", "Dit toernooi bestaat niet (meer).", "tournament"));
+  }
+
+  const activeEntries = entries.filter((e) => e.status !== "withdrawn");
+  const myEntry = activeEntries.find((e) => e.player_id === me.id);
+  const status = tournamentDisplayStatus(t, activeEntries.length);
+  const canRegister = status.key === "registration_open" && !myEntry;
+  const canWithdraw = !!myEntry;
+
+  const platformLabel = t.platform === "online" ? "Online" : t.platform === "offline" ? "Offline" : null;
+  const scoringLabel = t.scoring_platform === "scolia" ? "Scolia" : t.scoring_platform === "dartcounter" ? "DartCounter" : null;
+
+  setView(`
+    <button class="linkbtn" onclick="go('toernooien')" style="display:flex;align-items:center;gap:4px;margin-bottom:12px">
+      <span style="width:16px;height:16px;display:inline-flex">${icon.back}</span> Toernooien
+    </button>
+    <h1>${esc(t.name)}</h1>
+    <p class="sub">${esc([TOURNAMENT_TYPES[t.tournament_type] || t.tournament_type, t.start_at ? fmtDate(t.start_at) : null].filter(Boolean).join(" · "))}</p>
+    <div style="margin-bottom:20px">${tournamentStatusBadge(t, activeEntries.length)}</div>
+
+    <div class="card" style="margin-bottom:16px">
+      ${infoRow("Format", esc(TOURNAMENT_TYPES[t.tournament_type] || t.tournament_type))}
+      ${platformLabel ? infoRow("Speelwijze", esc(platformLabel + (scoringLabel ? ` · ${scoringLabel}` : ""))) : ""}
+      ${infoRow("Deelnemers", `${activeEntries.length}${t.max_players ? `/${t.max_players}` : ""}`)}
+      ${t.registration_opens_at ? infoRow("Inschrijving opent", esc(fmtDate(t.registration_opens_at))) : ""}
+      ${t.registration_closes_at ? infoRow("Inschrijving sluit", esc(fmtDate(t.registration_closes_at))) : ""}
+    </div>
+
+    <div class="card" style="margin-bottom:16px">${prizeLine(t)}</div>
+
+    ${!isOrg ? `
+      <div style="margin-bottom:16px">
+        ${canRegister ? `<button class="btn block" onclick="registerForTournament('${esc(t.id)}')">Inschrijven</button>` : ""}
+        ${canWithdraw ? `<button class="btn ghost block" onclick="withdrawFromTournament('${esc(t.id)}')">Uitschrijven</button>` : ""}
+        ${!canRegister && !canWithdraw ? `<p class="muted" style="font-size:13px;margin:0">${esc(registrationClosedReason(status))}</p>` : ""}
+      </div>
+    ` : `
+      <button class="btn ghost sm" style="margin-bottom:16px" onclick="openEditTournamentDialog('${esc(t.id)}')">${icon.settings} Toernooi bewerken</button>
+    `}
+
+    ${t.description ? `
+      ${sectionHead("Toernooiregels")}
+      <div class="card" style="margin-bottom:16px"><p style="margin:0;white-space:pre-wrap">${esc(t.description)}</p></div>
+    ` : ""}
+
+    ${sectionHead("Deelnemers")}
+    ${activeEntries.length ? `
+      <div class="card" style="margin-bottom:16px">
+        ${activeEntries.map((e, i) => `
+          <div class="row" style="padding:7px 0;${i > 0 ? "border-top:1px solid var(--line)" : ""}">
+            ${avatar(e.player, "sm")}
+            <div class="row-main"><div class="row-title">${esc(e.player?.display_name || "?")}</div></div>
+          </div>`).join("")}
+      </div>` : `<div class="card" style="margin-bottom:16px">${emptyView("Nog geen deelnemers", "", "users")}</div>`}
+
+    ${sectionHead("Wedstrijdschema")}
+    ${matches.length ? matches.map(tournamentMatchRow).join("")
+      : `<div class="card">${emptyView("Nog geen wedstrijdschema", "Het schema verschijnt zodra het toernooi begint.", "darts")}</div>`}
   `);
 }
 
@@ -2834,12 +3135,18 @@ function confirmDeleteLeague(id, name) {
 
 async function viewManageTournaments() {
   const list = await db.tournaments();
+  const entryRows = await db.tournamentEntryCounts(list.map((t) => t.id));
+  const countByTournament = {};
+  for (const e of entryRows) {
+    if (e.status === "withdrawn") continue;
+    countByTournament[e.tournament_id] = (countByTournament[e.tournament_id] || 0) + 1;
+  }
   setView(`
     <h1>Toernooien</h1>
     <p class="sub">Aanmaken en inzien</p>
     <button class="btn mt8" onclick="openTournamentDialog()">${icon.plus} Nieuw toernooi</button>
-    <div class="mt24">
-      ${list.length ? list.map(tournamentCard).join("")
+    <div class="tournament-grid mt24">
+      ${list.length ? list.map((t) => tournamentCard(t, { entryCount: countByTournament[t.id] || 0 })).join("")
         : emptyView("Nog geen toernooien", "Maak je eerste toernooi aan.", "tournament")}
     </div>
   `);
@@ -3030,36 +3337,149 @@ function openLeagueDialog() {
   }, "League aanmaken");
 }
 
-function openTournamentDialog() {
-  openModal("Nieuw toernooi", `
-    <div class="field"><label for="tn">Naam</label><input id="tn" required placeholder="Bijv. Clubkampioenschap"></div>
-    <div class="field"><label for="tt">Opzet</label>
-      <select id="tt">
-        <option value="knockout">Knock-out</option>
-        <option value="groups">Poules</option>
-        <option value="groups_and_knockout">Poules + knock-out</option>
+// Zonder `existing` = nieuw toernooi (concept, organisator publiceert later
+// door de status te wijzigen); met `existing` = bewerken van dat toernooi.
+function openTournamentDialog(existing) {
+  const t = existing || {};
+  const isEdit = !!existing;
+
+  openModal(isEdit ? "Toernooi bewerken" : "Nieuw toernooi", `
+    <div class="field"><label for="tn">Naam</label><input id="tn" required value="${esc(t.name || "")}" placeholder="Bijv. Clubkampioenschap"></div>
+    <div class="field-pair">
+      <div><div class="field-pair-label">Opzet</div>
+        <select id="tt">
+          <option value="knockout" ${!t.tournament_type || t.tournament_type === "knockout" ? "selected" : ""}>Knock-out</option>
+          <option value="groups" ${t.tournament_type === "groups" ? "selected" : ""}>Poules</option>
+          <option value="groups_and_knockout" ${t.tournament_type === "groups_and_knockout" ? "selected" : ""}>Poules + knock-out</option>
+        </select>
+      </div>
+      <div><div class="field-pair-label">Speltype</div>
+        <select id="tg">
+          <option value="501" ${t.game_type !== "301" ? "selected" : ""}>501</option>
+          <option value="301" ${t.game_type === "301" ? "selected" : ""}>301</option>
+        </select>
+      </div>
+    </div>
+    <div class="field-pair">
+      <div><div class="field-pair-label">Speelwijze</div>
+        <select id="tp">
+          <option value="">Onbekend</option>
+          <option value="online" ${t.platform === "online" ? "selected" : ""}>Online</option>
+          <option value="offline" ${t.platform === "offline" ? "selected" : ""}>Offline</option>
+        </select>
+      </div>
+      <div><div class="field-pair-label">Scoresysteem</div>
+        <select id="tsp">
+          <option value="">-</option>
+          <option value="scolia" ${t.scoring_platform === "scolia" ? "selected" : ""}>Scolia</option>
+          <option value="dartcounter" ${t.scoring_platform === "dartcounter" ? "selected" : ""}>DartCounter</option>
+        </select>
+      </div>
+    </div>
+    <div class="field"><label for="td">Startdatum en -tijd</label><input id="td" type="datetime-local" value="${t.start_at ? fmtDatetimeLocal(t.start_at) : ""}"></div>
+    <div class="field-pair">
+      <div><div class="field-pair-label">Inschrijving opent</div><input id="tro" type="datetime-local" value="${t.registration_opens_at ? fmtDatetimeLocal(t.registration_opens_at) : ""}"></div>
+      <div><div class="field-pair-label">Inschrijving sluit</div><input id="trc" type="datetime-local" value="${t.registration_closes_at ? fmtDatetimeLocal(t.registration_closes_at) : ""}"></div>
+    </div>
+    <div class="field"><label for="tmax">Maximum aantal spelers <span class="muted" style="font-weight:400">(optioneel)</span></label><input id="tmax" type="number" min="2" value="${t.max_players || ""}"></div>
+    <div class="field"><label for="tstatus">Status</label>
+      <select id="tstatus">
+        <option value="draft" ${!t.status || t.status === "draft" ? "selected" : ""}>Concept (nog niet zichtbaar voor spelers)</option>
+        <option value="active" ${t.status === "active" ? "selected" : ""}>Actief</option>
+        <option value="finished" ${t.status === "finished" ? "selected" : ""}>Afgerond</option>
       </select>
     </div>
-    <div class="field"><label for="tg">Speltype</label>
-      <select id="tg"><option value="501">501</option><option value="301">301</option></select>
+    <div class="field"><label for="tprize">Prijs</label>
+      <select id="tprize" onchange="togglePrizeFields(this.value)">
+        <option value="none" ${!t.prize_type || t.prize_type === "none" ? "selected" : ""}>Geen prijs</option>
+        <option value="money" ${t.prize_type === "money" ? "selected" : ""}>Prijzengeld</option>
+        <option value="physical" ${t.prize_type === "physical" ? "selected" : ""}>Fysieke prijs</option>
+        <option value="unknown" ${t.prize_type === "unknown" ? "selected" : ""}>Nog niet bekend</option>
+      </select>
     </div>
-    <div class="field"><label for="td">Startdatum</label><input id="td" type="datetime-local"></div>`,
+    <div id="prizeMoneyFields" style="display:${t.prize_type === "money" ? "block" : "none"}">
+      <div class="field"><label for="tamount">Bedrag (€) <span class="muted" style="font-weight:400">(optioneel)</span></label><input id="tamount" type="number" min="0" step="0.01" value="${t.prize_amount ?? ""}"></div>
+      <div class="field"><label for="tdist">Verdeling <span class="muted" style="font-weight:400">(optioneel)</span></label><input id="tdist" value="${esc(t.prize_distribution || "")}" placeholder="Bijv. 1e: € 150 · 2e: € 75 · 3e: € 25"></div>
+    </div>
+    <div id="prizePhysicalFields" style="display:${t.prize_type === "physical" ? "block" : "none"}">
+      <div class="field"><label for="tpdesc">Omschrijving</label><input id="tpdesc" value="${esc(t.prize_description || "")}" placeholder="Bijv. Gepersonaliseerd dartshirt"></div>
+    </div>
+    <div class="field"><label for="tdesc">Toernooiregels <span class="muted" style="font-weight:400">(optioneel)</span></label><textarea id="tdesc" rows="3" placeholder="Regels of extra info voor deelnemers">${esc(t.description || "")}</textarea></div>`,
     async (bg) => {
       const name = bg.querySelector("#tn").value.trim();
       if (!name) throw new Error("Vul een naam in.");
       const d = bg.querySelector("#td").value;
-      await db.createTournament({
+      const ro = bg.querySelector("#tro").value;
+      const rc = bg.querySelector("#trc").value;
+      if (ro && rc && new Date(ro) >= new Date(rc)) {
+        throw new Error("Inschrijving moet sluiten na het openen.");
+      }
+      const maxPlayers = bg.querySelector("#tmax").value;
+      const prizeType = bg.querySelector("#tprize").value;
+      const amount = bg.querySelector("#tamount")?.value;
+      const fields = {
         name,
         tournament_type: bg.querySelector("#tt").value,
         game_type: bg.querySelector("#tg").value,
-        match_format: "best_of_legs",
-        status: "draft",
+        platform: bg.querySelector("#tp").value || null,
+        scoring_platform: bg.querySelector("#tsp").value || null,
         start_at: d ? new Date(d).toISOString() : null,
-        created_by: state.profile.id,
-      });
-      toast("Toernooi aangemaakt");
-      router();
-    }, "Toernooi aanmaken");
+        registration_opens_at: ro ? new Date(ro).toISOString() : null,
+        registration_closes_at: rc ? new Date(rc).toISOString() : null,
+        max_players: maxPlayers ? Number(maxPlayers) : null,
+        status: bg.querySelector("#tstatus").value,
+        prize_type: prizeType,
+        prize_amount: prizeType === "money" && amount ? Number(amount) : null,
+        prize_currency: "EUR",
+        prize_distribution: prizeType === "money" ? (bg.querySelector("#tdist").value.trim() || null) : null,
+        prize_description: prizeType === "physical" ? (bg.querySelector("#tpdesc").value.trim() || null) : null,
+        description: bg.querySelector("#tdesc").value.trim() || null,
+      };
+      if (isEdit) {
+        await db.updateTournament(t.id, fields);
+        toast("Toernooi bijgewerkt");
+        router();
+      } else {
+        const created = await db.createTournament({
+          ...fields,
+          match_format: "best_of_legs",
+          created_by: state.profile.id,
+        });
+        toast("Toernooi aangemaakt");
+        go("toernooien/" + created.id);
+      }
+    }, isEdit ? "Wijzigingen opslaan" : "Toernooi aanmaken");
+}
+
+function togglePrizeFields(prizeType) {
+  const moneyEl = document.getElementById("prizeMoneyFields");
+  const physicalEl = document.getElementById("prizePhysicalFields");
+  if (moneyEl) moneyEl.style.display = prizeType === "money" ? "block" : "none";
+  if (physicalEl) physicalEl.style.display = prizeType === "physical" ? "block" : "none";
+}
+
+async function openEditTournamentDialog(id) {
+  try {
+    const t = await db.tournament(id);
+    if (!t) return toast("Toernooi niet gevonden.");
+    openTournamentDialog(t);
+  } catch (e) { toast(errText(e)); }
+}
+
+async function registerForTournament(id) {
+  try {
+    await db.registerForTournament(id);
+    toast("Je bent ingeschreven!");
+    router();
+  } catch (e) { toast(errText(e)); }
+}
+
+async function withdrawFromTournament(id) {
+  try {
+    await db.withdrawFromTournament(id);
+    toast("Je bent uitgeschreven.");
+    router();
+  } catch (e) { toast(errText(e)); }
 }
 
 async function openMatchDialog() {

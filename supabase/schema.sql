@@ -2190,10 +2190,12 @@ $$;
 revoke execute on function public.generate_league_matches(uuid) from public, anon, authenticated;
 
 
--- Zet de league op 'active' zodra het startmoment is bereikt, genereert dan
--- de wedstrijden en stuurt iedere speler een melding. Idempotent: de
--- voorwaardelijke UPDATE ... RETURNING slaagt maar één keer, dus een tweede
--- aanroep (cron of opportunistisch vanuit de app) doet niets.
+-- Zet de league op 'active' zodra het startmoment is bereikt. Idempotent:
+-- de voorwaardelijke UPDATE ... RETURNING slaagt maar één keer, dus een
+-- tweede aanroep (cron of opportunistisch vanuit de app) doet niets. Het
+-- genereren van wedstrijden en de "league gestart"-melding gebeuren niet
+-- hier, maar in de on_leagues_activated-trigger hieronder - zie die
+-- trigger voor waarom.
 create or replace function public.activate_league(p_league_id uuid)
 returns boolean
 language plpgsql
@@ -2202,7 +2204,6 @@ set search_path = public
 as $$
 declare
   v_id uuid;
-  v_match_count int;
 begin
   update public.leagues
     set status = 'active'
@@ -2212,24 +2213,46 @@ begin
       and start_at <= now()
     returning id into v_id;
 
-  if v_id is null then
-    return false;
-  end if;
+  return v_id is not null;
+end;
+$$;
 
-  v_match_count := public.generate_league_matches(p_league_id);
+-- De bijwerkingen van "league wordt actief" (wedstrijden genereren, spelers
+-- melden) horen bij de statusovergang zelf, niet bij één specifiek
+-- aanroeppad. De RLS-policy "leagues_write_organizer" staat een organisator
+-- toe om de status van een league rechtstreeks op elke waarde te zetten
+-- (bv. via de Supabase Table Editor) - zonder deze trigger zou de league
+-- dan 'active' worden zonder dat er ooit wedstrijden werden aangemaakt.
+-- Deze AFTER UPDATE-trigger vangt elke overgang naar 'active' op, ongeacht
+-- hoe die tot stand kwam. generate_league_matches() is idempotent (on
+-- conflict do nothing), dus dubbel aanroepen is onschadelijk.
+create or replace function public.on_league_activated()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  perform public.generate_league_matches(new.id);
 
   insert into public.notifications (player_id, type, title, body, league_id)
   select lp.player_id, 'league_started',
-         'De league is gestart: ' || l.name,
-         'Bekijk je wedstrijden - speel ze binnen ' || l.match_deadline_days || ' dagen.',
-         l.id
+         'De league is gestart: ' || new.name,
+         'Bekijk je wedstrijden - speel ze binnen ' || new.match_deadline_days || ' dagen.',
+         new.id
   from public.league_players lp
-  join public.leagues l on l.id = lp.league_id
-  where lp.league_id = p_league_id;
+  where lp.league_id = new.id;
 
-  return true;
+  return new;
 end;
 $$;
+
+drop trigger if exists on_leagues_activated on public.leagues;
+create trigger on_leagues_activated
+  after update on public.leagues
+  for each row
+  when (new.status = 'active' and old.status is distinct from 'active')
+  execute function public.on_league_activated();
 
 revoke execute on function public.activate_league(uuid) from public, anon, authenticated;
 

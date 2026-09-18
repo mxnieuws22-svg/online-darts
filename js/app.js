@@ -332,7 +332,7 @@ function tournamentCard(t) {
   return `
     <div class="card">
       <div class="row">
-        <div class="row-ico">${icon.target}</div>
+        <div class="row-ico">${icon.tournament}</div>
         <div class="row-main">
           <div class="row-title">${esc(t.name)}</div>
           <div class="row-sub">${esc(meta)}</div>
@@ -1672,16 +1672,16 @@ async function viewHome() {
     </div>
 
     ${sectionHead("Je volgende wedstrijd", "Alle wedstrijden", "wedstrijden")}
-    ${next ? matchCard(next) : emptyView("Niets ingepland", "Zodra de organisator een wedstrijd voor je inplant, staat hij hier.", "match")}
+    ${next ? matchCard(next) : emptyView("Niets ingepland", "Zodra de organisator een wedstrijd voor je inplant, staat hij hier.", "darts")}
 
     ${sectionHead("Actieve leagues", "Alle leagues", "leagues")}
     ${leagues.length ? leagues.slice(0, 3).map((l) => leagueCard(l)).join("") : emptyView("Geen actieve leagues", "", "league")}
 
     ${sectionHead("Aankomende toernooien", "Alle toernooien", "toernooien")}
-    ${tournaments.length ? tournaments.map(tournamentCard).join("") : emptyView("Geen toernooien gepland", "", "target")}
+    ${tournaments.length ? tournaments.map(tournamentCard).join("") : emptyView("Geen toernooien gepland", "", "tournament")}
 
     ${sectionHead("Laatste uitslagen")}
-    ${results.length ? results.map(matchCard).join("") : emptyView("Nog geen uitslagen", "", "match")}
+    ${results.length ? results.map(matchCard).join("") : emptyView("Nog geen uitslagen", "", "darts")}
   `);
 }
 
@@ -1760,7 +1760,7 @@ async function viewMyDivision(focusMatchId) {
         ${sectionHead("Onderlinge wedstrijden")}
         ${headToHeadCard(headToHead, opponent, me.id)}
       ` : ""}
-    ` : emptyView("Geen open wedstrijden", "Je hebt op dit moment geen wedstrijden om te spelen.", "match")}
+    ` : emptyView("Geen open wedstrijden", "Je hebt op dit moment geen wedstrijden om te spelen.", "darts")}
 
     ${sectionHead("Wedstrijden deze week")}
     ${leagueMatches.length ? leagueMatches.map((m) => `
@@ -1769,7 +1769,7 @@ async function viewMyDivision(focusMatchId) {
           ? `<p class="muted" style="margin:-4px 0 14px;font-size:12.5px">Dit is je huidige wedstrijd hierboven.</p>`
           : `<button class="btn ghost sm" style="margin:-4px 0 14px" onclick="go('mijn-divisie/${esc(m.id)}')">Bekijk wedstrijd</button>`}
       `).join("")
-      : emptyView("Geen wedstrijden", "", "match")}
+      : emptyView("Geen wedstrijden", "", "darts")}
 
     ${sectionHead("Stand")}
     ${groups.length ? groups.map((g) => divisionStandingsCard(g, { meId: me.id, divisionCount: league.division_count })).join("")
@@ -1912,7 +1912,7 @@ async function viewLeagueDetail(id) {
 
     ${sectionHead("Wedstrijden")}
     ${matches.length ? matches.map(matchCard).join("")
-      : emptyView("Nog geen wedstrijden", "Er is nog niets ingepland voor deze league.", "match")}
+      : emptyView("Nog geen wedstrijden", "Er is nog niets ingepland voor deze league.", "darts")}
   `);
 }
 
@@ -2267,7 +2267,7 @@ async function viewTournaments() {
   setView(`
     <h1>Toernooien</h1>
     ${list.length ? list.map(tournamentCard).join("")
-      : emptyView("Nog geen toernooien", "", "target")}
+      : emptyView("Nog geen toernooien", "", "tournament")}
   `);
 }
 
@@ -2373,7 +2373,7 @@ function scheduleCard(m, history) {
 // tegenstander van de gefocuste wedstrijd.
 function headToHeadCard(matches, opponent, meId) {
   if (!matches.length) {
-    return `<div class="card">${emptyView("Nog geen eerdere ontmoetingen", `Dit is de eerste keer dat je het opneemt tegen ${esc(opponent?.display_name || "deze speler")}.`, "match")}</div>`;
+    return `<div class="card">${emptyView("Nog geen eerdere ontmoetingen", `Dit is de eerste keer dat je het opneemt tegen ${esc(opponent?.display_name || "deze speler")}.`, "darts")}</div>`;
   }
   return `
     <div class="card">
@@ -2473,7 +2473,7 @@ async function viewMatches() {
   setView(`
     <h1>Je wedstrijden</h1>
     <p class="sub">Alles waar jij aan meedoet</p>
-    ${matches.length === 0 ? emptyView("Nog geen wedstrijden", "Zodra je bent ingedeeld, verschijnen ze hier.", "match") : ""}
+    ${matches.length === 0 ? emptyView("Nog geen wedstrijden", "Zodra je bent ingedeeld, verschijnen ze hier.", "darts") : ""}
     ${open.length ? `${sectionHead("Open")}${open.map(openItem).join("")}` : ""}
     ${done.length ? `${sectionHead("Gespeeld")}${done.map(matchCard).join("")}` : ""}
   `);
@@ -2490,7 +2490,7 @@ async function viewStats() {
     <h1>Statistieken</h1>
     <p class="sub">Je cijfers over alle bevestigde wedstrijden</p>
     <div class="grid">
-      ${statCard({ label: "Gespeeld", value: s.matches_played, ico: "match" })}
+      ${statCard({ label: "Gespeeld", value: s.matches_played, ico: "darts" })}
       ${statCard({ label: "Gewonnen", value: s.matches_won, ico: "trophy", color: "#2ECC71" })}
       ${statCard({ label: "Verloren", value: s.matches_lost, ico: "flag", color: "#E74C3C" })}
       ${statCard({ label: "Winratio", value: winPct + "%", ico: "trend" })}
@@ -2533,7 +2533,7 @@ async function viewProfile() {
 
     ${sectionHead("Kort overzicht")}
     <div class="grid">
-      ${statCard({ label: "Gespeeld", value: s?.matches_played ?? 0, ico: "match" })}
+      ${statCard({ label: "Gespeeld", value: s?.matches_played ?? 0, ico: "darts" })}
       ${statCard({ label: "Gewonnen", value: s?.matches_won ?? 0, ico: "trophy", color: "#2ECC71" })}
       ${statCard({ label: "Gemiddelde", value: Number(s?.average_score ?? 0).toFixed(1), ico: "trend" })}
       ${statCard({ label: "180's", value: s?.count_180 ?? 0, ico: "star", color: "#F5B942" })}
@@ -2601,8 +2601,8 @@ async function viewOrganizer() {
     <div class="grid">
       ${statCard({ label: "Spelers", value: c.players, ico: "users" })}
       ${statCard({ label: "Actieve leagues", value: c.leagues, ico: "league" })}
-      ${statCard({ label: "Actieve toernooien", value: c.tournaments, ico: "target" })}
-      ${statCard({ label: "Open wedstrijden", value: c.open, ico: "match", color: "#F5B942" })}
+      ${statCard({ label: "Actieve toernooien", value: c.tournaments, ico: "tournament" })}
+      ${statCard({ label: "Open wedstrijden", value: c.open, ico: "darts", color: "#F5B942" })}
     </div>
 
     ${sectionHead("Snel aanmaken")}
@@ -2615,13 +2615,13 @@ async function viewOrganizer() {
     ${sectionHead("Beheren")}
     ${tile("Spelers", "beheer/spelers", "users")}
     ${tile("Leagues", "beheer/leagues", "league")}
-    ${tile("Toernooien", "beheer/toernooien", "target")}
-    ${tile("Wedstrijden", "beheer/wedstrijden", "match")}
+    ${tile("Toernooien", "beheer/toernooien", "tournament")}
+    ${tile("Wedstrijden", "beheer/wedstrijden", "darts")}
     ${tile("Prijzen", "beheer/prijzen", "trophy")}
     ${tile("Instellingen", "beheer/instellingen", "settings")}
 
     ${sectionHead("Laatste uitslagen")}
-    ${results.length ? results.map(matchCard).join("") : emptyView("Nog geen uitslagen", "", "match")}
+    ${results.length ? results.map(matchCard).join("") : emptyView("Nog geen uitslagen", "", "darts")}
   `);
 }
 
@@ -2729,7 +2729,7 @@ async function viewManageTournaments() {
     <button class="btn mt8" onclick="openTournamentDialog()">${icon.plus} Nieuw toernooi</button>
     <div class="mt24">
       ${list.length ? list.map(tournamentCard).join("")
-        : emptyView("Nog geen toernooien", "Maak je eerste toernooi aan.", "target")}
+        : emptyView("Nog geen toernooien", "Maak je eerste toernooi aan.", "tournament")}
     </div>
   `);
 }
@@ -2757,7 +2757,7 @@ async function viewManageMatches() {
         ${!["confirmed", "cancelled"].includes(m.status) && m.deadline_at ? `
           <button class="btn ghost sm" style="margin:-4px 0 14px" onclick="openExtendDeadlineDialog('${esc(m.id)}', '${esc(m.deadline_at)}')">${icon.clock} Deadline verlengen</button>` : ""}
       `).join("")
-      : emptyView("Nog geen wedstrijden", "Plan je eerste wedstrijd in.", "match")}
+      : emptyView("Nog geen wedstrijden", "Plan je eerste wedstrijd in.", "darts")}
   `);
 }
 

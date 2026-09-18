@@ -3570,6 +3570,156 @@ $$;
 grant execute on function public.mark_tournament_payout_paid(uuid, text) to authenticated;
 
 
+-- ============================================================================
+-- 18. Uitgebreide wedstrijdstatistieken (Scoring, Eerste 9 Gem., Checkouts,
+--     Worpen, Beste leg, 60+/80+/100+/140+) naast de bestaande Gemiddelde/
+--     180's/Hoogste finish - mirrort het stat-overzicht dat spelers al kennen
+--     uit Scolia/DartCounter. Allemaal optioneel.
+-- ============================================================================
+
+alter table public.league_matches
+  add column if not exists player_a_scoring_average numeric(5,2),
+  add column if not exists player_b_scoring_average numeric(5,2),
+  add column if not exists player_a_first9_average numeric(5,2),
+  add column if not exists player_b_first9_average numeric(5,2),
+  add column if not exists player_a_checkouts_hit int check (player_a_checkouts_hit is null or player_a_checkouts_hit >= 0),
+  add column if not exists player_b_checkouts_hit int check (player_b_checkouts_hit is null or player_b_checkouts_hit >= 0),
+  add column if not exists player_a_checkout_attempts int check (player_a_checkout_attempts is null or player_a_checkout_attempts >= 0),
+  add column if not exists player_b_checkout_attempts int check (player_b_checkout_attempts is null or player_b_checkout_attempts >= 0),
+  add column if not exists player_a_darts_thrown int check (player_a_darts_thrown is null or player_a_darts_thrown >= 0),
+  add column if not exists player_b_darts_thrown int check (player_b_darts_thrown is null or player_b_darts_thrown >= 0),
+  add column if not exists player_a_best_leg_darts int check (player_a_best_leg_darts is null or player_a_best_leg_darts >= 0),
+  add column if not exists player_b_best_leg_darts int check (player_b_best_leg_darts is null or player_b_best_leg_darts >= 0),
+  add column if not exists player_a_score_60_plus int check (player_a_score_60_plus is null or player_a_score_60_plus >= 0),
+  add column if not exists player_b_score_60_plus int check (player_b_score_60_plus is null or player_b_score_60_plus >= 0),
+  add column if not exists player_a_score_80_plus int check (player_a_score_80_plus is null or player_a_score_80_plus >= 0),
+  add column if not exists player_b_score_80_plus int check (player_b_score_80_plus is null or player_b_score_80_plus >= 0),
+  add column if not exists player_a_score_100_plus int check (player_a_score_100_plus is null or player_a_score_100_plus >= 0),
+  add column if not exists player_b_score_100_plus int check (player_b_score_100_plus is null or player_b_score_100_plus >= 0),
+  add column if not exists player_a_score_140_plus int check (player_a_score_140_plus is null or player_a_score_140_plus >= 0),
+  add column if not exists player_b_score_140_plus int check (player_b_score_140_plus is null or player_b_score_140_plus >= 0);
+
+comment on column public.league_matches.player_a_scoring_average is '"Scoring"-gemiddelde zoals Scolia/DartCounter dat apart van het algemene gemiddelde tonen.';
+comment on column public.league_matches.player_a_first9_average is 'Gemiddelde van de eerste 9 darts (3 beurten) per leg.';
+comment on column public.league_matches.player_a_checkouts_hit is 'Aantal geslaagde checkouts; samen met checkout_attempts de bron voor het checkoutpercentage (niet apart opgeslagen).';
+comment on column public.league_matches.player_a_score_60_plus is 'Aantal beurten met een score van 60 t/m 79 (exclusief de 80+/100+/140+/180-categorieën).';
+
+-- report_league_match_result (sectie 7) kreeg twee extra parameters. Een
+-- CREATE OR REPLACE met extra parameters (zelfs met defaults) vervangt de
+-- bestaande functie niet, maar voegt een tweede, gelijknamige overload toe -
+-- expliciet droppen om die dubbelzinnigheid te voorkomen.
+drop function if exists public.report_league_match_result(
+  uuid, uuid, int, int, numeric, numeric, int, int, int, int
+);
+
+-- p_extra_a/p_extra_b: vrije, optionele uitbreiding met de nieuwe
+-- statistieken (keys: scoring_average, first9_average, checkouts_hit,
+-- checkout_attempts, darts_thrown, best_leg_darts, score_60_plus,
+-- score_80_plus, score_100_plus, score_140_plus). jsonb i.p.v. nog 20 losse
+-- parameters.
+create or replace function public.report_league_match_result(
+  p_match_id uuid,
+  p_winner_id uuid,
+  p_player_a_legs int,
+  p_player_b_legs int,
+  p_player_a_average numeric,
+  p_player_b_average numeric,
+  p_player_a_180s int,
+  p_player_b_180s int,
+  p_player_a_highest_checkout int,
+  p_player_b_highest_checkout int,
+  p_extra_a jsonb default '{}'::jsonb,
+  p_extra_b jsonb default '{}'::jsonb
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  m public.league_matches%rowtype;
+  v_legs_per_match int;
+begin
+  if auth.uid() is null then
+    raise exception 'Je moet ingelogd zijn.';
+  end if;
+
+  select * into m from public.league_matches where id = p_match_id for update;
+
+  if m.id is null then
+    raise exception 'Wedstrijd niet gevonden.';
+  end if;
+
+  if auth.uid() <> m.player_a_id and auth.uid() <> m.player_b_id and not public.is_organizer() then
+    raise exception 'Alleen de spelers van deze wedstrijd kunnen de uitslag doorgeven.';
+  end if;
+
+  if m.status not in ('scheduled', 'in_progress') then
+    raise exception 'Deze wedstrijd staat niet meer open voor het invullen van een uitslag.';
+  end if;
+
+  select legs_per_match into v_legs_per_match from public.leagues where id = m.league_id;
+
+  if p_player_a_legs + p_player_b_legs <> v_legs_per_match then
+    raise exception 'Samen moeten de legs precies % zijn.', v_legs_per_match;
+  end if;
+
+  if p_player_a_legs = p_player_b_legs then
+    if p_winner_id is not null then
+      raise exception 'Bij een gelijkspel mag er geen winnaar opgegeven worden.';
+    end if;
+  else
+    if p_winner_id is null or (p_winner_id <> m.player_a_id and p_winner_id <> m.player_b_id) then
+      raise exception 'De winnaar moet één van beide spelers zijn.';
+    end if;
+    if (p_player_a_legs > p_player_b_legs and p_winner_id <> m.player_a_id)
+       or (p_player_b_legs > p_player_a_legs and p_winner_id <> m.player_b_id) then
+      raise exception 'De gekozen winnaar komt niet overeen met de legscore.';
+    end if;
+  end if;
+
+  update public.league_matches set
+    winner_id                    = p_winner_id,
+    player_a_legs                = p_player_a_legs,
+    player_b_legs                = p_player_b_legs,
+    player_a_average             = p_player_a_average,
+    player_b_average             = p_player_b_average,
+    player_a_180s                = coalesce(p_player_a_180s, 0),
+    player_b_180s                = coalesce(p_player_b_180s, 0),
+    player_a_highest_checkout    = coalesce(p_player_a_highest_checkout, 0),
+    player_b_highest_checkout    = coalesce(p_player_b_highest_checkout, 0),
+    player_a_scoring_average     = (p_extra_a->>'scoring_average')::numeric,
+    player_b_scoring_average     = (p_extra_b->>'scoring_average')::numeric,
+    player_a_first9_average      = (p_extra_a->>'first9_average')::numeric,
+    player_b_first9_average      = (p_extra_b->>'first9_average')::numeric,
+    player_a_checkouts_hit       = (p_extra_a->>'checkouts_hit')::int,
+    player_b_checkouts_hit       = (p_extra_b->>'checkouts_hit')::int,
+    player_a_checkout_attempts   = (p_extra_a->>'checkout_attempts')::int,
+    player_b_checkout_attempts   = (p_extra_b->>'checkout_attempts')::int,
+    player_a_darts_thrown        = (p_extra_a->>'darts_thrown')::int,
+    player_b_darts_thrown        = (p_extra_b->>'darts_thrown')::int,
+    player_a_best_leg_darts      = (p_extra_a->>'best_leg_darts')::int,
+    player_b_best_leg_darts      = (p_extra_b->>'best_leg_darts')::int,
+    player_a_score_60_plus       = (p_extra_a->>'score_60_plus')::int,
+    player_b_score_60_plus       = (p_extra_b->>'score_60_plus')::int,
+    player_a_score_80_plus       = (p_extra_a->>'score_80_plus')::int,
+    player_b_score_80_plus       = (p_extra_b->>'score_80_plus')::int,
+    player_a_score_100_plus      = (p_extra_a->>'score_100_plus')::int,
+    player_b_score_100_plus      = (p_extra_b->>'score_100_plus')::int,
+    player_a_score_140_plus      = (p_extra_a->>'score_140_plus')::int,
+    player_b_score_140_plus      = (p_extra_b->>'score_140_plus')::int,
+    status                       = 'pending_confirmation',
+    reported_by                  = auth.uid(),
+    reported_at                  = now()
+  where id = p_match_id;
+end;
+$$;
+
+grant execute on function public.report_league_match_result(
+  uuid, uuid, int, int, numeric, numeric, int, int, int, int, jsonb, jsonb
+) to authenticated;
+
+
 -- ----------------------------------------------------------------------------
 -- Eerste organisator aanwijzen
 -- ----------------------------------------------------------------------------

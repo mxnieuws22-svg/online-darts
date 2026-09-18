@@ -1,7 +1,9 @@
-// Verstuurt e-mails voor openstaande meldingen (nieuwe wedstrijd ingepland /
-// nieuwe wedstrijd beschikbaar) via het eigen Gmail-account van de
-// organisator. Wordt elke 5 minuten aangeroepen door een pg_cron-job (zie
-// supabase/schema.sql, sectie 20), niet rechtstreeks door de app.
+// Verstuurt e-mails voor openstaande meldingen (nieuwe wedstrijd ingepland,
+// nieuwe wedstrijd beschikbaar, en alles rond een speelmoment-voorstel:
+// voorgesteld/geaccepteerd/tegenvoorstel/probleem/ingetrokken) via het eigen
+// Gmail-account van de organisator. Wordt elke 5 minuten aangeroepen door
+// een pg_cron-job (zie supabase/schema.sql, sectie 20/21), niet
+// rechtstreeks door de app.
 //
 // Vereiste secrets (Project Settings -> Edge Functions -> Secrets):
 //   GMAIL_USER           je Gmail-adres
@@ -40,7 +42,15 @@ Deno.serve(async (req: Request) => {
   const { data: pending, error } = await supabase
     .from("notifications")
     .select("id, player_id, type, title, body")
-    .in("type", ["match_scheduled", "match_available"])
+    .in("type", [
+      "match_scheduled",
+      "match_available",
+      "match_schedule_proposed",
+      "match_schedule_accepted",
+      "match_schedule_countered",
+      "match_schedule_disputed",
+      "match_schedule_withdrawn",
+    ])
     .is("email_sent_at", null)
     .limit(50);
 

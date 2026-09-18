@@ -147,8 +147,16 @@ h2{font-size:17px;font-weight:700;margin:0;letter-spacing:-.01em}
 @media(min-width:620px){.grid{grid-template-columns:repeat(4,1fr)}}
 
 /* ---------- Home-dashboard ---------- */
-.home-top-grid{display:grid;grid-template-columns:1fr;gap:16px;margin-bottom:24px}
-@media(min-width:760px){.home-top-grid{grid-template-columns:1fr 1fr;align-items:start}}
+/* minmax(0,1fr) i.p.v. 1fr: anders weigeren gridcellen te krimpen onder de
+   min-content-breedte van hun inhoud (bv. een badge naast lange tekst) en
+   loopt de pagina horizontaal uit beeld. */
+.home-top-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:16px;margin-bottom:24px}
+@media(min-width:760px){.home-top-grid{grid-template-columns:repeat(2,minmax(0,1fr));align-items:start}}
+
+/* ---------- Toernooien ---------- */
+.tournament-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:14px}
+@media(min-width:620px){.tournament-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(min-width:960px){.tournament-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
 
 .stat{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:14px}
 .stat-label{color:var(--grey);font-size:13px;margin-top:2px}
@@ -255,7 +263,7 @@ input::placeholder{color:var(--muted)}
   cursor:pointer;display:inline-flex;align-items:center;gap:7px;
 }
 .chip:hover{border-color:var(--accent);color:var(--accent)}
-.chip:has(input:checked){background:var(--accent);border-color:var(--accent);color:#000}
+.chip:has(input:checked),.chip.active{background:var(--accent);border-color:var(--accent);color:#000}
 .chips{display:flex;flex-wrap:wrap;gap:9px}
 
 .alert{padding:12px 14px;border-radius:9px;font-size:14px;margin-bottom:16px}

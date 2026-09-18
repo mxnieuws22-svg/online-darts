@@ -25,6 +25,8 @@
 --  14. Voorstelgeschiedenis + intrekken, vorm in de stand, onderlinge
 --      wedstrijden
 --  15. Privéchat per wedstrijd (alleen de twee spelers)
+--  16. Toernooien: prijsinformatie, inschrijfvenster/capaciteit, platform,
+--      zelf-inschrijven/uitschrijven
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
@@ -2891,6 +2893,114 @@ end;
 $$;
 
 grant execute on function public.send_match_chat_message(uuid, text) to authenticated;
+
+
+-- ============================================================================
+-- 16. Toernooien: prijsinformatie, inschrijfvenster/capaciteit, platform, en
+--     zelf-inschrijven/uitschrijven voor spelers.
+-- ============================================================================
+
+alter table public.tournaments
+  add column if not exists prize_type text not null default 'none'
+    check (prize_type in ('none', 'money', 'physical', 'unknown')),
+  add column if not exists prize_amount numeric(10,2) check (prize_amount is null or prize_amount >= 0),
+  add column if not exists prize_currency text not null default 'EUR',
+  add column if not exists prize_description text,
+  -- Vrije tekst i.p.v. gestructureerde data (bv. "1e: € 150 · 2e: € 75") -
+  -- een editor voor een gestructureerde verdeling is niet gevraagd en voegt
+  -- complexiteit toe zonder duidelijke meerwaarde.
+  add column if not exists prize_distribution text,
+  add column if not exists max_players int check (max_players is null or max_players > 0),
+  add column if not exists registration_opens_at timestamptz,
+  add column if not exists registration_closes_at timestamptz,
+  add column if not exists platform text check (platform is null or platform in ('online', 'offline')),
+  add column if not exists scoring_platform text check (scoring_platform is null or scoring_platform in ('scolia', 'dartcounter'));
+
+comment on column public.tournaments.prize_type is 'none = geen prijs, unknown = er is een prijs maar nog niet bekendgemaakt.';
+comment on column public.tournaments.platform is 'Speelwijze: online of offline (fysiek op locatie).';
+comment on column public.tournaments.scoring_platform is 'Welk scoresysteem gebruikt wordt, alleen relevant bij platform = online.';
+
+
+-- Zelf inschrijven voor een toernooi. Valideert status/inschrijfvenster/
+-- capaciteit server-side (niet vanuit de client af te dwingen). Geen
+-- RLS-insert-policy op tournament_entries - uitsluitend via deze functie,
+-- net als bij de wedstrijdvoorstel-functies elders in dit schema.
+create or replace function public.register_for_tournament(p_tournament_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_status text;
+  v_max int;
+  v_opens timestamptz;
+  v_closes timestamptz;
+  v_count int;
+begin
+  if auth.uid() is null then
+    raise exception 'Je moet ingelogd zijn.';
+  end if;
+
+  select status, max_players, registration_opens_at, registration_closes_at
+    into v_status, v_max, v_opens, v_closes
+    from public.tournaments where id = p_tournament_id;
+  if v_status is null then
+    raise exception 'Toernooi niet gevonden.';
+  end if;
+  if v_status <> 'active' then
+    raise exception 'Inschrijven kan niet (meer) voor dit toernooi.';
+  end if;
+  if v_opens is not null and v_opens > now() then
+    raise exception 'Inschrijving is nog niet geopend.';
+  end if;
+  if v_closes is not null and v_closes <= now() then
+    raise exception 'Inschrijving is gesloten.';
+  end if;
+  if v_max is not null then
+    select count(*) into v_count from public.tournament_entries
+      where tournament_id = p_tournament_id and status <> 'withdrawn';
+    if v_count >= v_max then
+      raise exception 'Dit toernooi zit vol.';
+    end if;
+  end if;
+
+  insert into public.tournament_entries (tournament_id, player_id, status)
+  values (p_tournament_id, auth.uid(), 'registered')
+  on conflict (tournament_id, player_id) do update
+    set status = 'registered'
+    where tournament_entries.status = 'withdrawn';
+end;
+$$;
+
+grant execute on function public.register_for_tournament(uuid) to authenticated;
+
+
+-- Uitschrijven: alleen de eigen (nog actieve) inschrijving.
+create or replace function public.withdraw_from_tournament(p_tournament_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'Je moet ingelogd zijn.';
+  end if;
+
+  update public.tournament_entries
+    set status = 'withdrawn'
+    where tournament_id = p_tournament_id
+      and player_id = auth.uid()
+      and status <> 'withdrawn';
+
+  if not found then
+    raise exception 'Je bent niet ingeschreven voor dit toernooi.';
+  end if;
+end;
+$$;
+
+grant execute on function public.withdraw_from_tournament(uuid) to authenticated;
 
 
 -- ----------------------------------------------------------------------------

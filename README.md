@@ -104,11 +104,41 @@ kun je andere spelers vanuit de app een rol geven.
 
 ---
 
+## 6. E-mail bij een ingeplande wedstrijd (optioneel)
+
+Spelers krijgen al een pop-up in de app zodra er een wedstrijd voor ze is
+ingepland of een nieuwe ronde beschikbaar komt. Wil je dat ook als e-mail,
+verstuurd via je eigen Gmail-account? Zo zet je dat aan:
+
+1. Maak een **app-wachtwoord** aan op
+   [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords)
+   (vereist 2-staps-verificatie op je Google-account). Je gewone
+   Gmail-wachtwoord werkt hier niet.
+2. Ga in Supabase naar **Edge Functions → send-pending-emails → Secrets**
+   (of **Project Settings → Edge Functions → Secrets**) en zet:
+   - `GMAIL_USER` — je Gmail-adres
+   - `GMAIL_APP_PASSWORD` — het app-wachtwoord van stap 1
+   - `CRON_SECRET` — een willekeurige, geheime tekenreeks naar keuze
+3. Zoek in `supabase/schema.sql` (sectie 20) de `cron.schedule(...)`-blok
+   voor `send_pending_emails` en vervang daarin `JOUW-PROJECT` door je
+   eigen project-URL en `VERVANG-DOOR-JE-EIGEN-CRON_SECRET` door **exact**
+   dezelfde waarde als de `CRON_SECRET` van stap 2. Draai dat aangepaste
+   blok in de SQL Editor (of het hele `schema.sql` opnieuw — dat is
+   idempotent op deze regel na, aangezien `cron.schedule` een job met
+   dezelfde naam overschrijft).
+
+Zonder deze drie secrets blijft de e-mailfunctie stil (geen foutmelding
+voor spelers, de pop-up in de app blijft gewoon werken) - de cron-job
+probeert het elke 5 minuten opnieuw zodra je de secrets hebt ingesteld.
+
+---
+
 ## Wat de app kan
 
 **Spelers:** registreren en inloggen, wachtwoord resetten, profiel met foto
 en naam aanpassen, eigen wedstrijden zien, uitslag doorgeven, leagues en
-toernooien bekijken, eigen statistieken.
+toernooien bekijken, eigen statistieken, pop-up (en optioneel e-mail) zodra
+er een wedstrijd is ingepland of beschikbaar komt.
 
 **Organisatoren:** dashboard met tellingen, leagues aanmaken en van status
 wisselen, toernooien aanmaken, wedstrijden inplannen, doorgegeven uitslagen

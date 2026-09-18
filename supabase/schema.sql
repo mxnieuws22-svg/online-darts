@@ -3859,6 +3859,45 @@ select cron.schedule(
 alter publication supabase_realtime add table public.notifications;
 
 
+-- ============================================================================
+-- 20. E-mail als tweede kanaal naast de pop-up uit sectie 19, voor dezelfde
+--     twee gebeurtenissen (wedstrijd ingepland / nieuwe ronde beschikbaar).
+--     Verstuurd via het eigen Gmail-account van de organisator - geen los
+--     e-mailplatform. Zie supabase/functions/send-pending-emails/index.ts
+--     voor de Edge Function die dit daadwerkelijk verstuurt; hieronder alleen
+--     het databasegedeelte (kolom + cron-job die de functie aanroept).
+-- ============================================================================
+
+create extension if not exists pg_net;
+
+alter table public.notifications
+  add column if not exists email_sent_at timestamptz;
+
+comment on column public.notifications.email_sent_at is 'Gezet zodra deze melding (alleen match_scheduled/match_available) per e-mail is verstuurd door send-pending-emails.';
+
+-- BELANGRIJK: dit vereist drie Edge Function-secrets die niet in dit
+-- bestand staan en die je zelf instelt (Project Settings -> Edge Functions
+-- -> Secrets): GMAIL_USER, GMAIL_APP_PASSWORD, en CRON_SECRET. De waarde
+-- van x-cron-secret hieronder moet exact overeenkomen met CRON_SECRET; bij
+-- het roteren van dat secret ook deze cron-job bijwerken (cron.schedule met
+-- dezelfde naam overschrijft de vorige definitie). Vervang ook de
+-- project-URL door je eigen project-URL.
+select cron.schedule(
+  'send_pending_emails',
+  '*/5 * * * *',
+  $cron$
+  select net.http_post(
+    url := 'https://JOUW-PROJECT.supabase.co/functions/v1/send-pending-emails',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'x-cron-secret', 'VERVANG-DOOR-JE-EIGEN-CRON_SECRET'
+    ),
+    body := '{}'::jsonb
+  );
+  $cron$
+);
+
+
 -- ----------------------------------------------------------------------------
 -- Eerste organisator aanwijzen
 -- ----------------------------------------------------------------------------

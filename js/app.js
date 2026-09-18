@@ -380,20 +380,56 @@ function registrationClosedReason(status) {
   }[status.key] || "";
 }
 
+function fmtMoney(n, currency = "EUR") {
+  const num = Number(n);
+  const formatted = num % 1 === 0 ? num.toFixed(0) : num.toFixed(2);
+  return currency === "EUR" ? `€ ${formatted}` : `${formatted} ${currency}`;
+}
+
 function fmtPrizeAmount(t) {
-  const n = Number(t.prize_amount);
-  const formatted = n % 1 === 0 ? n.toFixed(0) : n.toFixed(2);
-  return t.prize_currency === "EUR" ? `€ ${formatted}` : `${formatted} ${t.prize_currency}`;
+  return fmtMoney(t.prize_amount, t.prize_currency);
+}
+
+const ORDINALS = { 1: "1e", 2: "2e", 3: "3e", 4: "4e", 5: "5e", 6: "6e", 7: "7e", 8: "8e" };
+function ordinal(n) { return ORDINALS[n] || `${n}e`; }
+
+// De prijzenpot: vast bedrag (staat meteen vast), of berekend uit
+// inschrijfgeld x aantal betaalde deelnemers (staat pas vast zodra de
+// inschrijving sluit - tot die tijd is het een voorlopige schatting).
+function prizePoolInfo(t, paidCount = 0) {
+  if (t.prize_pool_type === "fixed") {
+    return t.prize_amount != null ? { amount: Number(t.prize_amount), pending: false } : null;
+  }
+  if (t.prize_pool_type === "entry_fee_based") {
+    if (t.entry_fee == null) return null;
+    const closes = t.registration_closes_at ? new Date(t.registration_closes_at) : null;
+    const pending = !closes || closes > new Date();
+    return { amount: Number(t.entry_fee) * paidCount, pending, paidCount };
+  }
+  return null;
+}
+
+function prizeDistributionLines(t, pool) {
+  const dist = Array.isArray(t.prize_distribution) ? [...t.prize_distribution].sort((a, b) => a.position - b.position) : [];
+  return dist.map((d) => {
+    if (d.type === "amount") return `${ordinal(d.position)}: ${fmtMoney(d.value, t.prize_currency)}`;
+    if (pool && pool.amount) return `${ordinal(d.position)}: ${fmtMoney((pool.amount * d.value) / 100, t.prize_currency)} (${d.value}%)`;
+    return `${ordinal(d.position)}: ${d.value}%`;
+  });
 }
 
 // Prijsinformatie in vier mogelijke vormen - toont nooit fictieve bedragen,
 // alleen wat er daadwerkelijk is ingevuld.
-function prizeLine(t) {
+function prizeLine(t, paidCount = 0) {
   if (t.prize_type === "money") {
+    const pool = prizePoolInfo(t, paidCount);
+    const lines = prizeDistributionLines(t, pool);
     return `
       <div class="row-title" style="font-size:14px">Prijzengeld</div>
-      ${t.prize_amount != null ? `<div class="row-sub" style="white-space:normal">${esc(fmtPrizeAmount(t))}</div>` : ""}
-      ${t.prize_distribution ? `<div class="muted" style="font-size:12.5px;margin-top:2px">${esc(t.prize_distribution)}</div>` : ""}`;
+      ${pool
+        ? `<div class="row-sub" style="white-space:normal">${esc(fmtMoney(pool.amount, t.prize_currency))}${pool.pending ? ` <span class="muted">(voorlopig, o.b.v. ${pool.paidCount} betaalde deelnemer${pool.paidCount === 1 ? "" : "s"})</span>` : ""}</div>`
+        : (t.prize_amount != null ? `<div class="row-sub" style="white-space:normal">${esc(fmtPrizeAmount(t))}</div>` : "")}
+      ${lines.length ? `<div class="muted" style="font-size:12.5px;margin-top:2px">${esc(lines.join(" · "))}</div>` : ""}`;
   }
   if (t.prize_type === "physical") {
     return `
@@ -406,8 +442,29 @@ function prizeLine(t) {
   return `<div class="muted" style="font-size:14px">Geen prijs</div>`;
 }
 
+const PAYMENT_STATUS_LABELS = {
+  pending: "Betaling nog niet gemeld",
+  submitted: "Betaling gemeld, wacht op bevestiging",
+  paid: "Betaling bevestigd",
+  failed: "Betaling afgewezen/verlopen",
+  refunded: "Teruggestort",
+};
+const PAYMENT_STATUS_COLORS = {
+  pending: "#6B7280",
+  submitted: "#F47B20",
+  paid: "#2ECC71",
+  failed: "#E74C3C",
+  refunded: "#9B7BD9",
+};
+function paymentStatusBadge(status) {
+  const label = PAYMENT_STATUS_LABELS[status];
+  if (!label) return "";
+  const color = PAYMENT_STATUS_COLORS[status];
+  return `<span class="badge" style="color:${color};border-color:${color}66;background:${color}22">${esc(label)}</span>`;
+}
+
 function tournamentCard(t, opts = {}) {
-  const { entryCount = 0, isMine = false } = opts;
+  const { entryCount = 0, isMine = false, paidCount = 0 } = opts;
   const meta = [
     TOURNAMENT_TYPES[t.tournament_type] || t.tournament_type,
     t.start_at ? fmtDate(t.start_at) : null,
@@ -429,7 +486,8 @@ function tournamentCard(t, opts = {}) {
         <span>${entryCount}${t.max_players ? `/${t.max_players}` : ""} spelers</span>
         ${isMine ? `<span style="color:var(--accent);font-weight:600">Jij doet mee</span>` : ""}
       </div>
-      <div style="margin-bottom:14px">${prizeLine(t)}</div>
+      ${t.entry_fee > 0 ? `<div class="muted" style="font-size:13px;margin-bottom:8px">Inschrijfgeld: ${esc(fmtMoney(t.entry_fee, t.prize_currency))}</div>` : ""}
+      <div style="margin-bottom:14px">${prizeLine(t, paidCount)}</div>
       <button class="btn ghost sm block" onclick="go('toernooien/${esc(t.id)}')">Bekijk toernooi</button>
     </div>`;
 }
@@ -997,7 +1055,7 @@ const db = {
     if (!tournamentIds.length) return [];
     const { data, error } = await sb
       .from("tournament_entries")
-      .select("tournament_id, player_id, status")
+      .select("tournament_id, player_id, status, payment_status")
       .in("tournament_id", tournamentIds);
     if (error) throw error;
     return data || [];
@@ -1030,6 +1088,58 @@ const db = {
 
   async withdrawFromTournament(tournamentId) {
     const { error } = await sb.rpc("withdraw_from_tournament", { p_tournament_id: tournamentId });
+    if (error) throw error;
+  },
+
+  async submitTournamentPayment(entryId, reference) {
+    const { error } = await sb.rpc("submit_tournament_payment", { p_entry_id: entryId, p_reference: reference || null });
+    if (error) throw error;
+  },
+
+  async confirmTournamentPayment(entryId, amount) {
+    const { error } = await sb.rpc("confirm_tournament_payment", { p_entry_id: entryId, p_amount: amount });
+    if (error) throw error;
+  },
+
+  async rejectTournamentPayment(entryId, reason) {
+    const { error } = await sb.rpc("reject_tournament_payment", { p_entry_id: entryId, p_reason: reason || null });
+    if (error) throw error;
+  },
+
+  async refundTournamentEntry(entryId) {
+    const { error } = await sb.rpc("refund_tournament_entry", { p_entry_id: entryId });
+    if (error) throw error;
+  },
+
+  async tournamentPayouts(tournamentId) {
+    const { data, error } = await sb
+      .from("tournament_payouts")
+      .select("*, player:player_id(*)")
+      .eq("tournament_id", tournamentId)
+      .order("placement", { ascending: true });
+    if (error) throw error;
+    return data || [];
+  },
+
+  async setTournamentPayout(tournamentId, playerId, placement, prizeAmount, currency) {
+    const { data, error } = await sb.rpc("set_tournament_payout", {
+      p_tournament_id: tournamentId,
+      p_player_id: playerId,
+      p_placement: placement,
+      p_prize_amount: prizeAmount,
+      p_currency: currency || "EUR",
+    });
+    if (error) throw error;
+    return data;
+  },
+
+  async approveTournamentPayout(payoutId) {
+    const { error } = await sb.rpc("approve_tournament_payout", { p_payout_id: payoutId });
+    if (error) throw error;
+  },
+
+  async markTournamentPayoutPaid(payoutId, reference) {
+    const { error } = await sb.rpc("mark_tournament_payout_paid", { p_payout_id: payoutId, p_payout_reference: reference || null });
     if (error) throw error;
   },
 
@@ -2520,11 +2630,18 @@ async function viewTournaments() {
   const entryRows = await db.tournamentEntryCounts(list.map((t) => t.id));
 
   const countByTournament = {};
+  const paidCountByTournament = {};
   const mineSet = new Set();
   for (const e of entryRows) {
     if (e.status === "withdrawn") continue;
     countByTournament[e.tournament_id] = (countByTournament[e.tournament_id] || 0) + 1;
-    if (e.player_id === me.id) mineSet.add(e.tournament_id);
+    if (e.payment_status === "paid") {
+      paidCountByTournament[e.tournament_id] = (paidCountByTournament[e.tournament_id] || 0) + 1;
+    }
+    // Een niet-betaalde reservering telt nog niet als definitieve aanmelding.
+    if (e.player_id === me.id && (e.payment_status === "paid" || e.payment_status === "not_required")) {
+      mineSet.add(e.tournament_id);
+    }
   }
 
   const filters = [
@@ -2552,6 +2669,7 @@ async function viewTournaments() {
     document.getElementById("tournaments-results").innerHTML = shown.length
       ? `<div class="tournament-grid">${shown.map((t) => tournamentCard(t, {
           entryCount: countByTournament[t.id] || 0,
+          paidCount: paidCountByTournament[t.id] || 0,
           isMine: mineSet.has(t.id),
         })).join("")}</div>`
       : emptyView("Nog geen toernooien beschikbaar", "Er zijn momenteel geen toernooien beschikbaar. Kom later terug om mee te doen aan een nieuw toernooi.", "tournament");
@@ -2609,14 +2727,46 @@ function tournamentMatchRow(m) {
     </div>`;
 }
 
+// Betaalblok voor de eigen inschrijving: instructies + "Ik heb betaald" bij
+// pending, wacht-op-bevestiging bij submitted, bevestiging bij paid.
+function myPaymentBlock(t, entry) {
+  if (!entry || entry.payment_status === "not_required") return "";
+  const fee = t.entry_fee != null ? fmtMoney(t.entry_fee, t.prize_currency) : "";
+  if (entry.payment_status === "pending") {
+    return `
+      <div class="card" style="margin-bottom:16px">
+        <div class="row-title" style="font-size:14px;margin-bottom:6px">Inschrijfgeld: ${esc(fee)}</div>
+        ${t.payment_instructions ? `<p class="row-sub" style="white-space:pre-wrap;margin:0 0 10px">${esc(t.payment_instructions)}</p>` : ""}
+        ${t.payment_deadline_hours ? `<p class="muted" style="font-size:12.5px;margin:0 0 10px">Betaal binnen ${t.payment_deadline_hours} uur na inschrijving, anders vervalt je plek automatisch.</p>` : ""}
+        <button class="btn sm" id="submitPaymentBtn">Ik heb betaald</button>
+      </div>`;
+  }
+  if (entry.payment_status === "submitted") {
+    return `
+      <div class="card" style="margin-bottom:16px">
+        <div class="row-title" style="font-size:14px">${paymentStatusBadge("submitted")}</div>
+        <p class="row-sub" style="margin:6px 0 0">Wacht op bevestiging door de organisator.${entry.payment_reference ? ` Referentie: ${esc(entry.payment_reference)}` : ""}</p>
+      </div>`;
+  }
+  if (entry.payment_status === "paid") {
+    return `
+      <div class="card" style="margin-bottom:16px">
+        <div class="row-title" style="font-size:14px">${paymentStatusBadge("paid")}</div>
+        ${entry.amount_paid != null ? `<p class="row-sub" style="margin:6px 0 0">${esc(fmtMoney(entry.amount_paid, t.prize_currency))} ontvangen.</p>` : ""}
+      </div>`;
+  }
+  return "";
+}
+
 async function viewTournamentDetail(id) {
   const me = state.profile;
   const isOrg = me?.role === "organizer";
 
-  const [t, entries, matches] = await Promise.all([
+  const [t, entries, matches, payouts] = await Promise.all([
     db.tournament(id),
     db.tournamentEntries(id),
     db.tournamentMatchesFor(id),
+    db.tournamentPayouts(id),
   ]);
   if (!t) {
     return setView(emptyView("Toernooi niet gevonden", "Dit toernooi bestaat niet (meer).", "tournament"));
@@ -2627,12 +2777,18 @@ async function viewTournamentDetail(id) {
 
   const activeEntries = entries.filter((e) => e.status !== "withdrawn");
   const myEntry = activeEntries.find((e) => e.player_id === me.id);
+  const paidCount = activeEntries.filter((e) => e.payment_status === "paid").length;
   const status = tournamentDisplayStatus(t, activeEntries.length);
   const canRegister = status.key === "registration_open" && !myEntry;
   const canWithdraw = !!myEntry;
+  const isPaidTournament = t.entry_fee != null && Number(t.entry_fee) > 0;
 
   const platformLabel = t.platform === "online" ? "Online" : t.platform === "offline" ? "Offline" : null;
   const scoringLabel = t.scoring_platform === "scolia" ? "Scolia" : t.scoring_platform === "dartcounter" ? "DartCounter" : null;
+
+  const pendingEntries = activeEntries.filter((e) => e.payment_status === "pending" || e.payment_status === "submitted");
+  const paidEntries = activeEntries.filter((e) => e.payment_status === "paid");
+  const myPayout = !isOrg ? payouts.find((p) => p.player_id === me.id) : null;
 
   setView(`
     <button class="linkbtn" onclick="go('toernooien')" style="display:flex;align-items:center;gap:4px;margin-bottom:12px">
@@ -2646,15 +2802,32 @@ async function viewTournamentDetail(id) {
       ${infoRow("Format", esc(TOURNAMENT_TYPES[t.tournament_type] || t.tournament_type))}
       ${platformLabel ? infoRow("Speelwijze", esc(platformLabel + (scoringLabel ? ` · ${scoringLabel}` : ""))) : ""}
       ${infoRow("Deelnemers", `${activeEntries.length}${t.max_players ? `/${t.max_players}` : ""}`)}
+      ${t.min_players ? infoRow("Minimum aantal spelers", String(t.min_players)) : ""}
       ${t.registration_opens_at ? infoRow("Inschrijving opent", esc(fmtDate(t.registration_opens_at))) : ""}
       ${t.registration_closes_at ? infoRow("Inschrijving sluit", esc(fmtDate(t.registration_closes_at))) : ""}
+      ${isPaidTournament ? infoRow("Inschrijfgeld", esc(fmtMoney(t.entry_fee, t.prize_currency))) : ""}
     </div>
 
-    <div class="card" style="margin-bottom:16px">${prizeLine(t)}</div>
+    <div class="card" style="margin-bottom:16px">${prizeLine(t, paidCount)}</div>
+
+    ${!isOrg ? myPaymentBlock(t, myEntry) : ""}
+
+    ${myPayout ? `
+      <div class="card" style="margin-bottom:16px">
+        <div class="row-title" style="font-size:14px">Jouw resultaat: ${esc(ordinal(myPayout.placement))} plaats</div>
+        <p class="row-sub" style="margin:6px 0 0">${esc(fmtMoney(myPayout.prize_amount, myPayout.currency))} — ${myPayout.payout_status === "paid" ? "uitbetaald" : myPayout.payout_status === "approved" ? "goedgekeurd, wordt overgemaakt" : "wacht op goedkeuring"}</p>
+      </div>` : ""}
+
+    ${(t.refund_policy || t.refund_cutoff_hours) && !isOrg ? `
+      <div class="card" style="margin-bottom:16px">
+        <div class="row-title" style="font-size:14px">Annuleringsvoorwaarden</div>
+        ${t.refund_policy ? `<p class="row-sub" style="white-space:pre-wrap;margin:6px 0 0">${esc(t.refund_policy)}</p>` : ""}
+        ${t.refund_cutoff_hours != null ? `<p class="muted" style="font-size:12.5px;margin:6px 0 0">Terugbetaling mogelijk tot ${t.refund_cutoff_hours} uur voor aanvang.</p>` : ""}
+      </div>` : ""}
 
     ${!isOrg ? `
       <div style="margin-bottom:16px">
-        ${canRegister ? `<button class="btn block" onclick="registerForTournament('${esc(t.id)}')">Inschrijven</button>` : ""}
+        ${canRegister ? `<button class="btn block" onclick="registerForTournament('${esc(t.id)}')">${isPaidTournament ? "Inschrijven en betalen" : "Inschrijven"}</button>` : ""}
         ${canWithdraw ? `<button class="btn ghost block" onclick="withdrawFromTournament('${esc(t.id)}')">Uitschrijven</button>` : ""}
         ${!canRegister && !canWithdraw ? `<p class="muted" style="font-size:13px;margin:0">${esc(registrationClosedReason(status))}</p>` : ""}
       </div>
@@ -2667,6 +2840,37 @@ async function viewTournamentDetail(id) {
       <div class="card" style="margin-bottom:16px"><p style="margin:0;white-space:pre-wrap">${esc(t.description)}</p></div>
     ` : ""}
 
+    ${isOrg && isPaidTournament ? `
+      ${sectionHead("Betalingen")}
+      ${pendingEntries.length ? `
+        <div class="card" style="margin-bottom:16px">
+          ${pendingEntries.map((e, i) => `
+            <div class="row" style="padding:9px 0;${i > 0 ? "border-top:1px solid var(--line)" : ""}">
+              ${avatar(e.player, "sm")}
+              <div class="row-main">
+                <div class="row-title">${esc(e.player?.display_name || "?")}</div>
+                <div class="row-sub">${paymentStatusBadge(e.payment_status)}${e.payment_reference ? ` · ${esc(e.payment_reference)}` : ""}</div>
+              </div>
+              <div style="display:flex;gap:6px;flex-shrink:0">
+                <button class="btn ghost sm reject-payment-btn" data-entry-id="${esc(e.id)}">Afwijzen</button>
+                <button class="btn sm confirm-payment-btn" data-entry-id="${esc(e.id)}">Bevestigen</button>
+              </div>
+            </div>`).join("")}
+        </div>` : `<div class="card" style="margin-bottom:16px">${emptyView("Geen openstaande betalingen", "", "flag")}</div>`}
+      ${paidEntries.length ? `
+        <div class="card" style="margin-bottom:16px">
+          ${paidEntries.map((e, i) => `
+            <div class="row" style="padding:9px 0;${i > 0 ? "border-top:1px solid var(--line)" : ""}">
+              ${avatar(e.player, "sm")}
+              <div class="row-main">
+                <div class="row-title">${esc(e.player?.display_name || "?")}</div>
+                <div class="row-sub">${paymentStatusBadge(e.payment_status)}${e.amount_paid != null ? ` · ${esc(fmtMoney(e.amount_paid, t.prize_currency))}` : ""}</div>
+              </div>
+              <button class="btn ghost sm refund-entry-btn" data-entry-id="${esc(e.id)}">Terugbetalen</button>
+            </div>`).join("")}
+        </div>` : ""}
+    ` : ""}
+
     ${sectionHead("Deelnemers")}
     ${activeEntries.length ? `
       <div class="card" style="margin-bottom:16px">
@@ -2674,13 +2878,53 @@ async function viewTournamentDetail(id) {
           <div class="row" style="padding:7px 0;${i > 0 ? "border-top:1px solid var(--line)" : ""}">
             ${avatar(e.player, "sm")}
             <div class="row-main"><div class="row-title">${esc(e.player?.display_name || "?")}</div></div>
+            ${isOrg && isPaidTournament ? paymentStatusBadge(e.payment_status) : ""}
           </div>`).join("")}
       </div>` : `<div class="card" style="margin-bottom:16px">${emptyView("Nog geen deelnemers", "", "users")}</div>`}
+
+    ${isOrg ? `
+      ${sectionHead("Uitbetalingen")}
+      ${payouts.length ? `
+        <div class="card" style="margin-bottom:16px">
+          ${payouts.map((p, i) => `
+            <div class="row" style="padding:9px 0;${i > 0 ? "border-top:1px solid var(--line)" : ""}">
+              ${avatar(p.player, "sm")}
+              <div class="row-main">
+                <div class="row-title">${esc(ordinal(p.placement))} — ${esc(p.player?.display_name || "?")}</div>
+                <div class="row-sub">${esc(fmtMoney(p.prize_amount, p.currency))} · ${esc(p.payout_status === "paid" ? "Betaald" : p.payout_status === "approved" ? "Goedgekeurd" : p.payout_status === "cancelled" ? "Geannuleerd" : "Wacht op goedkeuring")}</div>
+              </div>
+              <div style="display:flex;gap:6px;flex-shrink:0">
+                ${p.payout_status === "pending_approval" ? `<button class="btn ghost sm approve-payout-btn" data-payout-id="${esc(p.id)}">Goedkeuren</button>` : ""}
+                ${p.payout_status === "approved" ? `<button class="btn sm mark-payout-paid-btn" data-payout-id="${esc(p.id)}">Als betaald markeren</button>` : ""}
+              </div>
+            </div>`).join("")}
+        </div>` : `<div class="card" style="margin-bottom:16px">${emptyView("Nog geen uitbetalingen vastgelegd", "", "trophy")}</div>`}
+      <button class="btn ghost sm" style="margin-bottom:16px" id="addPayoutBtn">${icon.plus} Uitbetaling toevoegen</button>
+    ` : ""}
 
     ${sectionHead("Wedstrijdschema")}
     ${matches.length ? matches.map(tournamentMatchRow).join("")
       : `<div class="card">${emptyView("Nog geen wedstrijdschema", "Het schema verschijnt zodra het toernooi begint.", "darts")}</div>`}
   `);
+
+  document.getElementById("submitPaymentBtn")?.addEventListener("click", () => openSubmitPaymentDialog(myEntry.id));
+  document.querySelectorAll(".confirm-payment-btn").forEach((el) => {
+    el.onclick = () => openConfirmPaymentDialog(el.dataset.entryId, t.entry_fee, t.prize_currency);
+  });
+  document.querySelectorAll(".reject-payment-btn").forEach((el) => {
+    el.onclick = () => openRejectPaymentDialog(el.dataset.entryId);
+  });
+  document.querySelectorAll(".refund-entry-btn").forEach((el) => {
+    const entry = paidEntries.find((e) => e.id === el.dataset.entryId);
+    el.onclick = () => openRefundConfirm(entry, t.prize_currency);
+  });
+  document.querySelectorAll(".approve-payout-btn").forEach((el) => {
+    el.onclick = () => approvePayoutAction(el.dataset.payoutId);
+  });
+  document.querySelectorAll(".mark-payout-paid-btn").forEach((el) => {
+    el.onclick = () => openMarkPayoutPaidDialog(el.dataset.payoutId);
+  });
+  document.getElementById("addPayoutBtn")?.addEventListener("click", () => openSetPayoutDialog(t.id, activeEntries));
 }
 
 // Voorstel-status voor een wedstrijd: knop om een moment voor te stellen,
@@ -3137,16 +3381,23 @@ async function viewManageTournaments() {
   const list = await db.tournaments();
   const entryRows = await db.tournamentEntryCounts(list.map((t) => t.id));
   const countByTournament = {};
+  const paidCountByTournament = {};
   for (const e of entryRows) {
     if (e.status === "withdrawn") continue;
     countByTournament[e.tournament_id] = (countByTournament[e.tournament_id] || 0) + 1;
+    if (e.payment_status === "paid") {
+      paidCountByTournament[e.tournament_id] = (paidCountByTournament[e.tournament_id] || 0) + 1;
+    }
   }
   setView(`
     <h1>Toernooien</h1>
     <p class="sub">Aanmaken en inzien</p>
     <button class="btn mt8" onclick="openTournamentDialog()">${icon.plus} Nieuw toernooi</button>
     <div class="tournament-grid mt24">
-      ${list.length ? list.map((t) => tournamentCard(t, { entryCount: countByTournament[t.id] || 0 })).join("")
+      ${list.length ? list.map((t) => tournamentCard(t, {
+          entryCount: countByTournament[t.id] || 0,
+          paidCount: paidCountByTournament[t.id] || 0,
+        })).join("")
         : emptyView("Nog geen toernooien", "Maak je eerste toernooi aan.", "tournament")}
     </div>
   `);
@@ -3389,6 +3640,18 @@ function openTournamentDialog(existing) {
         <option value="finished" ${t.status === "finished" ? "selected" : ""}>Afgerond</option>
       </select>
     </div>
+    <div class="field-pair">
+      <div><div class="field-pair-label">Inschrijfgeld (€) <span class="muted" style="font-weight:400">(optioneel)</span></div>
+        <input id="tfee" type="number" min="0" step="0.01" value="${t.entry_fee ?? ""}" onchange="togglePaidFields(this.value)"></div>
+      <div><div class="field-pair-label">Minimum aantal spelers <span class="muted" style="font-weight:400">(optioneel)</span></div>
+        <input id="tmin" type="number" min="1" value="${t.min_players ?? ""}"></div>
+    </div>
+    <div id="paidFields" style="display:${Number(t.entry_fee) > 0 ? "block" : "none"}">
+      <div class="field"><label for="tpdh">Betaaldeadline <span class="muted" style="font-weight:400">(uren na inschrijving, optioneel)</span></label><input id="tpdh" type="number" min="1" value="${t.payment_deadline_hours ?? ""}"></div>
+      <div class="field"><label for="tpinstr">Betaalinstructies <span class="muted" style="font-weight:400">(bijv. Tikkie-link/telefoonnummer)</span></label><textarea id="tpinstr" rows="2" placeholder="Bijv. Stuur € 10 via Tikkie naar 06-12345678">${esc(t.payment_instructions || "")}</textarea></div>
+      <div class="field"><label for="trefpolicy">Annuleringsvoorwaarden <span class="muted" style="font-weight:400">(optioneel)</span></label><textarea id="trefpolicy" rows="2" placeholder="Bijv. Volledige terugbetaling tot 24 uur voor aanvang">${esc(t.refund_policy || "")}</textarea></div>
+      <div class="field"><label for="trefcutoff">Terugbetaling mogelijk tot <span class="muted" style="font-weight:400">(uren voor aanvang, optioneel)</span></label><input id="trefcutoff" type="number" min="0" value="${t.refund_cutoff_hours ?? ""}"></div>
+    </div>
     <div class="field"><label for="tprize">Prijs</label>
       <select id="tprize" onchange="togglePrizeFields(this.value)">
         <option value="none" ${!t.prize_type || t.prize_type === "none" ? "selected" : ""}>Geen prijs</option>
@@ -3398,8 +3661,22 @@ function openTournamentDialog(existing) {
       </select>
     </div>
     <div id="prizeMoneyFields" style="display:${t.prize_type === "money" ? "block" : "none"}">
-      <div class="field"><label for="tamount">Bedrag (€) <span class="muted" style="font-weight:400">(optioneel)</span></label><input id="tamount" type="number" min="0" step="0.01" value="${t.prize_amount ?? ""}"></div>
-      <div class="field"><label for="tdist">Verdeling <span class="muted" style="font-weight:400">(optioneel)</span></label><input id="tdist" value="${esc(t.prize_distribution || "")}" placeholder="Bijv. 1e: € 150 · 2e: € 75 · 3e: € 25"></div>
+      <div class="field"><label for="tpooltype">Prijzenpot</label>
+        <select id="tpooltype" onchange="togglePoolType(this.value)">
+          <option value="" ${!t.prize_pool_type ? "selected" : ""}>Vast bedrag, geen verdeling</option>
+          <option value="fixed" ${t.prize_pool_type === "fixed" ? "selected" : ""}>Vast bedrag met verdeling</option>
+          <option value="entry_fee_based" ${t.prize_pool_type === "entry_fee_based" ? "selected" : ""}>Berekend uit inschrijfgeld x betaalde deelnemers</option>
+        </select>
+      </div>
+      <div id="tamountField" class="field" style="display:${t.prize_pool_type === "entry_fee_based" ? "none" : "block"}">
+        <label for="tamount">Bedrag (€) <span class="muted" style="font-weight:400">(optioneel)</span></label>
+        <input id="tamount" type="number" min="0" step="0.01" value="${t.prize_amount ?? ""}">
+      </div>
+      <div id="distField" style="display:${t.prize_pool_type ? "block" : "none"}">
+        <div class="field-pair-label" style="margin-bottom:6px">Prijsverdeling per plaatsing <span class="muted" style="font-weight:400">(optioneel)</span></div>
+        <div id="distRows">${renderDistRowsHtml(t.prize_distribution)}</div>
+        <button type="button" class="btn ghost sm" onclick="addPrizeDistRow()">${icon.plus} Plaats toevoegen</button>
+      </div>
     </div>
     <div id="prizePhysicalFields" style="display:${t.prize_type === "physical" ? "block" : "none"}">
       <div class="field"><label for="tpdesc">Omschrijving</label><input id="tpdesc" value="${esc(t.prize_description || "")}" placeholder="Bijv. Gepersonaliseerd dartshirt"></div>
@@ -3415,8 +3692,37 @@ function openTournamentDialog(existing) {
         throw new Error("Inschrijving moet sluiten na het openen.");
       }
       const maxPlayers = bg.querySelector("#tmax").value;
+      const minPlayers = bg.querySelector("#tmin").value;
+      if (maxPlayers && minPlayers && Number(minPlayers) > Number(maxPlayers)) {
+        throw new Error("Minimum aantal spelers kan niet hoger zijn dan het maximum.");
+      }
+      const entryFeeRaw = bg.querySelector("#tfee").value;
+      const entryFee = entryFeeRaw !== "" ? Number(entryFeeRaw) : null;
+      if (entryFee != null && entryFee < 0) throw new Error("Inschrijfgeld mag niet negatief zijn.");
+      const isPaid = entryFee != null && entryFee > 0;
+
       const prizeType = bg.querySelector("#tprize").value;
+      const poolType = bg.querySelector("#tpooltype")?.value || null;
       const amount = bg.querySelector("#tamount")?.value;
+      const prizeAmount = prizeType === "money" && poolType !== "entry_fee_based" && amount ? Number(amount) : null;
+      const distRows = prizeType === "money" ? [...bg.querySelectorAll(".dist-row")].map((row, i) => ({
+        position: i + 1,
+        type: row.querySelector(".dist-type").value,
+        value: Number(row.querySelector(".dist-value").value) || 0,
+      })).filter((r) => r.value > 0) : [];
+
+      if (distRows.length) {
+        const pctSum = distRows.filter((r) => r.type === "percentage").reduce((s, r) => s + r.value, 0);
+        if (pctSum > 100) throw new Error("De percentages in de prijsverdeling mogen samen niet meer dan 100% zijn.");
+        if (poolType === "entry_fee_based" && distRows.some((r) => r.type === "amount")) {
+          throw new Error("Bij een pot op basis van inschrijfgeld zijn alleen percentages toegestaan - het totaalbedrag staat pas na afloop vast.");
+        }
+        if (poolType === "fixed" && prizeAmount != null) {
+          const amtSum = distRows.filter((r) => r.type === "amount").reduce((s, r) => s + r.value, 0);
+          if (amtSum > prizeAmount) throw new Error("De vaste bedragen in de prijsverdeling zijn hoger dan de totale pot.");
+        }
+      }
+
       const fields = {
         name,
         tournament_type: bg.querySelector("#tt").value,
@@ -3428,10 +3734,17 @@ function openTournamentDialog(existing) {
         registration_closes_at: rc ? new Date(rc).toISOString() : null,
         max_players: maxPlayers ? Number(maxPlayers) : null,
         status: bg.querySelector("#tstatus").value,
+        entry_fee: entryFee,
+        min_players: minPlayers ? Number(minPlayers) : null,
+        payment_deadline_hours: isPaid && bg.querySelector("#tpdh").value ? Number(bg.querySelector("#tpdh").value) : null,
+        payment_instructions: isPaid ? (bg.querySelector("#tpinstr").value.trim() || null) : null,
+        refund_policy: isPaid ? (bg.querySelector("#trefpolicy").value.trim() || null) : null,
+        refund_cutoff_hours: isPaid && bg.querySelector("#trefcutoff").value ? Number(bg.querySelector("#trefcutoff").value) : null,
         prize_type: prizeType,
-        prize_amount: prizeType === "money" && amount ? Number(amount) : null,
+        prize_amount: prizeAmount,
         prize_currency: "EUR",
-        prize_distribution: prizeType === "money" ? (bg.querySelector("#tdist").value.trim() || null) : null,
+        prize_pool_type: prizeType === "money" ? poolType : null,
+        prize_distribution: distRows.length ? distRows : null,
         prize_description: prizeType === "physical" ? (bg.querySelector("#tpdesc").value.trim() || null) : null,
         description: bg.querySelector("#tdesc").value.trim() || null,
       };
@@ -3458,6 +3771,43 @@ function togglePrizeFields(prizeType) {
   if (physicalEl) physicalEl.style.display = prizeType === "physical" ? "block" : "none";
 }
 
+function togglePaidFields(entryFeeValue) {
+  const el = document.getElementById("paidFields");
+  if (el) el.style.display = Number(entryFeeValue) > 0 ? "block" : "none";
+}
+
+function togglePoolType(poolType) {
+  const amountField = document.getElementById("tamountField");
+  const distField = document.getElementById("distField");
+  if (amountField) amountField.style.display = poolType === "entry_fee_based" ? "none" : "block";
+  if (distField) distField.style.display = poolType ? "block" : "none";
+}
+
+function distRowHtml(type, value) {
+  return `
+    <div class="dist-row" style="display:flex;gap:8px;align-items:flex-end;margin-bottom:8px">
+      <div style="flex:1"><div class="field-pair-label">Type</div>
+        <select class="dist-type">
+          <option value="percentage" ${type !== "amount" ? "selected" : ""}>% van de pot</option>
+          <option value="amount" ${type === "amount" ? "selected" : ""}>Vast bedrag (€)</option>
+        </select>
+      </div>
+      <div style="flex:1"><div class="field-pair-label">Waarde</div>
+        <input class="dist-value" type="number" min="0" step="0.01" value="${value ?? ""}">
+      </div>
+      <button type="button" class="btn ghost sm" onclick="this.closest('.dist-row').remove()">✕</button>
+    </div>`;
+}
+
+function renderDistRowsHtml(dist) {
+  const arr = Array.isArray(dist) ? [...dist].sort((a, b) => a.position - b.position) : [];
+  return arr.map((d) => distRowHtml(d.type, d.value)).join("");
+}
+
+function addPrizeDistRow() {
+  document.getElementById("distRows")?.insertAdjacentHTML("beforeend", distRowHtml("percentage", ""));
+}
+
 async function openEditTournamentDialog(id) {
   try {
     const t = await db.tournament(id);
@@ -3480,6 +3830,95 @@ async function withdrawFromTournament(id) {
     toast("Je bent uitgeschreven.");
     router();
   } catch (e) { toast(errText(e)); }
+}
+
+function openSubmitPaymentDialog(entryId) {
+  openModal("Betaling melden", `
+    <p class="muted" style="font-size:13px;margin:0 0 12px">Meld dit pas nadat je het bedrag daadwerkelijk via Tikkie hebt overgemaakt. De organisator controleert dit voordat je inschrijving definitief wordt.</p>
+    <div class="field"><label for="spr">Referentie <span class="muted" style="font-weight:400">(optioneel, bijv. Tikkie-omschrijving)</span></label><input id="spr" placeholder="Bijv. TIKKIE-123"></div>`,
+    async (bg) => {
+      const ref = bg.querySelector("#spr").value.trim() || null;
+      await db.submitTournamentPayment(entryId, ref);
+      toast("Betaling gemeld. De organisator controleert dit.");
+      router();
+    }, "Ik heb betaald");
+}
+
+function openConfirmPaymentDialog(entryId, defaultAmount, currency) {
+  openModal("Betaling bevestigen", `
+    <p class="muted" style="font-size:13px;margin:0 0 12px">Bevestig pas nadat je het bedrag daadwerkelijk in je eigen Tikkie-overzicht ziet staan.</p>
+    <div class="field"><label for="cpa">Ontvangen bedrag (${esc(currency || "EUR")})</label><input id="cpa" type="number" min="0" step="0.01" value="${defaultAmount ?? ""}" required></div>`,
+    async (bg) => {
+      const amount = Number(bg.querySelector("#cpa").value);
+      if (bg.querySelector("#cpa").value === "" || isNaN(amount) || amount < 0) throw new Error("Vul een geldig bedrag in.");
+      await db.confirmTournamentPayment(entryId, amount);
+      toast("Betaling bevestigd.");
+      router();
+    }, "Bevestigen");
+}
+
+function openRejectPaymentDialog(entryId) {
+  openModal("Betaling afwijzen", `
+    <div class="field"><label for="rpr">Reden <span class="muted" style="font-weight:400">(optioneel, wordt getoond aan de speler)</span></label><input id="rpr" placeholder="Bijv. bedrag niet ontvangen"></div>`,
+    async (bg) => {
+      const reason = bg.querySelector("#rpr").value.trim() || null;
+      await db.rejectTournamentPayment(entryId, reason);
+      toast("Betaling afgewezen. De plek is vrijgegeven.");
+      router();
+    }, "Afwijzen", true);
+}
+
+function openRefundConfirm(entry, currency) {
+  if (!entry) return;
+  const name = entry.player?.display_name || "deze speler";
+  const amount = entry.amount_paid ?? 0;
+  openModal("Terugbetaling registreren", `
+    <p style="margin:0 0 4px">Bevestig dat je <strong style="color:var(--white)">${esc(fmtMoney(amount, currency))}</strong> hebt teruggestort aan <strong style="color:var(--white)">${esc(name)}</strong> via Tikkie.</p>
+    <p class="muted" style="font-size:13px;margin:0">Dit registreert alleen dat de terugbetaling is gedaan - de app maakt zelf geen geld over.</p>`,
+    async () => {
+      await db.refundTournamentEntry(entry.id);
+      toast("Terugbetaling geregistreerd.");
+      router();
+    }, "Terugbetaling registreren");
+}
+
+function openSetPayoutDialog(tournamentId, entries) {
+  const opts = entries.map((e) => `<option value="${esc(e.player_id)}">${esc(e.player?.display_name || "?")}</option>`).join("");
+  openModal("Uitbetaling toevoegen", `
+    <div class="field"><label for="poPlace">Plaatsing</label><input id="poPlace" type="number" min="1" value="1" required></div>
+    <div class="field"><label for="poPlayer">Speler</label><select id="poPlayer">${opts}</select></div>
+    <div class="field"><label for="poAmount">Bedrag (€)</label><input id="poAmount" type="number" min="0" step="0.01" required></div>`,
+    async (bg) => {
+      const placement = Number(bg.querySelector("#poPlace").value);
+      const playerId = bg.querySelector("#poPlayer").value;
+      const amount = Number(bg.querySelector("#poAmount").value);
+      if (!placement || placement < 1) throw new Error("Vul een geldige plaatsing in.");
+      if (!playerId) throw new Error("Kies een speler.");
+      if (bg.querySelector("#poAmount").value === "" || isNaN(amount) || amount < 0) throw new Error("Vul een geldig bedrag in.");
+      await db.setTournamentPayout(tournamentId, playerId, placement, amount, "EUR");
+      toast("Uitbetaling vastgelegd.");
+      router();
+    }, "Opslaan");
+}
+
+async function approvePayoutAction(payoutId) {
+  try {
+    await db.approveTournamentPayout(payoutId);
+    toast("Uitbetaling goedgekeurd.");
+    router();
+  } catch (e) { toast(errText(e)); }
+}
+
+function openMarkPayoutPaidDialog(payoutId) {
+  openModal("Uitbetaling registreren", `
+    <p class="muted" style="font-size:13px;margin:0 0 12px">Registreer dit pas nadat je het bedrag daadwerkelijk via Tikkie hebt overgemaakt.</p>
+    <div class="field"><label for="mpr">Referentie <span class="muted" style="font-weight:400">(optioneel)</span></label><input id="mpr" placeholder="Bijv. Tikkie-omschrijving"></div>`,
+    async (bg) => {
+      const ref = bg.querySelector("#mpr").value.trim() || null;
+      await db.markTournamentPayoutPaid(payoutId, ref);
+      toast("Uitbetaling geregistreerd als betaald.");
+      router();
+    }, "Als betaald markeren");
 }
 
 async function openMatchDialog() {

@@ -2758,6 +2758,45 @@ function myPaymentBlock(t, entry) {
   return "";
 }
 
+// Uitklapbare uitleg over hoe de prijzenpot en uitbetaling werken, alleen
+// getoond als er daadwerkelijk prijzengeld is (mirrort de "Hoe werkt de
+// league?"-uitleg op de Leagues-pagina).
+function prizeExplainerCard(t) {
+  if (t.prize_type !== "money") return "";
+
+  let potText;
+  if (t.prize_pool_type === "entry_fee_based") {
+    potText = "De pot wordt berekend als inschrijfgeld × het aantal spelers dat daadwerkelijk heeft betaald. Zolang de inschrijving nog open is, is het genoemde bedrag dus een voorlopige schatting - pas zodra de inschrijving sluit staat de pot definitief vast.";
+  } else if (t.prize_pool_type === "fixed") {
+    potText = "Dit toernooi heeft een vast prijzenbedrag. Dat bedrag staat vooraf vast, ongeacht het aantal deelnemers.";
+  } else {
+    potText = "Het genoemde bedrag is het totale prijzengeld voor dit toernooi.";
+  }
+
+  const hasDistribution = Array.isArray(t.prize_distribution) && t.prize_distribution.length > 0;
+  const distText = hasDistribution
+    ? "Per eindpositie is al een deel van de pot toegewezen (zie hierboven) - als percentage van de pot of als vast bedrag."
+    : "De organisator heeft nog geen verdeling per eindpositie vastgelegd.";
+
+  const payoutText = "Na afloop van het toernooi legt de organisator de uitbetaling per eindpositie handmatig vast, keurt deze goed en maakt het bedrag zelf over (bijvoorbeeld via Tikkie). Dit gaat niet automatisch via de app - de app houdt alleen bij wat er zou moeten gebeuren.";
+
+  return `
+    <details class="card info-card" style="margin-bottom:16px">
+      <summary>
+        <div class="row">
+          <div class="row-ico">${icon.trophy}</div>
+          <div class="row-main"><div class="row-title" style="white-space:normal">Hoe werkt de prijzenpot?</div></div>
+          <span class="muted toggle-label" style="font-size:13px;flex-shrink:0">Meer info &darr;</span>
+        </div>
+      </summary>
+      <div class="muted" style="font-size:13.5px;line-height:1.6;margin-top:14px">
+        <p>${esc(potText)}</p>
+        <p>${esc(distText)}</p>
+        <p>${esc(payoutText)}</p>
+      </div>
+    </details>`;
+}
+
 async function viewTournamentDetail(id) {
   const me = state.profile;
   const isOrg = me?.role === "organizer";
@@ -2809,6 +2848,8 @@ async function viewTournamentDetail(id) {
     </div>
 
     <div class="card" style="margin-bottom:16px">${prizeLine(t, paidCount)}</div>
+
+    ${prizeExplainerCard(t)}
 
     ${!isOrg ? myPaymentBlock(t, myEntry) : ""}
 
@@ -2925,6 +2966,11 @@ async function viewTournamentDetail(id) {
     el.onclick = () => openMarkPayoutPaidDialog(el.dataset.payoutId);
   });
   document.getElementById("addPayoutBtn")?.addEventListener("click", () => openSetPayoutDialog(t.id, activeEntries));
+
+  const infoCard = document.querySelector(".info-card");
+  infoCard?.addEventListener("toggle", () => {
+    infoCard.querySelector(".toggle-label").innerHTML = infoCard.open ? "Minder info &uarr;" : "Meer info &darr;";
+  });
 }
 
 // Voorstel-status voor een wedstrijd: knop om een moment voor te stellen,

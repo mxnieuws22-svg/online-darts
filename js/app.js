@@ -20,6 +20,11 @@
 const cfg = window.APP_CONFIG || {};
 let sb = null;
 
+// Publieke VAPID-sleutel voor Web Push - hoort net als de Supabase anon key
+// publiek te zijn, staat in elke browser die de site opent. De bijbehorende
+// privésleutel staat alleen als Edge Function-secret in Supabase.
+const VAPID_PUBLIC_KEY = "BN2DVKxw66w5hU3g3hmkbs8oxSgLt4lDzpduHtiDO5hPkgoSJao7nxzoEGfmGY4nDVxieilnR_IJ5ILAxXpE9wE";
+
 const state = {
   profile: null,     // profiel van de ingelogde gebruiker
   session: null,
@@ -908,6 +913,18 @@ const db = {
 
   async markNotificationRead(id) {
     const { error } = await sb.from("notifications").update({ read_at: new Date().toISOString() }).eq("id", id);
+    if (error) throw error;
+  },
+
+  // RLS ("push_subscriptions_own") staat alleen eigen rijen toe - geen
+  // security-definer functie nodig, dit is puur eigen-apparaat-beheer.
+  async savePushSubscription(sub) {
+    const { error } = await sb.from("push_subscriptions").upsert({
+      player_id: state.profile.id,
+      endpoint: sub.endpoint,
+      p256dh: sub.p256dh,
+      auth: sub.auth,
+    }, { onConflict: "player_id,endpoint" });
     if (error) throw error;
   },
 
@@ -3251,6 +3268,13 @@ async function viewProfile() {
       ${statCard({ label: "180's", value: s?.count_180 ?? 0, ico: "star", color: "#F5B942" })}
     </div>
 
+    ${sectionHead("Meldingen")}
+    <div class="card">
+      <div class="row-sub">Pushmeldingen op dit toestel</div>
+      <p class="muted" style="font-size:12.5px;margin:8px 0 12px">Ontvang een melding zodra er een wedstrijd voor je is ingepland of een speelmoment wordt voorgesteld - ook als de app niet open staat. Op iPhone: zet de site eerst via Safari op je beginscherm (deel-icoon &rarr; Zet op beginscherm) voordat je dit inschakelt.</p>
+      <button class="btn ghost sm" id="enablePushBtn">Inschakelen op dit toestel</button>
+    </div>
+
     ${sectionHead("League-indeling")}
     <div class="card">
       ${membership ? `
@@ -3276,6 +3300,8 @@ async function viewProfile() {
       <span style="width:18px;height:18px;display:block">${icon.logout}</span> Uitloggen
     </button>
   `);
+
+  document.getElementById("enablePushBtn").onclick = enablePushNotifications;
 
   const input = document.getElementById("avatarInput");
   document.getElementById("avatarBtn").onclick = () => input.click();
@@ -4397,6 +4423,50 @@ function subscribeToNotifications(playerId) {
 function unsubscribeFromNotifications() {
   notificationsChannel?.unsubscribe();
   notificationsChannel = null;
+}
+
+// VAPID-publieke sleutel (base64url) omzetten naar de Uint8Array die de
+// Push API verwacht als applicationServerKey.
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; i++) outputArray[i] = rawData.charCodeAt(i);
+  return outputArray;
+}
+
+// Pushmeldingen op dit toestel inschakelen: registreert de service worker,
+// vraagt toestemming, en slaat het abonnement op zodat send-push-
+// notifications er meldingen naartoe kan sturen. Vereist een expliciete
+// gebruikersactie (knop) - browsers staan geen stille aanvraag toe.
+async function enablePushNotifications() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+    return toast("Pushmeldingen worden niet ondersteund op dit toestel of in deze browser.");
+  }
+  try {
+    const reg = await navigator.serviceWorker.register("/sw.js");
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") {
+      return toast("Toestemming voor meldingen geweigerd.");
+    }
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+      });
+    }
+    const json = sub.toJSON();
+    await db.savePushSubscription({
+      endpoint: json.endpoint,
+      p256dh: json.keys.p256dh,
+      auth: json.keys.auth,
+    });
+    toast("Pushmeldingen ingeschakeld op dit toestel.");
+  } catch (e) {
+    toast(errText(e));
+  }
 }
 
 function init() {

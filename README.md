@@ -133,12 +133,42 @@ probeert het elke 5 minuten opnieuw zodra je de secrets hebt ingesteld.
 
 ---
 
+## 7. Pushmeldingen op mobiel/desktop (optioneel)
+
+Derde kanaal naast pop-up en e-mail, voor dezelfde gebeurtenissen. Werkt
+in de browser zonder installatie op Android/desktop. **Op iPhone** moet de
+speler de site eerst via Safari op het beginscherm zetten (deel-icoon →
+Zet op beginscherm) — vereist iOS 16.4 of hoger; rechtstreeks vanuit een
+Safari-tab werkt pushmelding op iPhone niet.
+
+1. Genereer een VAPID-sleutelpaar (geen account bij een provider nodig):
+   `npx web-push generate-vapid-keys`.
+2. Ga in Supabase naar **Edge Functions → send-push-notifications →
+   Secrets** en zet:
+   - `VAPID_PUBLIC_KEY` — de public key van stap 1
+   - `VAPID_PRIVATE_KEY` — de private key van stap 1
+   - (`CRON_SECRET` en `GMAIL_USER` heb je al staan uit sectie 6 - die
+     worden hergebruikt)
+3. Zoek in `supabase/schema.sql` (sectie 21) het `cron.schedule(...)`-blok
+   voor `send_push_notifications` en vervang `JOUW-PROJECT` en
+   `VERVANG-DOOR-JE-EIGEN-CRON_SECRET` op dezelfde manier als in sectie 6.
+   Draai dat aangepaste blok in de SQL Editor.
+4. Elke speler schakelt pushmeldingen zelf in via **Profiel → Meldingen →
+   Inschakelen op dit toestel** (vraagt eenmalig toestemming van de
+   browser).
+
+Zonder deze secrets blijft ook dit kanaal stil; pop-up en e-mail blijven
+gewoon werken.
+
+---
+
 ## Wat de app kan
 
 **Spelers:** registreren en inloggen, wachtwoord resetten, profiel met foto
 en naam aanpassen, eigen wedstrijden zien, uitslag doorgeven, leagues en
-toernooien bekijken, eigen statistieken, pop-up (en optioneel e-mail) zodra
-er een wedstrijd is ingepland of beschikbaar komt.
+toernooien bekijken, eigen statistieken, pop-up (en optioneel e-mail en
+pushmeldingen op hun toestel) zodra er een wedstrijd is ingepland of
+beschikbaar komt.
 
 **Organisatoren:** dashboard met tellingen, leagues aanmaken en van status
 wisselen, toernooien aanmaken, wedstrijden inplannen, doorgegeven uitslagen

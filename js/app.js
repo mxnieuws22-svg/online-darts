@@ -4992,9 +4992,11 @@ async function boot() {
 
   if (state.session) {
     try {
-      state.profile = await db.myProfile(state.session.user.id);
+      [state.profile, state.onboarding] = await Promise.all([
+        db.myProfile(state.session.user.id),
+        db.myOnboarding(state.session.user.id),
+      ]);
       adoptProfileLocale();
-      state.onboarding = await db.myOnboarding(state.session.user.id);
     } catch (e) {
       // Meestal: de SQL-migratie is nog niet gedraaid, dus er is geen
       // profielrij voor deze gebruiker.
@@ -5136,9 +5138,11 @@ function init() {
       return renderLanding();
     }
     if (!wasLoggedIn) {
-      state.profile = await db.myProfile(session.user.id).catch(() => null);
+      [state.profile, state.onboarding] = await Promise.all([
+        db.myProfile(session.user.id).catch(() => null),
+        db.myOnboarding(session.user.id).catch(() => null),
+      ]);
       adoptProfileLocale();
-      state.onboarding = await db.myOnboarding(session.user.id).catch(() => null);
       if (awaitingSignupConfirmation) {
         awaitingSignupConfirmation = false;
         // De gebruiker moet zelf inloggen (zie de gewenste flow); niet

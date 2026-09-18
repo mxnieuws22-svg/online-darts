@@ -511,8 +511,8 @@ drop policy if exists "profiles_update_own" on public.profiles;
 create policy "profiles_update_own"
   on public.profiles for update
   to authenticated
-  using (id = auth.uid())
-  with check (id = auth.uid());
+  using (id = (select auth.uid()))
+  with check (id = (select auth.uid()));
 
 -- De organisator mag elk profiel bijwerken (o.a. om een rol toe te kennen).
 drop policy if exists "profiles_update_organizer" on public.profiles;
@@ -591,8 +591,8 @@ create policy "league_matches_select_own_or_organizer"
   on public.league_matches for select
   to authenticated
   using (
-    player_a_id = auth.uid()
-    or player_b_id = auth.uid()
+    player_a_id = (select auth.uid())
+    or player_b_id = (select auth.uid())
     or public.is_organizer()
   );
 
@@ -680,8 +680,8 @@ create policy "matches_select_own_or_organizer"
   on public.matches for select
   to authenticated
   using (
-    player_a_id = auth.uid()
-    or player_b_id = auth.uid()
+    player_a_id = (select auth.uid())
+    or player_b_id = (select auth.uid())
     or public.is_organizer()
   );
 
@@ -691,13 +691,13 @@ create policy "matches_write_participant_or_organizer"
   to authenticated
   using (
     public.is_organizer()
-    or player_a_id = auth.uid()
-    or player_b_id = auth.uid()
+    or player_a_id = (select auth.uid())
+    or player_b_id = (select auth.uid())
   )
   with check (
     public.is_organizer()
-    or player_a_id = auth.uid()
-    or player_b_id = auth.uid()
+    or player_a_id = (select auth.uid())
+    or player_b_id = (select auth.uid())
   );
 
 drop policy if exists "match_legs_access" on public.match_legs;
@@ -709,7 +709,7 @@ create policy "match_legs_access"
     or exists (
       select 1 from public.matches m
       where m.id = match_legs.match_id
-        and (m.player_a_id = auth.uid() or m.player_b_id = auth.uid())
+        and (m.player_a_id = (select auth.uid()) or m.player_b_id = (select auth.uid()))
     )
   )
   with check (
@@ -717,7 +717,7 @@ create policy "match_legs_access"
     or exists (
       select 1 from public.matches m
       where m.id = match_legs.match_id
-        and (m.player_a_id = auth.uid() or m.player_b_id = auth.uid())
+        and (m.player_a_id = (select auth.uid()) or m.player_b_id = (select auth.uid()))
     )
   );
 
@@ -732,7 +732,7 @@ create policy "match_turns_access"
       from public.match_legs l
       join public.matches m on m.id = l.match_id
       where l.id = match_turns.leg_id
-        and (m.player_a_id = auth.uid() or m.player_b_id = auth.uid())
+        and (m.player_a_id = (select auth.uid()) or m.player_b_id = (select auth.uid()))
     )
   )
   with check (
@@ -742,7 +742,7 @@ create policy "match_turns_access"
       from public.match_legs l
       join public.matches m on m.id = l.match_id
       where l.id = match_turns.leg_id
-        and (m.player_a_id = auth.uid() or m.player_b_id = auth.uid())
+        and (m.player_a_id = (select auth.uid()) or m.player_b_id = (select auth.uid()))
     )
   );
 
@@ -1494,20 +1494,20 @@ drop policy if exists "player_onboarding_select_own_or_organizer" on public.play
 create policy "player_onboarding_select_own_or_organizer"
   on public.player_onboarding for select
   to authenticated
-  using (player_id = auth.uid() or public.is_organizer());
+  using (player_id = (select auth.uid()) or public.is_organizer());
 
 drop policy if exists "player_onboarding_insert_own" on public.player_onboarding;
 create policy "player_onboarding_insert_own"
   on public.player_onboarding for insert
   to authenticated
-  with check (player_id = auth.uid());
+  with check (player_id = (select auth.uid()));
 
 drop policy if exists "player_onboarding_update_own_or_organizer" on public.player_onboarding;
 create policy "player_onboarding_update_own_or_organizer"
   on public.player_onboarding for update
   to authenticated
-  using (player_id = auth.uid() or public.is_organizer())
-  with check (player_id = auth.uid() or public.is_organizer());
+  using (player_id = (select auth.uid()) or public.is_organizer())
+  with check (player_id = (select auth.uid()) or public.is_organizer());
 
 -- updated_at automatisch bijwerken bij elke wijziging.
 create or replace function public.touch_player_onboarding_updated_at()
@@ -1616,7 +1616,7 @@ drop policy if exists "prize_claims_select_own_or_organizer" on public.prize_cla
 create policy "prize_claims_select_own_or_organizer"
   on public.prize_claims for select
   to authenticated
-  using (player_id = auth.uid() or public.is_organizer());
+  using (player_id = (select auth.uid()) or public.is_organizer());
 
 drop policy if exists "prize_claims_write_organizer" on public.prize_claims;
 create policy "prize_claims_write_organizer"
@@ -1665,14 +1665,14 @@ drop policy if exists "prize_notifications_select_own_or_organizer" on public.pr
 create policy "prize_notifications_select_own_or_organizer"
   on public.prize_notifications for select
   to authenticated
-  using (player_id = auth.uid() or public.is_organizer());
+  using (player_id = (select auth.uid()) or public.is_organizer());
 
 drop policy if exists "prize_notifications_update_own" on public.prize_notifications;
 create policy "prize_notifications_update_own"
   on public.prize_notifications for update
   to authenticated
-  using (player_id = auth.uid())
-  with check (player_id = auth.uid());
+  using (player_id = (select auth.uid()))
+  with check (player_id = (select auth.uid()));
 
 
 -- Audit-log van statuswijzigingen. Alleen zichtbaar voor de organisator; de
@@ -2062,14 +2062,14 @@ drop policy if exists "notifications_select_own_or_organizer" on public.notifica
 create policy "notifications_select_own_or_organizer"
   on public.notifications for select
   to authenticated
-  using (player_id = auth.uid() or public.is_organizer());
+  using (player_id = (select auth.uid()) or public.is_organizer());
 
 drop policy if exists "notifications_update_own" on public.notifications;
 create policy "notifications_update_own"
   on public.notifications for update
   to authenticated
-  using (player_id = auth.uid())
-  with check (player_id = auth.uid());
+  using (player_id = (select auth.uid()))
+  with check (player_id = (select auth.uid()));
 
 -- Let op: bewust geen insert-policy - meldingen ontstaan uitsluitend via de
 -- security-definer functies hieronder.
@@ -2098,7 +2098,7 @@ create policy "match_schedule_proposals_select_participants"
     exists (
       select 1 from public.league_matches m
       where m.id = match_schedule_proposals.league_match_id
-        and (m.player_a_id = auth.uid() or m.player_b_id = auth.uid())
+        and (m.player_a_id = (select auth.uid()) or m.player_b_id = (select auth.uid()))
     )
     or public.is_organizer()
   );
@@ -2516,7 +2516,7 @@ drop policy if exists "league_division_history_select_own_or_organizer" on publi
 create policy "league_division_history_select_own_or_organizer"
   on public.league_division_history for select
   to authenticated
-  using (player_id = auth.uid() or public.is_organizer());
+  using (player_id = (select auth.uid()) or public.is_organizer());
 
 -- Let op: bewust geen insert/update-policy - uitsluitend geschreven door
 -- auto_assign_divisions() (security definer), zodat de historie nooit door
@@ -2657,7 +2657,7 @@ create policy "match_schedule_proposal_history_select_participants"
     exists (
       select 1 from public.league_matches m
       where m.id = match_schedule_proposal_history.league_match_id
-        and (m.player_a_id = auth.uid() or m.player_b_id = auth.uid())
+        and (m.player_a_id = (select auth.uid()) or m.player_b_id = (select auth.uid()))
     )
     or public.is_organizer()
   );
@@ -2769,7 +2769,7 @@ create policy "match_chat_messages_select_participants"
     exists (
       select 1 from public.league_matches m
       where m.id = match_chat_messages.league_match_id
-        and (m.player_a_id = auth.uid() or m.player_b_id = auth.uid())
+        and (m.player_a_id = (select auth.uid()) or m.player_b_id = (select auth.uid()))
     )
   );
 
@@ -3302,7 +3302,7 @@ drop policy if exists "tournament_payouts_select_own_or_organizer" on public.tou
 create policy "tournament_payouts_select_own_or_organizer"
   on public.tournament_payouts for select
   to authenticated
-  using (player_id = auth.uid() or public.is_organizer());
+  using (player_id = (select auth.uid()) or public.is_organizer());
 
 drop policy if exists "tournament_payouts_write_organizer" on public.tournament_payouts;
 create policy "tournament_payouts_write_organizer"
@@ -3833,8 +3833,8 @@ drop policy if exists "push_subscriptions_own" on public.push_subscriptions;
 create policy "push_subscriptions_own"
   on public.push_subscriptions for all
   to authenticated
-  using (player_id = auth.uid())
-  with check (player_id = auth.uid());
+  using (player_id = (select auth.uid()))
+  with check (player_id = (select auth.uid()));
 
 alter table public.notifications
   add column if not exists push_sent_at timestamptz;

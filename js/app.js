@@ -744,6 +744,19 @@ const db = {
     return data;
   },
 
+  // Voor het "Laatste activiteit"-blok op Home - ongeacht gelezen-status,
+  // in tegenstelling tot myPendingNotification() hierboven.
+  async myRecentNotifications(limit = 8) {
+    const { data, error } = await sb
+      .from("notifications")
+      .select("*")
+      .eq("player_id", state.profile.id)
+      .order("created_at", { ascending: false })
+      .limit(limit);
+    if (error) throw error;
+    return data || [];
+  },
+
   async markNotificationRead(id) {
     const { error } = await sb.from("notifications").update({ read_at: new Date().toISOString() }).eq("id", id);
     if (error) throw error;
@@ -1597,38 +1610,134 @@ function openNotification(id, route) {
   if (route) go(route); else router();
 }
 
+// "Mijn league & divisie"-kaart op Home: welke league/divisie, positie,
+// aantal spelers en gespeelde wedstrijden - de speler moet in één oogopslag
+// zien waar hij speelt. myRow is de eigen rij uit standingsForLeague().
+function myLeagueOverviewCard(membership, myRow, position, divisionTotal) {
+  if (!membership) {
+    return `<div class="card">${emptyView("Nog niet ingedeeld", "Zodra de organisator je indeelt in een league, zie je hier je overzicht.", "league")}</div>`;
+  }
+  return `
+    <button class="card clickable" onclick="go('mijn-divisie')">
+      <div class="row" style="margin-bottom:${myRow ? "14px" : "0"}">
+        <div class="row-ico">${icon.league}</div>
+        <div class="row-main">
+          <div class="row-title">${esc(membership.league.name)}</div>
+          ${!membership.division ? `<div class="row-sub">Nog niet ingedeeld</div>` : ""}
+        </div>
+      </div>
+      ${myRow ? `
+        <div class="muted" style="font-size:13px">
+          Positie ${position} van ${divisionTotal} &middot; ${myRow.played} gespeeld${myRow.points != null ? ` &middot; ${myRow.points} pt` : ""}
+        </div>` : ""}
+    </button>`;
+}
+
+// Compacte snelkoppelingen naar de belangrijkste pagina's - vervangt de
+// vroegere org-brede lijsten (actieve leagues/toernooien/uitslagen) op
+// Home, die niet speler-centrisch waren en al bereikbaar zijn via het menu.
+function quickActionsGrid() {
+  const tiles = [
+    { label: "Toernooien", route: "toernooien", ico: "tournament" },
+    { label: "Wedstrijden", route: "wedstrijden", ico: "darts" },
+    { label: "Statistieken", route: "statistieken", ico: "chart" },
+    { label: "Mijn divisie", route: "mijn-divisie", ico: "league" },
+  ];
+  return `
+    <div class="grid">
+      ${tiles.map((t) => `
+        <button class="card clickable center" style="padding:16px 10px" onclick="go('${t.route}')">
+          <div style="width:26px;height:26px;margin:0 auto 8px;color:var(--accent)">${icon[t.ico]}</div>
+          <div style="font-size:13px;font-weight:600">${esc(t.label)}</div>
+        </button>`).join("")}
+    </div>`;
+}
+
+// Vertaalt een notificatie-type naar een icoon voor de activiteitenlijst.
+const ACTIVITY_ICON = {
+  division_assigned: "league",
+  league_started: "darts",
+  match_schedule_proposed: "clock",
+  match_schedule_accepted: "clock",
+  match_schedule_countered: "clock",
+  match_schedule_disputed: "warn",
+  match_schedule_withdrawn: "clock",
+  match_deadline_reminder: "clock",
+  match_deadline_expired: "warn",
+};
+
+// "Laatste activiteit" combineert echte notificaties met resultaat-
+// gebeurtenissen die (nog) geen eigen notificatie hebben (report_league_
+// match_result/confirm_league_match_result sturen er geen) - afgeleid uit
+// reported_at/confirmed_at op de wedstrijden van de speler zelf, zodat dit
+// zonder databasewijziging kan. Chatberichten (match_chat_message) horen
+// hier niet thuis: die hebben al hun eigen plek op de wedstrijdpagina.
+function recentActivityItems(notifications, matches, meId) {
+  const items = notifications
+    .filter((n) => n.type !== "match_chat_message")
+    .map((n) => ({ at: n.created_at, title: n.title, body: n.body, ico: ACTIVITY_ICON[n.type] || "bell" }));
+
+  for (const m of matches) {
+    const opponent = m.player_a_id === meId ? m.player_b : m.player_a;
+    const oppName = opponent?.display_name || "je tegenstander";
+    if (m.confirmed_at) {
+      items.push({ at: m.confirmed_at, title: "Uitslag bevestigd", body: `Tegen ${oppName}: ${m.player_a_legs}-${m.player_b_legs}`, ico: "darts" });
+    } else if (m.reported_at) {
+      items.push({ at: m.reported_at, title: "Uitslag doorgegeven", body: `Tegen ${oppName}, wacht op bevestiging`, ico: "darts" });
+    }
+  }
+
+  return items
+    .filter((i) => i.at)
+    .sort((a, b) => new Date(b.at) - new Date(a.at))
+    .slice(0, 6);
+}
+
+function activityList(items) {
+  if (!items.length) return `<div class="card">${emptyView("Nog geen activiteit", "Zodra er iets gebeurt in je league, zie je het hier.", "bell")}</div>`;
+  return `
+    <div class="card">
+      ${items.map((item, i) => `
+        <div class="row" style="padding:8px 0;${i > 0 ? "border-top:1px solid var(--line)" : ""}">
+          <div class="row-ico">${icon[item.ico]}</div>
+          <div class="row-main">
+            <div class="row-title" style="font-size:14px">${esc(item.title)}</div>
+            ${item.body ? `<div class="row-sub">${esc(item.body)}</div>` : ""}
+          </div>
+          <div class="muted" style="font-size:11.5px;flex-shrink:0">${esc(fmtDate(item.at, false))}</div>
+        </div>`).join("")}
+    </div>`;
+}
+
 async function viewHome() {
   const me = state.profile;
   const firstName = (me?.display_name || "").split(" ")[0];
-  const s = me?.stats;
 
-  const [matches, leagues, tournaments, results, prizeNotification, notification, membership] = await Promise.all([
+  const [matches, prizeNotification, notification, membership, recentNotifications] = await Promise.all([
     db.myMatches(me.id),
-    db.leagues("active"),
-    db.upcomingTournaments(),
-    db.recentResults(3),
     db.myPendingPrizeNotification(),
     db.myPendingNotification(),
     db.myLeagueMembership(),
+    db.myRecentNotifications(8),
   ]);
 
   const next = matches.find((m) => m.status === "scheduled" || m.status === "in_progress");
-  const winPct = s && s.matches_played > 0
-    ? Math.round((s.matches_won / s.matches_played) * 100) : 0;
 
-  let myDivisionPosition = null;
-  let myDivisionTotal = 0;
+  let myRow = null, position = null, divisionTotal = 0;
   if (membership) {
     const standings = await db.standingsForLeague(membership.league.id);
     const inMyDivision = standings.filter((r) => r.divisionId === membership.division?.id);
-    myDivisionTotal = inMyDivision.length;
+    divisionTotal = inMyDivision.length;
     const idx = inMyDivision.findIndex((r) => r.player.id === me.id);
-    myDivisionPosition = idx >= 0 ? idx + 1 : null;
+    position = idx >= 0 ? idx + 1 : null;
+    myRow = inMyDivision[idx] || null;
   }
 
+  const activity = recentActivityItems(recentNotifications, matches, me.id);
+
   setView(`
-    <h1>Hoi ${esc(firstName)}</h1>
-    <p class="sub">${esc(new Date().toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long" }))}</p>
+    <h1>Welkom terug, ${esc(firstName)}</h1>
+    <p class="sub">Dit is jouw darts-overzicht.</p>
 
     ${prizeNotification ? `
       <button class="card clickable" style="border-color:#F5B94266;background:#F5B94214;margin-bottom:16px"
@@ -1654,34 +1763,35 @@ async function viewHome() {
         </div>
       </button>` : ""}
 
-    ${membership ? `
-      <button class="card clickable" style="margin-bottom:16px" onclick="go('mijn-divisie')">
-        <div class="row">
-          <div class="row-ico">${icon.league}</div>
-          <div class="row-main">
-            <div class="row-title">Mijn competitie</div>
-            <div class="row-sub">${esc(membership.league.name)}${membership.division ? "" : " &middot; Nog niet ingedeeld"}</div>
-          </div>
-          ${myDivisionPosition ? `<div class="muted" style="font-size:13px;flex-shrink:0">Plaats ${myDivisionPosition} van ${myDivisionTotal}</div>` : ""}
-        </div>
-      </button>` : ""}
-
-    <div class="grid" style="grid-template-columns:repeat(2,1fr)">
-      ${statCard({ label: "Gemiddelde", value: (s?.average_score ?? 0).toFixed(1), ico: "trend" })}
-      ${statCard({ label: "Gewonnen", value: winPct + "%", ico: "trophy", color: "#2ECC71" })}
+    <div class="home-top-grid">
+      <div>
+        ${sectionHead("Eerstvolgende wedstrijd", "Alle wedstrijden", "wedstrijden")}
+        ${next ? `
+          ${matchCard(next)}
+          <button class="btn ghost sm" style="margin-top:-4px" onclick="go('mijn-divisie/${esc(next.id)}')">Wedstrijd bekijken</button>
+        ` : emptyView("Niets ingepland", "Zodra de organisator een wedstrijd voor je inplant, staat hij hier.", "darts")}
+      </div>
+      <div>
+        ${sectionHead("Mijn league & divisie")}
+        ${myLeagueOverviewCard(membership, myRow, position, divisionTotal)}
+      </div>
     </div>
 
-    ${sectionHead("Je volgende wedstrijd", "Alle wedstrijden", "wedstrijden")}
-    ${next ? matchCard(next) : emptyView("Niets ingepland", "Zodra de organisator een wedstrijd voor je inplant, staat hij hier.", "darts")}
+    ${myRow ? `
+      ${sectionHead("League-overzicht")}
+      <div class="grid">
+        ${statCard({ label: "Positie", value: `${position}/${divisionTotal}`, ico: "league" })}
+        ${statCard({ label: "Gespeeld", value: myRow.played, ico: "darts" })}
+        ${statCard({ label: "Gemiddelde", value: Number(myRow.displayAverage ?? 0).toFixed(1), ico: "trend" })}
+        ${statCard({ label: "Punten", value: myRow.points, ico: "trophy", color: "#2ECC71" })}
+      </div>
+    ` : ""}
 
-    ${sectionHead("Actieve leagues", "Alle leagues", "leagues")}
-    ${leagues.length ? leagues.slice(0, 3).map((l) => leagueCard(l)).join("") : emptyView("Geen actieve leagues", "", "league")}
+    ${sectionHead("Snelle acties")}
+    ${quickActionsGrid()}
 
-    ${sectionHead("Aankomende toernooien", "Alle toernooien", "toernooien")}
-    ${tournaments.length ? tournaments.map(tournamentCard).join("") : emptyView("Geen toernooien gepland", "", "tournament")}
-
-    ${sectionHead("Laatste uitslagen")}
-    ${results.length ? results.map(matchCard).join("") : emptyView("Nog geen uitslagen", "", "darts")}
+    ${sectionHead("Laatste activiteit")}
+    ${activityList(activity)}
   `);
 }
 

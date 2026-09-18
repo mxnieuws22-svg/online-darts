@@ -2128,16 +2128,15 @@ create trigger on_match_schedule_proposals_touch
   execute function public.touch_match_schedule_proposals_updated_at();
 
 
--- Round-robin binnen elke divisie van minimaal 4 spelers. Elke wedstrijd
--- krijgt zijn eigen available_at (moment waarop deze specifieke wedstrijd
--- beschikbaar werd) en deadline_at = available_at + match_deadline_days -
--- zie sectie 13: dit hangt nooit af van een andere wedstrijd. Vandaag
--- ontstaan alle wedstrijden van een divisie nog gelijktijdig (bij het
--- starten van de league), dus available_at = league.start_at voor
--- iedereen; zodra wedstrijden per ronde vrijgegeven worden, wordt dit per
--- aanroep ingevuld met het eigen moment van die ronde. Intern (geen grant
--- naar authenticated/anon): wordt alleen aangeroepen door activate_league
--- hieronder.
+-- Round-robin binnen elke divisie van minimaal 4 spelers, met een aparte
+-- ronde per week (standaard circle method): ronde r wordt (r-1) weken na de
+-- leaguestart beschikbaar, dus elke speler speelt 1 wedstrijd per week in
+-- plaats van dat alle wedstrijden tegelijk opengaan. Bij een oneven aantal
+-- spelers krijgt in elke ronde precies één speler een bye. Elke wedstrijd
+-- krijgt zijn eigen available_at/deadline_at (zie sectie 13) - dit hangt
+-- nooit af van een andere wedstrijd. Intern (geen grant naar
+-- authenticated/anon): wordt alleen aangeroepen door activate_league
+-- hieronder (via de on_leagues_activated-trigger, zie verderop).
 create or replace function public.generate_league_matches(p_league_id uuid)
 returns int
 language plpgsql
@@ -2146,10 +2145,17 @@ set search_path = public
 as $$
 declare
   v_league record;
+  div record;
+  arr uuid[];
+  n int;
+  rnd int;
+  i int;
+  a uuid;
+  b uuid;
+  last_val uuid;
   v_available timestamptz;
   v_deadline timestamptz;
   v_count int := 0;
-  rec record;
 begin
   select * into v_league from public.leagues where id = p_league_id;
   if v_league is null then
@@ -2159,28 +2165,46 @@ begin
     raise exception 'League heeft nog geen startmoment.';
   end if;
 
-  v_available := v_league.start_at;
-  v_deadline := v_available + make_interval(days => v_league.match_deadline_days);
-
-  for rec in
-    select a.player_id as a_id, b.player_id as b_id, a.division_id as div_id
-    from public.league_players a
-    join public.league_players b
-      on b.league_id = a.league_id
-     and b.division_id = a.division_id
-     and b.player_id > a.player_id
-    where a.league_id = p_league_id
-      and a.division_id is not null
-      and (select count(*) from public.league_players lp where lp.division_id = a.division_id) >= 4
+  for div in
+    select division_id, array_agg(player_id order by player_id) as pids
+    from public.league_players
+    where league_id = p_league_id and division_id is not null
+    group by division_id
+    having count(*) >= 4
   loop
-    insert into public.league_matches
-      (league_id, division_id, player_a_id, player_b_id, scheduled_at, available_at, deadline_at, status)
-    values
-      (p_league_id, rec.div_id, rec.a_id, rec.b_id, v_available, v_available, v_deadline, 'scheduled')
-    on conflict (league_id, division_id, least(player_a_id, player_b_id), greatest(player_a_id, player_b_id))
-      where division_id is not null
-      do nothing;
-    v_count := v_count + 1;
+    arr := div.pids;
+    n := array_length(arr, 1);
+    if n % 2 = 1 then
+      arr := arr || null::uuid; -- bye-plek zodat iedere ronde evenveel paren heeft
+      n := n + 1;
+    end if;
+
+    for rnd in 0 .. n - 2 loop
+      v_available := v_league.start_at + make_interval(weeks => rnd);
+      v_deadline := v_available + make_interval(days => v_league.match_deadline_days);
+
+      for i in 1 .. n / 2 loop
+        a := arr[i];
+        b := arr[n + 1 - i];
+        if a is not null and b is not null then
+          insert into public.league_matches
+            (league_id, division_id, player_a_id, player_b_id, round_number, scheduled_at, available_at, deadline_at, status)
+          values
+            (p_league_id, div.division_id, a, b, rnd + 1, v_available, v_available, v_deadline, 'scheduled')
+          on conflict (league_id, division_id, least(player_a_id, player_b_id), greatest(player_a_id, player_b_id))
+            where division_id is not null
+            do nothing;
+          v_count := v_count + 1;
+        end if;
+      end loop;
+
+      -- Roteer iedereen behalve positie 1 (standaard circle method).
+      last_val := arr[n];
+      for i in reverse n .. 3 loop
+        arr[i] := arr[i - 1];
+      end loop;
+      arr[2] := last_val;
+    end loop;
   end loop;
 
   return v_count;
@@ -2567,10 +2591,13 @@ create trigger on_league_players_single_active_league
 -- available_at: het moment waarop DEZE wedstrijd beschikbaar werd (ligt vast
 -- vanaf aanmaken, verandert nooit - ook niet als spelers via propose/respond
 -- een ander scheduled_at afspreken). deadline_at bestond al (sectie 11).
+-- round_number: ronde binnen de round-robin-indeling (zie generate_league_
+-- matches hierboven, dat 1 ronde per week vrijgeeft).
 alter table public.league_matches
   add column if not exists available_at timestamptz,
   add column if not exists reminder_sent_at timestamptz,
-  add column if not exists deadline_expired_at timestamptz;
+  add column if not exists deadline_expired_at timestamptz,
+  add column if not exists round_number int check (round_number is null or round_number > 0);
 
 update public.league_matches
   set available_at = scheduled_at

@@ -3639,6 +3639,10 @@ as $$
 declare
   m public.league_matches%rowtype;
   v_legs_per_match int;
+  v_required_keys text[] := array['scoring_average', 'first9_average', 'checkouts_hit',
+    'checkout_attempts', 'darts_thrown', 'best_leg_darts', 'score_60_plus',
+    'score_80_plus', 'score_100_plus', 'score_140_plus'];
+  v_key text;
 begin
   if auth.uid() is null then
     raise exception 'Je moet ingelogd zijn.';
@@ -3677,6 +3681,14 @@ begin
       raise exception 'De gekozen winnaar komt niet overeen met de legscore.';
     end if;
   end if;
+
+  -- De uitgebreide statistieken (sectie 18) zijn verplicht voor beide
+  -- spelers - alleen Gemiddelde/180's/Hoogste finish blijven optioneel.
+  foreach v_key in array v_required_keys loop
+    if (p_extra_a->>v_key) is null or (p_extra_b->>v_key) is null then
+      raise exception 'Vul alle statistieken in voor beide spelers (Scoring, Eerste 9 gem., Checkouts, Worpen, Beste leg, 60+/80+/100+/140+).';
+    end if;
+  end loop;
 
   update public.league_matches set
     winner_id                    = p_winner_id,

@@ -4097,6 +4097,219 @@ alter table public.tournament_entries
 comment on column public.tournament_entries.tikkie_sent_at is 'Set by the organizer once they have sent this player a Tikkie payment request. Purely informational (a to-do check for the organizer) - does not affect the payment deadline, which still counts from created_at.';
 
 
+-- ============================================================================
+-- 26. Performance: op tien tabellen bestond zowel een ruime SELECT-policy
+--     (using true, of een voorwaarde die minstens zo ruim is) als een losse
+--     "for all"-organisatorpolicy uit een eerdere sectie die óók SELECT
+--     dekt. Postgres evalueert bij meerdere permissieve policies op
+--     dezelfde actie ze allemaal en combineert ze met OR, dus elke read op
+--     deze tabellen deed een extra, overbodige aanroep van is_organizer()
+--     (een subquery op profiles) bovenop de policy die het lezen toch al
+--     toestond. Supabase's eigen performance-advisor (lint
+--     "multiple_permissive_policies") wees hier expliciet op. Dit splitst
+--     elke betrokken "for all"-policy op in aparte insert/update/delete-
+--     policies (geen enkele rechtenwijziging - alleen de dubbele SELECT-
+--     evaluatie verdwijnt), en voegt de twee UPDATE-policies op profiles
+--     (eigen profiel/organisator) samen tot één.
+-- ============================================================================
+
+drop policy if exists "leagues_write_organizer" on public.leagues;
+create policy "leagues_insert_organizer"
+  on public.leagues for insert
+  to authenticated
+  with check (public.is_organizer());
+create policy "leagues_update_organizer"
+  on public.leagues for update
+  to authenticated
+  using (public.is_organizer())
+  with check (public.is_organizer());
+create policy "leagues_delete_organizer"
+  on public.leagues for delete
+  to authenticated
+  using (public.is_organizer());
+
+drop policy if exists "league_players_write_organizer" on public.league_players;
+create policy "league_players_insert_organizer"
+  on public.league_players for insert
+  to authenticated
+  with check (public.is_organizer());
+create policy "league_players_update_organizer"
+  on public.league_players for update
+  to authenticated
+  using (public.is_organizer())
+  with check (public.is_organizer());
+create policy "league_players_delete_organizer"
+  on public.league_players for delete
+  to authenticated
+  using (public.is_organizer());
+
+drop policy if exists "league_divisions_write_organizer" on public.league_divisions;
+create policy "league_divisions_insert_organizer"
+  on public.league_divisions for insert
+  to authenticated
+  with check (public.is_organizer());
+create policy "league_divisions_update_organizer"
+  on public.league_divisions for update
+  to authenticated
+  using (public.is_organizer())
+  with check (public.is_organizer());
+create policy "league_divisions_delete_organizer"
+  on public.league_divisions for delete
+  to authenticated
+  using (public.is_organizer());
+
+drop policy if exists "tournaments_write_organizer" on public.tournaments;
+create policy "tournaments_insert_organizer"
+  on public.tournaments for insert
+  to authenticated
+  with check (public.is_organizer());
+create policy "tournaments_update_organizer"
+  on public.tournaments for update
+  to authenticated
+  using (public.is_organizer())
+  with check (public.is_organizer());
+create policy "tournaments_delete_organizer"
+  on public.tournaments for delete
+  to authenticated
+  using (public.is_organizer());
+
+drop policy if exists "tournament_entries_write_organizer" on public.tournament_entries;
+create policy "tournament_entries_insert_organizer"
+  on public.tournament_entries for insert
+  to authenticated
+  with check (public.is_organizer());
+create policy "tournament_entries_update_organizer"
+  on public.tournament_entries for update
+  to authenticated
+  using (public.is_organizer())
+  with check (public.is_organizer());
+create policy "tournament_entries_delete_organizer"
+  on public.tournament_entries for delete
+  to authenticated
+  using (public.is_organizer());
+
+drop policy if exists "tournament_matches_write_organizer" on public.tournament_matches;
+create policy "tournament_matches_insert_organizer"
+  on public.tournament_matches for insert
+  to authenticated
+  with check (public.is_organizer());
+create policy "tournament_matches_update_organizer"
+  on public.tournament_matches for update
+  to authenticated
+  using (public.is_organizer())
+  with check (public.is_organizer());
+create policy "tournament_matches_delete_organizer"
+  on public.tournament_matches for delete
+  to authenticated
+  using (public.is_organizer());
+
+drop policy if exists "player_statistics_write_organizer" on public.player_statistics;
+create policy "player_statistics_insert_organizer"
+  on public.player_statistics for insert
+  to authenticated
+  with check (public.is_organizer());
+create policy "player_statistics_update_organizer"
+  on public.player_statistics for update
+  to authenticated
+  using (public.is_organizer())
+  with check (public.is_organizer());
+create policy "player_statistics_delete_organizer"
+  on public.player_statistics for delete
+  to authenticated
+  using (public.is_organizer());
+
+drop policy if exists "division_winners_write_organizer" on public.division_winners;
+create policy "division_winners_insert_organizer"
+  on public.division_winners for insert
+  to authenticated
+  with check (public.is_organizer());
+create policy "division_winners_update_organizer"
+  on public.division_winners for update
+  to authenticated
+  using (public.is_organizer())
+  with check (public.is_organizer());
+create policy "division_winners_delete_organizer"
+  on public.division_winners for delete
+  to authenticated
+  using (public.is_organizer());
+
+-- matches: de SELECT-policy (matches_select_own_or_organizer) dekt precies
+-- dezelfde voorwaarde als de oude "for all"-policy, dus die evalueerde
+-- exact dezelfde (sub)query twee keer bij elke read.
+drop policy if exists "matches_write_participant_or_organizer" on public.matches;
+create policy "matches_insert_participant_or_organizer"
+  on public.matches for insert
+  to authenticated
+  with check (
+    public.is_organizer()
+    or player_a_id = (select auth.uid())
+    or player_b_id = (select auth.uid())
+  );
+create policy "matches_update_participant_or_organizer"
+  on public.matches for update
+  to authenticated
+  using (
+    public.is_organizer()
+    or player_a_id = (select auth.uid())
+    or player_b_id = (select auth.uid())
+  )
+  with check (
+    public.is_organizer()
+    or player_a_id = (select auth.uid())
+    or player_b_id = (select auth.uid())
+  );
+create policy "matches_delete_participant_or_organizer"
+  on public.matches for delete
+  to authenticated
+  using (
+    public.is_organizer()
+    or player_a_id = (select auth.uid())
+    or player_b_id = (select auth.uid())
+  );
+
+drop policy if exists "prize_claims_write_organizer" on public.prize_claims;
+create policy "prize_claims_insert_organizer"
+  on public.prize_claims for insert
+  to authenticated
+  with check (public.is_organizer());
+create policy "prize_claims_update_organizer"
+  on public.prize_claims for update
+  to authenticated
+  using (public.is_organizer())
+  with check (public.is_organizer());
+create policy "prize_claims_delete_organizer"
+  on public.prize_claims for delete
+  to authenticated
+  using (public.is_organizer());
+
+drop policy if exists "tournament_payouts_write_organizer" on public.tournament_payouts;
+create policy "tournament_payouts_insert_organizer"
+  on public.tournament_payouts for insert
+  to authenticated
+  with check (public.is_organizer());
+create policy "tournament_payouts_update_organizer"
+  on public.tournament_payouts for update
+  to authenticated
+  using (public.is_organizer())
+  with check (public.is_organizer());
+create policy "tournament_payouts_delete_organizer"
+  on public.tournament_payouts for delete
+  to authenticated
+  using (public.is_organizer());
+
+-- profiles: twee permissieve UPDATE-policies (eigen profiel / organisator,
+-- zie sectie 6) samenvoegen tot één - de trigger die de rolkolom beschermt
+-- blijft de eigenlijke bescherming tegen het zelf toekennen van een rol,
+-- ongeacht welke van de twee voorwaarden de update toestond.
+drop policy if exists "profiles_update_own" on public.profiles;
+drop policy if exists "profiles_update_organizer" on public.profiles;
+create policy "profiles_update_own_or_organizer"
+  on public.profiles for update
+  to authenticated
+  using (id = (select auth.uid()) or public.is_organizer())
+  with check (id = (select auth.uid()) or public.is_organizer());
+
+
 -- ----------------------------------------------------------------------------
 -- TODO's voor een volgende migratie
 -- ----------------------------------------------------------------------------

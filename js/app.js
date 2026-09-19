@@ -321,6 +321,12 @@ const TOURNAMENT_STATUS_COLORS = {
   finished: "#9B7BD9",
 };
 
+function tournamentMatchFormatLabel(t) {
+  return t.match_format === "best_of_sets"
+    ? `best of ${t.sets_per_match} sets (first to ${t.legs_per_set})`
+    : `best of ${t.legs_per_match}`;
+}
+
 function tournamentDisplayStatus(t, entryCount = 0) {
   let key;
   if (t.status === "draft") key = "draft";
@@ -448,6 +454,7 @@ function tournamentCard(t, opts = {}) {
   const { entryCount = 0, isMine = false, paidCount = 0 } = opts;
   const meta = [
     TOURNAMENT_TYPES[t.tournament_type] || t.tournament_type,
+    `${t.game_type} · ${tournamentMatchFormatLabel(t)}`,
     t.start_at ? fmtDate(t.start_at) : null,
   ].filter(Boolean).join(" · ");
   const platformLabel = t.platform === "online" ? "Online" : t.platform === "offline" ? "Offline" : null;
@@ -464,12 +471,12 @@ function tournamentCard(t, opts = {}) {
       <div style="margin:0 0 10px">${tournamentStatusBadge(t, entryCount)}</div>
       <div class="muted" style="font-size:13px;display:flex;flex-wrap:wrap;gap:4px 12px;margin-bottom:12px">
         ${platformLabel ? `<span>${esc(platformLabel)}${scoringLabel ? " · " + esc(scoringLabel) : ""}</span>` : ""}
-        <span>${entryCount}${t.max_players ? `/${t.max_players}` : ""} spelers</span>
-        ${isMine ? `<span style="color:var(--accent);font-weight:600">Jij doet mee</span>` : ""}
+        <span>${entryCount}${t.max_players ? `/${t.max_players}` : ""} players</span>
+        ${isMine ? `<span style="color:var(--accent);font-weight:600">You're taking part</span>` : ""}
       </div>
       ${t.entry_fee > 0 ? `<div class="muted" style="font-size:13px;margin-bottom:8px">Entry fee: ${esc(fmtMoney(t.entry_fee, t.prize_currency))}</div>` : ""}
       <div style="margin-bottom:14px">${prizeLine(t, paidCount)}</div>
-      <button class="btn ghost sm block" onclick="go('toernooien/${esc(t.id)}')">Bekijk toernooi</button>
+      <button class="btn ghost sm block" onclick="go('toernooien/${esc(t.id)}')">View tournament</button>
     </div>`;
 }
 
@@ -2763,6 +2770,7 @@ async function viewTournamentDetail(id) {
 
     <div class="card" style="margin-bottom:16px">
       ${infoRow("Format", esc(TOURNAMENT_TYPES[t.tournament_type] || t.tournament_type))}
+      ${infoRow("Match format", esc(`${t.game_type} · ${tournamentMatchFormatLabel(t)}`))}
       ${platformLabel ? infoRow("Play mode", esc(platformLabel + (scoringLabel ? ` · ${scoringLabel}` : ""))) : ""}
       ${infoRow("Entrants", `${activeEntries.length}${t.max_players ? `/${t.max_players}` : ""}`)}
       ${t.min_players ? infoRow("Minimum number of players", String(t.min_players)) : ""}
@@ -3088,7 +3096,7 @@ async function viewMatches() {
         ? m.player_b?.display_name : m.player_a?.display_name;
       return `
         ${matchCard(m)}
-        <p class="muted" style="margin:-4px 0 14px;font-size:13px">Awaiting confirmation van ${esc(opponentName || "je tegenstander")}</p>`;
+        <p class="muted" style="margin:-4px 0 14px;font-size:13px">Awaiting confirmation from ${esc(opponentName || "your opponent")}</p>`;
     }
     return `
       ${matchCard(m)}
@@ -3377,7 +3385,7 @@ async function viewManageTournaments() {
           entryCount: countByTournament[t.id] || 0,
           paidCount: paidCountByTournament[t.id] || 0,
         })).join("")
-        : emptyView("Nog geen toernooien", "Create your first tournament.", "tournament")}
+        : emptyView("No tournaments yet", "Create your first tournament.", "tournament")}
     </div>
   `);
 }
@@ -3568,6 +3576,22 @@ function openTournamentDialog(existing) {
         </select>
       </div>
     </div>
+    <div class="field"><div class="field-pair-label">Match format</div>
+      <select id="tmf" onchange="toggleMatchFormatFields(this.value)">
+        <option value="best_of_legs" ${t.match_format !== "best_of_sets" ? "selected" : ""}>Legs</option>
+        <option value="best_of_sets" ${t.match_format === "best_of_sets" ? "selected" : ""}>Sets</option>
+      </select>
+    </div>
+    <div id="legsField" class="field" style="display:${t.match_format === "best_of_sets" ? "none" : "block"}">
+      <div class="field-pair-label">Legs per match</div>
+      <input id="tlpm" type="number" min="1" value="${t.legs_per_match || 10}">
+    </div>
+    <div id="setsFields" class="field-pair" style="display:${t.match_format === "best_of_sets" ? "grid" : "none"}">
+      <div><div class="field-pair-label">Sets per match</div>
+        <input id="tspm" type="number" min="1" value="${t.sets_per_match || 5}"></div>
+      <div><div class="field-pair-label">Legs per set</div>
+        <input id="tlps" type="number" min="1" value="${t.legs_per_set || 3}"></div>
+    </div>
     <div class="field-pair">
       <div><div class="field-pair-label">Play mode</div>
         <select id="tp">
@@ -3658,6 +3682,17 @@ function openTournamentDialog(existing) {
       if (entryFee != null && entryFee < 0) throw new Error("Entry fee cannot be negative.");
       const isPaid = entryFee != null && entryFee > 0;
 
+      const matchFormat = bg.querySelector("#tmf").value;
+      const legsPerMatch = Number(bg.querySelector("#tlpm").value) || 10;
+      const setsPerMatch = Number(bg.querySelector("#tspm").value) || 5;
+      const legsPerSet = Number(bg.querySelector("#tlps").value) || 3;
+      if (matchFormat === "best_of_legs" && legsPerMatch < 1) {
+        throw new Error("Legs per match must be at least 1.");
+      }
+      if (matchFormat === "best_of_sets" && (setsPerMatch < 1 || legsPerSet < 1)) {
+        throw new Error("Sets per match and legs per set must be at least 1.");
+      }
+
       const prizeType = bg.querySelector("#tprize").value;
       const poolType = bg.querySelector("#tpooltype")?.value || null;
       const amount = bg.querySelector("#tamount")?.value;
@@ -3684,6 +3719,10 @@ function openTournamentDialog(existing) {
         name,
         tournament_type: bg.querySelector("#tt").value,
         game_type: bg.querySelector("#tg").value,
+        match_format: matchFormat,
+        legs_per_match: legsPerMatch,
+        sets_per_match: matchFormat === "best_of_sets" ? setsPerMatch : null,
+        legs_per_set: matchFormat === "best_of_sets" ? legsPerSet : null,
         platform: bg.querySelector("#tp").value || null,
         scoring_platform: bg.querySelector("#tsp").value || null,
         start_at: d ? new Date(d).toISOString() : null,
@@ -3731,6 +3770,13 @@ function togglePrizeFields(prizeType) {
 function togglePaidFields(entryFeeValue) {
   const el = document.getElementById("paidFields");
   if (el) el.style.display = Number(entryFeeValue) > 0 ? "block" : "none";
+}
+
+function toggleMatchFormatFields(matchFormat) {
+  const legsEl = document.getElementById("legsField");
+  const setsEl = document.getElementById("setsFields");
+  if (legsEl) legsEl.style.display = matchFormat === "best_of_sets" ? "none" : "block";
+  if (setsEl) setsEl.style.display = matchFormat === "best_of_sets" ? "grid" : "none";
 }
 
 function togglePoolType(poolType) {
@@ -3827,7 +3873,7 @@ function openRejectPaymentDialog(entryId) {
 
 function openRefundConfirm(entry, currency) {
   if (!entry) return;
-  const name = entry.player?.display_name || "deze speler";
+  const name = entry.player?.display_name || "this player";
   const amount = entry.amount_paid ?? 0;
   openModal("Register refund", `
     <p style="margin:0 0 4px">Confirm that you <strong style="color:var(--white)">${esc(fmtMoney(amount, currency))}</strong> have refunded <strong style="color:var(--white)">${esc(name)}</strong> via Tikkie.</p>

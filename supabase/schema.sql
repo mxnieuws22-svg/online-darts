@@ -3962,6 +3962,36 @@ revoke all on function public.notif_text(text, jsonb) from public, anon, authent
 -- Daarna kun je vanuit de app andere spelers promoveren.
 
 
+-- ============================================================================
+-- 24. Match format for tournaments: legs or sets. Tournaments so far only
+--     had match_format='best_of_legs' as a fixed label with no configurable
+--     leg count at all. This adds a real choice between a legs-only match
+--     (legs_per_match) and a sets match (sets_per_match sets, each set
+--     played to legs_per_set legs) - the standard darts convention.
+-- ============================================================================
+
+alter table public.tournaments
+  drop constraint tournaments_match_format_check,
+  add constraint tournaments_match_format_check
+    check (match_format in ('best_of_legs', 'best_of_sets'));
+
+alter table public.tournaments
+  add column if not exists legs_per_match integer not null default 10
+    check (legs_per_match > 0),
+  add column if not exists sets_per_match integer
+    check (sets_per_match is null or sets_per_match > 0),
+  add column if not exists legs_per_set integer
+    check (legs_per_set is null or legs_per_set > 0);
+
+alter table public.tournaments
+  add constraint tournaments_sets_format_fields_check
+    check (match_format <> 'best_of_sets' or (sets_per_match is not null and legs_per_set is not null));
+
+comment on column public.tournaments.legs_per_match is 'Used when match_format = best_of_legs: total number of legs a match is played over.';
+comment on column public.tournaments.sets_per_match is 'Used when match_format = best_of_sets: number of sets a match is played over.';
+comment on column public.tournaments.legs_per_set is 'Used when match_format = best_of_sets: number of legs each set is played over.';
+
+
 -- ----------------------------------------------------------------------------
 -- TODO's voor een volgende migratie
 -- ----------------------------------------------------------------------------

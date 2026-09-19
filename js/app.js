@@ -33,738 +33,6 @@ const state = {
 
 const app = document.getElementById("app");
 
-/* -------------------------------------------------------------------------
-   1b. Taal (NL/EN)
-
-   De app wordt intern altijd in het Engels opgebouwd (alle HTML-strings
-   verderop in dit bestand blijven Engels) - Nederlands is een vertaallaag
-   die na elke render over de DOM heen loopt (translateNode/MutationObserver
-   hieronder) en exacte/patroon-matches uit I18N_NL vervangt. Dat betekent:
-   geen enkele render-/component-functie hoeft aangepast te worden, en een
-   niet-vertaalde (of dynamische, bv. een spelersnaam) tekst blijft gewoon
-   onvertaald zichtbaar in plaats van te breken.
-
-   Taalvoorkeur: vóór inloggen alleen in localStorage (zichtbaar/instelbaar
-   op de hoofdpagina, zie renderLanding); na inloggen ook bij het profiel
-   bewaard (profiles.locale) zodat database-gegenereerde meldingen en de
-   e-mail/push-kanalen (die simpelweg doorsturen wat de database als
-   title/body meegeeft) in de taal van de ontvanger aankomen.
-   ------------------------------------------------------------------------- */
-
-let locale = (() => {
-  try {
-    const saved = localStorage.getItem("locale");
-    if (saved === "nl" || saved === "en") return saved;
-  } catch (e) { /* localStorage niet beschikbaar (privénavigatie e.d.) */ }
-  return "nl";
-})();
-
-// Voor <input type="datetime-local">/toLocaleDateString/toLocaleTimeString.
-function dateLocale() {
-  return locale === "nl" ? "nl-NL" : "en-GB";
-}
-
-// Vóór inloggen is er geen router() om opnieuw te renderen - elk pre-auth-
-// scherm (renderLanding/renderLogin/enz.) zet zichzelf hier neer zodat
-// setLocale() weet wat het opnieuw moet tekenen.
-let currentPreAuthRender = null;
-
-// Na inloggen wint de opgeslagen taalvoorkeur van het profiel (bv. na
-// inloggen op een nieuw toestel dat nog geen eigen voorkeur had).
-function adoptProfileLocale() {
-  const l = state.profile?.locale;
-  if ((l === "nl" || l === "en") && l !== locale) {
-    locale = l;
-    try { localStorage.setItem("locale", l); } catch (e) { /* zie hierboven */ }
-  }
-}
-
-function setLocale(l) {
-  if (l !== "nl" && l !== "en") return;
-  if (l === locale) return;
-  locale = l;
-  try { localStorage.setItem("locale", l); } catch (e) { /* zie hierboven */ }
-  if (state.profile?.id && sb) {
-    sb.from("profiles").update({ locale: l }).eq("id", state.profile.id).then(() => {});
-  }
-  if (state.session) {
-    router();
-  } else if (currentPreAuthRender) {
-    currentPreAuthRender();
-  }
-}
-
-function langSwitcher(extraStyle = "") {
-  return `
-    <div class="lang-switch" style="display:inline-flex;border:1px solid var(--line);border-radius:999px;padding:2px;gap:2px;${extraStyle}">
-      <button type="button" class="btn ghost sm" style="padding:4px 10px;border-radius:999px;${locale === "nl" ? "background:var(--line)" : ""}" onclick="setLocale('nl')" aria-pressed="${locale === "nl"}">NL</button>
-      <button type="button" class="btn ghost sm" style="padding:4px 10px;border-radius:999px;${locale === "en" ? "background:var(--line)" : ""}" onclick="setLocale('en')" aria-pressed="${locale === "en"}">EN</button>
-    </div>`;
-}
-
-// Vertaalt exacte tekstnodes/attributen tegen I18N_NL; alles wat niet
-// voorkomt (namen, cijfers, datums die al los locale-aware geformatteerd
-// worden, enz.) blijft ongemoeid staan.
-function translateNode(node) {
-  if (locale !== "nl") return;
-  if (node.nodeType === Node.TEXT_NODE) {
-    const raw = node.textContent;
-    const trimmed = raw.trim();
-    if (!trimmed) return;
-    const exact = I18N_NL.get(trimmed);
-    if (exact) {
-      node.textContent = raw.replace(trimmed, exact);
-      return;
-    }
-    for (const [re, fn] of I18N_PATTERNS) {
-      const m = trimmed.match(re);
-      if (m) {
-        node.textContent = raw.replace(trimmed, fn(...m));
-        return;
-      }
-    }
-    return;
-  }
-  if (node.nodeType !== Node.ELEMENT_NODE) return;
-  for (const attr of ["placeholder", "aria-label", "alt", "title"]) {
-    const v = node.getAttribute?.(attr);
-    if (v && I18N_NL.has(v)) node.setAttribute(attr, I18N_NL.get(v));
-  }
-  node.childNodes.forEach(translateNode);
-}
-
-function translatePage(root = document.body) {
-  translateNode(root);
-}
-
-// Vertaaltabel EN -> NL. Geen sleutels, gewoon de exacte Engelse tekst
-// zoals die gerenderd wordt (zie translateNode hierboven) - zo hoeft geen
-// enkele render-/component-functie omgebouwd te worden en blijft alles wat
-// hier nog niet in staat gewoon Engels zichtbaar (nooit kapot).
-const I18N_NL = new Map(Object.entries({
-  "For every darts player": "Voor elke darter",
-  "Log in": "Inloggen",
-  "Log out": "Uitloggen",
-  "Save": "Opslaan",
-  "Cancel": "Annuleren",
-  "Close": "Sluiten",
-  "Working...": "Bezig...",
-  "Back": "Terug",
-  "Draft": "Concept",
-  "Active": "Actief",
-  "Finished": "Afgerond",
-  "Scheduled": "Gepland",
-  "In progress": "Bezig",
-  "Awaiting confirmation": "Wacht op bevestiging",
-  "Confirmed": "Bevestigd",
-  "Cancelled": "Geannuleerd",
-  "Played": "Gespeeld",
-  "Not started yet": "Nog niet gestart",
-  "Time confirmed": "Afspraak bevestigd",
-  "Time proposed": "Afspraak voorgesteld",
-  "Available": "Beschikbaar",
-  "Coming up": "Binnenkort",
-  "Registration open": "Inschrijving geopend",
-  "Registration closed": "Inschrijving gesloten",
-  "Full": "Vol",
-  "Claim in progress": "Bezig met claimen",
-  "Claim submitted": "Aanvraag ingediend",
-  "Under review": "Wordt beoordeeld",
-  "Contact to follow": "Contact volgt nog",
-  "Being made": "Wordt gemaakt",
-  "Ready for pickup": "Klaar om op te halen",
-  "Delivered": "Uitgereikt",
-  "Payment not yet reported": "Betaling nog niet gemeld",
-  "Payment reported, awaiting confirmation": "Betaling gemeld, wacht op bevestiging",
-  "Payment confirmed": "Betaling bevestigd",
-  "Payment rejected/expired": "Betaling afgewezen/verlopen",
-  "Refunded": "Teruggestort",
-  "Knockout": "Knock-out",
-  "Groups": "Poules",
-  "Groups + knockout": "Poules + knock-out",
-  "Registration hasn't opened yet.": "Inschrijving is nog niet geopend.",
-  "Registration is closed.": "Inschrijving is gesloten.",
-  "This tournament is full.": "Dit toernooi zit vol.",
-  "This tournament has already started.": "Dit toernooi is al begonnen.",
-  "This tournament has finished.": "Dit toernooi is afgerond.",
-  "This tournament hasn't been published yet.": "Dit toernooi is nog niet gepubliceerd.",
-  "Prize money": "Prijzengeld",
-  "Physical prize": "Fysieke prijs",
-  "Prize to be announced later": "Prijs wordt later bekendgemaakt",
-  "No prize": "Geen prijs",
-  "Something went wrong": "Dit lukte niet",
-  "Reload": "Opnieuw laden",
-  "Email address or password is incorrect.": "E-mailadres of wachtwoord klopt niet.",
-  "Confirm your email address via the link in your inbox first.": "Bevestig eerst je e-mailadres via de link in je mail.",
-  "An account with this email address already exists.": "Er bestaat al een account met dit e-mailadres.",
-  "Your password must be at least 6 characters.": "Je wachtwoord moet minimaal 6 tekens zijn.",
-  "Too many attempts. Wait a moment and try again.": "Te veel pogingen. Wacht even en probeer opnieuw.",
-  "No connection to the server. Check your internet.": "Geen verbinding met de server. Controleer je internet.",
-  "Something went wrong.": "Er ging iets mis.",
-  "Player A": "Speler A",
-  "Player B": "Speler B",
-  "Draw": "Gelijkspel",
-  "Home": "Home",
-  "Leagues": "Leagues",
-  "Tournaments": "Toernooien",
-  "Matches": "Wedstrijden",
-  "Statistics": "Statistieken",
-  "Profile": "Profiel",
-  "Admin": "Beheer",
-  "Main menu": "Hoofdmenu",
-  "Join leagues and tournaments, schedule your matches and track your scores and stats automatically — all in one place.": "Speel mee in leagues en toernooien, plan je wedstrijden en houd je scores en statistieken automatisch bij — allemaal op één plek.",
-  "Create a free account": "Gratis account aanmaken",
-  "How it works": "Zo werkt het",
-  "Free to use · no credit card needed": "Gratis te gebruiken · geen creditcard nodig",
-  "For Scolia and DartCounter": "Voor Scolia en DartCounter",
-  "Log in to see your league's standings, matches and statistics.": "Log in om de standen, wedstrijden en statistieken van je league te bekijken.",
-  "This is what your standings look like": "Zo ziet jouw stand eruit",
-  "An example — your own numbers will appear once you join.": "Een voorbeeld — jouw eigen cijfers verschijnen zodra je meedoet.",
-  "Win ratio": "Winratio",
-  "Average": "Gemiddelde",
-  "Best finish": "Beste finish",
-  "Create an account": "Maak een account",
-  "Signed up within a minute, no hassle.": "Binnen een minuut aangemeld, zonder gedoe.",
-  "Join a league or tournament": "Sluit je aan bij een league of toernooi",
-  "The admin sets them up for you, you just join in.": "De beheerder zet ze voor je klaar, jij doet mee.",
-  "Play and track your progress": "Speel en volg je voortgang",
-  "Standings, results and statistics are ready right away.": "Standen, uitslagen en statistieken staan direct klaar.",
-  "What you get": "Wat je krijgt",
-  "Automatic standings": "Automatische standen",
-  "Every finished match updates the leaderboard instantly.": "Elke afgeronde wedstrijd werkt de ranglijst meteen bij.",
-  "Personal statistics": "Persoonlijke statistieken",
-  "Average, 180s, checkouts and win ratio per player.": "Gemiddelde, 180's, checkouts en winratio per speler.",
-  "Admin dashboard": "Organisatordashboard",
-  "Manage leagues and tournaments from a single overview.": "Leagues en toernooien beheren vanuit één overzicht.",
-  "Use it anywhere": "Overal te gebruiken",
-  "Works in the browser, on phone, tablet and desktop.": "Werkt in de browser, op telefoon, tablet en desktop.",
-  "Ready to join in?": "Klaar om mee te doen?",
-  "Create a free account and play your first match within a minute.": "Maak een gratis account aan en speel je eerste wedstrijd binnen een minuut.",
-  "Log in to see your matches": "Log in om je wedstrijden te zien",
-  "Email address": "E-mailadres",
-  "Password": "Wachtwoord",
-  "Forgot password?": "Wachtwoord vergeten?",
-  "Don't have an account yet?": "Nog geen account?",
-  "Create one": "Maak er een aan",
-  "Create account": "Account aanmaken",
-  "You'll be playing within a minute": "Je speelt binnen een minuut mee",
-  "Name": "Naam",
-  "At least 8 characters": "Minimaal 8 tekens",
-  "Already have an account?": "Heb je al een account?",
-  "Enter your name.": "Vul je naam in.",
-  "Enter a valid email address.": "Vul een geldig e-mailadres in.",
-  "Choose a password of at least 8 characters.": "Kies een wachtwoord van minimaal 8 tekens.",
-  "Check your email": "Check je mail",
-  "Back to login": "Terug naar inloggen",
-  "Forgot password": "Wachtwoord vergeten",
-  "We'll send you a link to choose a new password": "We sturen je een link om een nieuw wachtwoord te kiezen",
-  "Send the link": "Stuur de link",
-  "New password": "Nieuw wachtwoord",
-  "Choose a password to log in with": "Kies een wachtwoord om mee in te loggen",
-  "Save password": "Wachtwoord opslaan",
-  "Account activated": "Account geactiveerd",
-  "Your account has been successfully activated!": "Je account is succesvol geactiveerd!",
-  "Go to login": "Naar inloggen",
-  "Link expired or invalid": "Link verlopen of ongeldig",
-  "Request a new activation link below": "Vraag hieronder een nieuwe activatielink aan",
-  "Resend activation email": "Verstuur activatiemail opnieuw",
-  "This is your darts overview.": "Dit is jouw darts-overzicht.",
-  "View your prize →": "Bekijk je prijs →",
-  "Next match": "Eerstvolgende wedstrijd",
-  "All matches": "Alle wedstrijden",
-  "View match": "Bekijk wedstrijd",
-  "Nothing scheduled": "Niets ingepland",
-  "Once the admin schedules a match for you, it'll show up here.": "Zodra de organisator een wedstrijd voor je inplant, staat hij hier.",
-  "My league & division": "Mijn league & divisie",
-  "Not placed yet": "Nog niet ingedeeld",
-  "Once the admin places you in a league, you'll see your overview here.": "Zodra de organisator je indeelt in een league, zie je hier je overzicht.",
-  "Once the admin places you in a league, you'll see your division here.": "Zodra de organisator je indeelt in een league, zie je hier je divisie.",
-  "League overview": "League-overzicht",
-  "Position": "Positie",
-  "Points": "Punten",
-  "Quick actions": "Snelle acties",
-  "My division": "Mijn divisie",
-  "Your division": "Jouw divisie",
-  "View the whole league →": "Bekijk de hele league →",
-  "Current match": "Huidige wedstrijd",
-  "Check result": "Uitslag controleren",
-  "Report result": "Uitslag doorgeven",
-  "Date & time of this match": "Datum & uur van deze wedstrijd",
-  "Chat": "Chat",
-  "Head-to-head matches": "Onderlinge wedstrijden",
-  "No open matches": "Geen open wedstrijden",
-  "You currently have no matches to play.": "Je hebt op dit moment geen wedstrijden om te spelen.",
-  "Matches this week": "Wedstrijden deze week",
-  "This is your current match above.": "Dit is je huidige wedstrijd hierboven.",
-  "Standings": "Stand",
-  "No divisions yet": "Nog geen indeling",
-  "No matches": "Geen wedstrijden",
-  "No matches yet": "Nog geen wedstrijden",
-  "How does the league work?": "Hoe werkt de league?",
-  "More info ↓": "Meer info ↓",
-  "Less info ↑": "Minder info ↑",
-  "A league is a single group of up to 12 players, ranked by points: 1st, 2nd, 3rd, and so on. Want multiple levels (e.g. a 1st and 2nd division)? Create separate leagues for those.": "Een league is één groep van maximaal 12 spelers, gerangschikt op punten: 1e, 2e, 3e, enzovoort. Wil je meerdere niveaus (bv. een 1e en 2e divisie), maak daar dan aparte leagues voor aan.",
-  "Matches are scheduled automatically, one round per week.": "De wedstrijden worden automatisch ingedeeld, één ronde per week.",
-  "The league winner receives a champion title and a personalized prize, provided by LWPrints. This could for example be a printed T-shirt, hoodie or polo.": "De winnaar van de league ontvangt een kampioenstitel en een gepersonaliseerde prijs, beschikbaar gesteld door LWPrints. Dit kan bijvoorbeeld een bedrukt T-shirt, hoodie of polo zijn.",
-  "No leagues yet": "Nog geen leagues",
-  "Set a start date and time and click 'Schedule' to plan the league.": "Stel een startdatum en -tijd in en klik op 'Inplannen' om de league te plannen.",
-  "The league has started.": "De league is gestart.",
-  "This league has finished.": "Deze league is afgerond.",
-  "Schedule": "Inplannen",
-  "Status": "Status",
-  "Players": "Spelers",
-  "Timezone": "Tijdzone",
-  "Matches created": "Wedstrijden aangemaakt",
-  "Description": "Beschrijving",
-  "optional": "optioneel",
-  "Start date and time": "Startdatum en -tijd",
-  "End date": "Einddatum",
-  "Auto-assign": "Automatisch indelen",
-  "Place player": "Speler indelen",
-  "Auto-assign: ranks players by average (max 12 players per league).": "Automatisch indelen: rangschikt spelers op gemiddelde (max 12 spelers per league).",
-  "No players have been placed in this league yet.": "Er zijn nog geen spelers ingedeeld in deze league.",
-  "Winner & prize": "Winnaar & prijs",
-  "Manage all prizes": "Alle prijzen beheren",
-  "Determine winner": "Bepaal winnaar",
-  "The winner automatically gets notified and can claim their prize (provided by LWPrints).": "De winnaar krijgt automatisch een melding en kan zijn prijs claimen (beschikbaar gesteld door LWPrints).",
-  "Nothing has been scheduled for this league yet.": "Er is nog niets ingepland voor deze league.",
-  "Set a start date and time first before you can schedule.": "Stel eerst een startdatum en -tijd in om te kunnen plannen.",
-  "Choose a start time in the future.": "Kies een startmoment in de toekomst.",
-  "League scheduled.": "League ingepland.",
-  "Data saved.": "Gegevens opgeslagen.",
-  "Winner determined and notified.": "Winnaar bepaald en op de hoogte gebracht.",
-  "No winner: no match has been played yet.": "Geen winnaar: er is nog geen wedstrijd gespeeld.",
-  "Status of your claim": "Status van je claim",
-  "Compete against other players and win great prizes.": "Strijd tegen andere spelers en maak kans op mooie prijzen.",
-  "Tournaments with possible prize money": "Toernooien met mogelijk prijzengeld",
-  "Take part in darts tournaments and compete against other players. Depending on the tournament, prizes or prize money may be available.": "Neem deel aan darttoernooien en strijd tegen andere spelers. Afhankelijk van het toernooi kunnen er prijzen of prijzengeld beschikbaar zijn.",
-  "All tournaments": "Alle toernooien",
-  "Upcoming tournaments": "Aankomende toernooien",
-  "My tournaments": "Mijn toernooien",
-  "Finished tournaments": "Afgeronde toernooien",
-  "No tournaments available yet": "Nog geen toernooien beschikbaar",
-  "There are currently no tournaments available. Check back later to join a new tournament.": "Er zijn momenteel geen toernooien beschikbaar. Kom later terug om mee te doen aan een nieuw toernooi.",
-  "Unknown yet": "Nog onbekend",
-  "I've paid": "Ik heb betaald",
-  "Awaiting confirmation from the admin.": "Wacht op bevestiging door de organisator.",
-  "Tournament not found": "Toernooi niet gevonden",
-  "This tournament no longer exists.": "Dit toernooi bestaat niet (meer).",
-  "Format": "Format",
-  "Play mode": "Speelwijze",
-  "Entrants": "Deelnemers",
-  "Minimum number of players": "Minimum aantal spelers",
-  "Registration opens": "Inschrijving opent",
-  "Registration closes": "Inschrijving sluit",
-  "Entry fee": "Inschrijfgeld",
-  "Cancellation terms": "Annuleringsvoorwaarden",
-  "Register and pay": "Inschrijven en betalen",
-  "Register": "Inschrijven",
-  "Withdraw": "Uitschrijven",
-  "Edit tournament": "Toernooi bewerken",
-  "Tournament rules": "Toernooiregels",
-  "Payments": "Betalingen",
-  "No outstanding payments": "Geen openstaande betalingen",
-  "Reject": "Afwijzen",
-  "Confirm": "Bevestigen",
-  "Refund": "Terugbetalen",
-  "No entrants yet": "Nog geen deelnemers",
-  "Payouts": "Uitbetalingen",
-  "No payouts recorded yet": "Nog geen uitbetalingen vastgelegd",
-  "Add payout": "Uitbetaling toevoegen",
-  "Approve": "Goedkeuren",
-  "Mark as paid": "Als betaald markeren",
-  "Match schedule": "Wedstrijdschema",
-  "No match schedule yet": "Nog geen wedstrijdschema",
-  "The schedule will appear once the tournament starts.": "Het schema verschijnt zodra het toernooi begint.",
-  "Paid": "Betaald",
-  "Approved": "Goedgekeurd",
-  "Awaiting approval": "Wacht op goedkeuring",
-  "paid out": "uitbetaald",
-  "approved, will be transferred": "goedgekeurd, wordt overgemaakt",
-  "awaiting approval": "wacht op goedkeuring",
-  "How does the prize pool work?": "Hoe werkt de prijzenpot?",
-  "The pool is calculated as entry fee × the number of players who actually paid. As long as registration is still open, the amount shown is a provisional estimate - the pool is only final once registration closes.": "De pot wordt berekend als inschrijfgeld × het aantal spelers dat daadwerkelijk heeft betaald. Zolang de inschrijving nog open is, is het genoemde bedrag dus een voorlopige schatting - pas zodra de inschrijving sluit staat de pot definitief vast.",
-  "This tournament has a fixed prize amount. That amount is set in advance, regardless of the number of entrants.": "Dit toernooi heeft een vast prijzenbedrag. Dat bedrag staat vooraf vast, ongeacht het aantal deelnemers.",
-  "The amount shown is the total prize money for this tournament.": "Het genoemde bedrag is het totale prijzengeld voor dit toernooi.",
-  "A share of the pool has already been assigned per final position (see above) - either as a percentage of the pool or as a fixed amount.": "Per eindpositie is al een deel van de pot toegewezen (zie hierboven) - als percentage van de pot of als vast bedrag.",
-  "The admin hasn't set a distribution per final position yet.": "De organisator heeft nog geen verdeling per eindpositie vastgelegd.",
-  "After the tournament, the admin manually records the payout per final position, approves it and transfers the amount themselves (e.g. via Tikkie). This doesn't happen automatically through the app - the app only tracks what should happen.": "Na afloop van het toernooi legt de organisator de uitbetaling per eindpositie handmatig vast, keurt deze goed en maakt het bedrag zelf over (bijvoorbeeld via Tikkie). Dit gaat niet automatisch via de app - de app houdt alleen bij wat er zou moeten gebeuren.",
-  "Propose a time": "Moment voorstellen",
-  "Problem reported, awaiting response": "Probleem gemeld, wacht op reactie",
-  "Accept": "Accepteren",
-  "Counter-proposal": "Tegenvoorstel",
-  "Report a problem": "Probleem melden",
-  "The overview of your organization": "Het overzicht van je organisatie",
-  "Active leagues": "Actieve leagues",
-  "Active tournaments": "Actieve toernooien",
-  "Open matches": "Open wedstrijden",
-  "Quick create": "Snel aanmaken",
-  "League": "League",
-  "Tournament": "Toernooi",
-  "Match": "Wedstrijd",
-  "Manage": "Beheren",
-  "Prizes": "Prijzen",
-  "Settings": "Instellingen",
-  "Latest results": "Laatste uitslagen",
-  "No results yet": "Nog geen uitslagen",
-  "Everyone who has an account": "Iedereen die een account heeft",
-  "Search by name": "Zoek op naam",
-  "No players found": "Geen spelers gevonden",
-  "Adjust your search term.": "Pas je zoekterm aan.",
-  "you": "jij",
-  "Remove role": "Rol weghalen",
-  "Make admin": "Maak organisator",
-  "Player is now admin": "Speler is nu organisator",
-  "Role removed": "Rol weggehaald",
-  "Create and switch status": "Aanmaken en van status wisselen",
-  "New league": "Nieuwe league",
-  "Delete": "Verwijderen",
-  "Create your first league.": "Maak je eerste league aan.",
-  "Status updated": "Status bijgewerkt",
-  "Delete draft league": "Concept-league verwijderen",
-  "This action cannot be undone.": "Deze actie kan niet ongedaan worden gemaakt.",
-  "League deleted": "League verwijderd",
-  "Create and view": "Aanmaken en inzien",
-  "New tournament": "Nieuw toernooi",
-  "Create your first tournament.": "Maak je eerste toernooi aan.",
-  "Schedule and confirm results": "Inplannen en uitslagen bevestigen",
-  "New match": "Nieuwe wedstrijd",
-  "Players normally confirm this between themselves. Only step in here if that gets stuck.": "Spelers bevestigen dit normaal gesproken zelf bij elkaar. Grijp hier alleen in als dat vastloopt.",
-  "Schedule your first match.": "Plan je eerste wedstrijd in.",
-  "Preferences for your organization": "Voorkeuren voor je organisatie",
-  "Nothing to configure yet": "Nog niets in te stellen",
-  "Default game type, number of legs and notifications will go here.": "Standaard speltype, aantal legs en notificaties komen hier.",
-  "Your details and your role": "Je gegevens en je rol",
-  "Change photo": "Foto wijzigen",
-  "Player": "Speler",
-  "Change name": "Naam wijzigen",
-  "Quick overview": "Kort overzicht",
-  "Won": "Gewonnen",
-  "Notifications": "Meldingen",
-  "Push notifications on this device": "Pushmeldingen op dit toestel",
-  "Get notified as soon as a match is scheduled for you or a time is proposed - even when the app isn't open. On iPhone: first add the site to your home screen via Safari (share icon → Add to Home Screen) before enabling this.": "Ontvang een melding zodra er een wedstrijd voor je is ingepland of een speelmoment wordt voorgesteld - ook als de app niet open staat. Op iPhone: zet de site eerst via Safari op je beginscherm (deel-icoon → Zet op beginscherm) voordat je dit inschakelt.",
-  "Enable on this device": "Inschakelen op dit toestel",
-  "League placement": "League-indeling",
-  "Not placed by the admin yet.": "Nog niet ingedeeld door de organisator.",
-  "View my division": "Bekijk mijn divisie",
-  "Not placed in a league yet.": "Nog niet ingedeeld in een league.",
-  "Player details": "Spelersgegevens",
-  "Platform": "Platform",
-  "Average (3 darts)": "Gemiddelde (3 darts)",
-  "Only visible to the admin.": "Enkel zichtbaar voor de beheerder.",
-  "Change details": "Gegevens wijzigen",
-  "Choose a photo smaller than 5 MB.": "Kies een foto kleiner dan 5 MB.",
-  "Uploading photo...": "Foto uploaden...",
-  "Photo changed": "Foto gewijzigd",
-  "Pts": "Ptn",
-  "Pld": "Gesp.",
-  "D": "G",
-  "L": "V",
-  "Form": "Vorm",
-  "Diff": "Saldo",
-  "Avg": "Gem.",
-  "Not placed by the admin yet": "Nog niet ingedeeld door de organisator",
-  "No players in this division yet.": "Nog geen spelers in deze divisie.",
-  "History": "Geschiedenis",
-  "Someone": "Iemand",
-  "Agree on a date and time with your opponent. The proposal is sent to the other player, who can accept it or make a different proposal.": "Stel samen met je tegenstander een datum en tijd voor. Het voorstel wordt naar de andere speler gestuurd. Die speler kan het accepteren of een ander voorstel doen.",
-  "No previous meetings yet": "Nog geen eerdere ontmoetingen",
-  "Only you and your opponent can see this conversation.": "Alleen jij en je tegenstander kunnen dit gesprek zien.",
-  "No messages yet. Send the first one!": "Nog geen berichten. Stuur de eerste!",
-  "Type a message...": "Typ een bericht...",
-  "Send": "Stuur",
-  "Lost": "Verloren",
-  "Make a counter-proposal": "Tegenvoorstel doen",
-  "Date and time": "Datum en tijd",
-  "Note": "Opmerking",
-  "E.g. reason for the proposal": "Bijv. reden van het voorstel",
-  "Choose a date and time.": "Kies een datum en tijd.",
-  "Proposal sent.": "Voorstel verstuurd.",
-  "Send counter-proposal": "Tegenvoorstel versturen",
-  "Send proposal": "Voorstel versturen",
-  "Proposal accepted.": "Voorstel geaccepteerd.",
-  "Problem reported to your opponent.": "Probleem gemeld bij je tegenstander.",
-  "Proposal withdrawn.": "Voorstel ingetrokken.",
-  "Your matches": "Je wedstrijden",
-  "Everything you're taking part in": "Alles waar jij aan meedoet",
-  "Once you're placed, they'll show up here.": "Zodra je bent ingedeeld, verschijnen ze hier.",
-  "Open": "Open",
-  "Your numbers across all confirmed matches": "Je cijfers over alle bevestigde wedstrijden",
-  "No numbers yet": "Nog geen cijfers",
-  "Play your first match to see something here.": "Speel je eerste wedstrijd om hier iets te zien.",
-  "Checkout": "Checkout",
-  "These numbers are updated as soon as matches are confirmed.": "Deze cijfers worden bijgewerkt zodra wedstrijden bevestigd zijn.",
-  "Division winners and their prize claim (LWPrints)": "Divisiewinnaars en hun prijsclaim (LWPrints)",
-  "No division winners yet": "Nog geen divisiewinnaars",
-  "Determine winners on a finished league's page.": "Bepaal winnaars op een afgeronde league-pagina.",
-  "Claim not found": "Claim niet gevonden",
-  "Go back to Prizes.": "Ga terug naar Prijzen.",
-  "Change status": "Status wijzigen",
-  "New status": "Nieuwe status",
-  "optional, appears in the history": "optioneel, komt in de historie",
-  "Save status": "Status opslaan",
-  "Mark as delivered": "Markeer als uitgereikt",
-  "Submitted details": "Ingevulde gegevens",
-  "Email": "E-mail",
-  "Phone": "Telefoon",
-  "Garment": "Kledingstuk",
-  "Size": "Maat",
-  "Color": "Kleur",
-  "Print/design": "Bedrukking/ontwerp",
-  "Winner's comments": "Opmerkingen van winnaar",
-  "Consent to share with LWPrints": "Toestemming delen met LWPrints",
-  "No": "Nee",
-  "Nothing filled in by the winner yet.": "Nog niets ingevuld door de winnaar.",
-  "Admin note": "Beheerdersnotitie",
-  "Internal note, e.g. contact attempts": "Interne notitie, bijv. contactpogingen",
-  "No status changes yet.": "Nog geen statuswijzigingen.",
-  "by": "door",
-  "Marked as delivered": "Gemarkeerd als uitgereikt",
-  "Note saved": "Notitie opgeslagen",
-  "Enter a name.": "Vul een naam in.",
-  "Name changed": "Naam gewijzigd",
-  "Change player details": "Spelersgegevens wijzigen",
-  "First name": "Voornaam",
-  "Last name": "Achternaam",
-  "Nickname (Scolia / DartCounter)": "Nickname (Scolia / DartCounter)",
-  "Enter your first and last name.": "Vul je voor- en achternaam in.",
-  "Enter your nickname.": "Vul je nickname in.",
-  "Enter a valid average.": "Vul een geldig gemiddelde in.",
-  "Player details saved": "Spelersgegevens opgeslagen",
-  "Season": "Seizoen",
-  "E.g. 2026": "Bijv. 2026",
-  "Game type": "Speltype",
-  "League created. Add players and assign them.": "League aangemaakt. Voeg spelers toe en deel ze in.",
-  "Create league": "League aanmaken",
-  "Who won?": "Wie heeft gewonnen?",
-  "Winner": "Winnaar",
-  "per player": "per speler",
-  "More statistics": "Meer statistieken",
-  "Scoring": "Scoring",
-  "First 9 avg.": "Eerste 9 gem.",
-  "Checkouts hit": "Checkouts geraakt",
-  "Checkout attempts": "Checkout pogingen",
-  "Darts thrown": "Worpen",
-  "Best leg": "Beste leg",
-  "darts": "darts",
-  "Choose who won, or a draw.": "Kies wie er gewonnen heeft, of gelijkspel.",
-  "Enter both leg scores.": "Vul beide legscores in.",
-  "Equal legs means it's a draw.": "Bij gelijke legs is het een gelijkspel.",
-  "The legs aren't equal, so choose who won.": "De legs zijn niet gelijk, dus kies wie er gewonnen heeft.",
-  "The chosen winner doesn't match the leg score.": "De gekozen winnaar komt niet overeen met de legscore.",
-  "Fill in all statistics for both players (Average, 180s, Highest checkout, Scoring, First 9 avg., Checkouts, Darts thrown, Best leg, 60+/80+/100+/140+).": "Vul alle statistieken in voor beide spelers (Gemiddelde, 180's, Hoogste finish, Scoring, Eerste 9 gem., Checkouts, Worpen, Beste leg, 60+/80+/100+/140+).",
-  "Submitted. Your opponent will confirm the result.": "Doorgegeven. Je tegenstander bevestigt de uitslag.",
-  "Submit result": "Uitslag versturen",
-  "Is this correct?": "Klopt dit?",
-  "Legs": "Legs",
-  "Checkout %": "Checkout %",
-  "Checkouts": "Checkouts",
-  "Result confirmed": "Uitslag bevestigd",
-  "Result rejected. It can be submitted again.": "Uitslag afgekeurd. Kan opnieuw worden ingevuld.",
-  "E.g. Club championship": "Bijv. Clubkampioenschap",
-  "Unknown": "Onbekend",
-  "Online": "Online",
-  "Offline": "Offline",
-  "Scoring system": "Scoresysteem",
-  "Maximum number of players": "Maximum aantal spelers",
-  "Draft (not visible to players yet)": "Concept (nog niet zichtbaar voor spelers)",
-  "Entry fee (€)": "Inschrijfgeld (€)",
-  "Payment deadline": "Betaaldeadline",
-  "hours after registering, optional": "uren na inschrijving, optioneel",
-  "Payment instructions": "Betaalinstructies",
-  "e.g. Tikkie link/phone number": "bijv. Tikkie-link/telefoonnummer",
-  "E.g. Send €10 via Tikkie to 06-12345678": "Bijv. Stuur € 10 via Tikkie naar 06-12345678",
-  "E.g. Full refund up to 24 hours before the start": "Bijv. Volledige terugbetaling tot 24 uur voor aanvang",
-  "Refund possible up to": "Terugbetaling mogelijk tot",
-  "hours before the start, optional": "uren voor aanvang, optioneel",
-  "Prize": "Prijs",
-  "Not known yet": "Nog niet bekend",
-  "Prize pool": "Prijzenpot",
-  "Fixed amount, no distribution": "Vast bedrag, geen verdeling",
-  "Fixed amount with distribution": "Vast bedrag met verdeling",
-  "Calculated from entry fee × paid entrants": "Berekend uit inschrijfgeld x betaalde deelnemers",
-  "Amount (€)": "Bedrag (€)",
-  "Prize distribution per placement": "Prijsverdeling per plaatsing",
-  "Add placement": "Plaats toevoegen",
-  "E.g. Personalized darts shirt": "Bijv. Gepersonaliseerd dartshirt",
-  "Rules or extra info for entrants": "Regels of extra info voor deelnemers",
-  "Registration must close after it opens.": "Inschrijving moet sluiten na het openen.",
-  "Minimum number of players cannot be higher than the maximum.": "Minimum aantal spelers kan niet hoger zijn dan het maximum.",
-  "Entry fee cannot be negative.": "Inschrijfgeld mag niet negatief zijn.",
-  "The percentages in the prize distribution cannot add up to more than 100%.": "De percentages in de prijsverdeling mogen samen niet meer dan 100% zijn.",
-  "For a pool based on entry fees, only percentages are allowed - the total amount is only final once the tournament ends.": "Bij een pot op basis van inschrijfgeld zijn alleen percentages toegestaan - het totaalbedrag staat pas na afloop vast.",
-  "The fixed amounts in the prize distribution exceed the total pool.": "De vaste bedragen in de prijsverdeling zijn hoger dan de totale pot.",
-  "Tournament updated": "Toernooi bijgewerkt",
-  "Tournament created": "Toernooi aangemaakt",
-  "Save changes": "Wijzigingen opslaan",
-  "Create tournament": "Toernooi aanmaken",
-  "Type": "Type",
-  "% of the pool": "% van de pot",
-  "Fixed amount (€)": "Vast bedrag (€)",
-  "Value": "Waarde",
-  "Tournament not found.": "Toernooi niet gevonden.",
-  "You're registered!": "Je bent ingeschreven!",
-  "You've withdrawn.": "Je bent uitgeschreven.",
-  "Report payment": "Betaling melden",
-  "Only report this after you've actually transferred the amount via Tikkie. The admin will check this before your registration becomes final.": "Meld dit pas nadat je het bedrag daadwerkelijk via Tikkie hebt overgemaakt. De organisator controleert dit voordat je inschrijving definitief wordt.",
-  "Reference": "Referentie",
-  "optional, e.g. Tikkie description": "optioneel, bijv. Tikkie-omschrijving",
-  "E.g. TIKKIE-123": "Bijv. TIKKIE-123",
-  "Payment reported. The admin will check this.": "Betaling gemeld. De organisator controleert dit.",
-  "Confirm payment": "Betaling bevestigen",
-  "Only confirm after you actually see the amount in your own Tikkie overview.": "Bevestig pas nadat je het bedrag daadwerkelijk in je eigen Tikkie-overzicht ziet staan.",
-  "Amount received": "Ontvangen bedrag",
-  "Enter a valid amount.": "Vul een geldig bedrag in.",
-  "Payment confirmed.": "Betaling bevestigd.",
-  "Reject payment": "Betaling afwijzen",
-  "Reason": "Reden",
-  "optional, shown to the player": "optioneel, wordt getoond aan de speler",
-  "E.g. amount not received": "Bijv. bedrag niet ontvangen",
-  "Payment rejected. The spot has been released.": "Betaling afgewezen. De plek is vrijgegeven.",
-  "Register refund": "Terugbetaling registreren",
-  "Confirm that you": "Bevestig dat je",
-  "have refunded": "hebt teruggestort aan",
-  "This only records that the refund was made - the app doesn't transfer money itself.": "Dit registreert alleen dat de terugbetaling is gedaan - de app maakt zelf geen geld over.",
-  "Refund registered.": "Terugbetaling geregistreerd.",
-  "Placement": "Plaatsing",
-  "Enter a valid placement.": "Vul een geldige plaatsing in.",
-  "Choose a player.": "Kies een speler.",
-  "Payout recorded.": "Uitbetaling vastgelegd.",
-  "Payout approved.": "Uitbetaling goedgekeurd.",
-  "Only record this after you've actually transferred the amount via Tikkie.": "Registreer dit pas nadat je het bedrag daadwerkelijk via Tikkie hebt overgemaakt.",
-  "E.g. Tikkie description": "Bijv. Tikkie-omschrijving",
-  "Payout recorded as paid.": "Uitbetaling geregistreerd als betaald.",
-  "Division": "Divisie",
-  "No division": "Geen divisie",
-  "When": "Wanneer",
-  "Create a league first.": "Maak eerst een league aan.",
-  "You need at least two players.": "Je hebt minstens twee spelers nodig.",
-  "Match scheduled": "Wedstrijd ingepland",
-  "Schedule match": "Wedstrijd inplannen",
-  "Claim prize": "Prijs claimen",
-  "The final prize choice is made in consultation and depends on LWPrints' options and availability.": "De uiteindelijke prijskeuze gebeurt in overleg en is afhankelijk van de mogelijkheden en beschikbaarheid van LWPrints.",
-  "Phone number": "Telefoonnummer",
-  "Garment preference": "Voorkeur kledingstuk",
-  "Choose...": "Kies...",
-  "Clothing size": "Kledingmaat",
-  "Preferred color": "Gewenste kleur",
-  "Preferred print/design": "Gewenste bedrukking/ontwerp",
-  "Comments": "Opmerkingen",
-  "I agree that my name, email address and (if provided) phone number will be shared with LWPrints, solely to produce and deliver my prize.": "Ik ga akkoord dat mijn naam, e-mailadres en (indien opgegeven) telefoonnummer worden gedeeld met LWPrints, uitsluitend om mijn prijs te maken en te leveren.",
-  "Choose a garment preference.": "Kies een voorkeur voor je kledingstuk.",
-  "Choose your clothing size.": "Kies je kledingmaat.",
-  "You must agree to share your details with LWPrints.": "Je moet akkoord gaan met het delen van je gegevens met LWPrints.",
-  "Just a moment of setup": "Nog even instellen",
-  "The app doesn't know yet which database to talk to": "De app weet nog niet met welke database hij moet praten",
-  "Open <code>js/config.js</code> and fill in your Supabase details:": "Open <code>js/config.js</code> en vul je Supabase-gegevens in:",
-  "You'll find them in your Supabase project under Project Settings &rarr; API. Copy the Project URL and the anon public key.": "Je vindt ze in je Supabase-project onder Project Settings &rarr; API. Kopieer de Project URL en de anon public key.",
-  "Your profile is missing": "Je profiel ontbreekt",
-  "There's no profile row for this account": "Er is geen profielrij voor dit account",
-  "Run the SQL migration in Supabase (SQL Editor) and log in again.": "Draai de SQL-migratie in Supabase (SQL Editor) en log opnieuw in.",
-  "Push notifications aren't supported on this device or in this browser.": "Pushmeldingen worden niet ondersteund op dit toestel of in deze browser.",
-  "Notification permission denied.": "Toestemming voor meldingen geweigerd.",
-  "Push notifications enabled on this device.": "Pushmeldingen ingeschakeld op dit toestel.",
-  "Your player details": "Jouw spelersgegevens",
-  "Needed by the organizer to place you": "Nodig voor de organisator om je in te delen",
-  "Enter your email address and password.": "Vul je e-mailadres en wachtwoord in.",
-  "Organizers only": "Alleen voor organisatoren",
-  "Ask the organizer for access.": "Vraag de organisator om toegang.",
-  "This page doesn't exist": "Deze pagina bestaat niet",
-  "Use the menu to continue.": "Gebruik het menu om verder te gaan.",
-  "There are no players yet.": "Er zijn nog geen spelers.",
-  "E.g. 1st division": "Bijv. 1e divisie",
-  "This division only has 12 players so far": "Deze divisie heeft nog maar 12 spelers",
-  "No player details entered yet.": "Nog geen spelersgegevens ingevuld.",
-  "proposed a time": "stelde voor",
-  "made a counter-proposal": "deed een tegenvoorstel",
-  "accepted the proposal": "accepteerde het voorstel",
-  "reported a problem": "meldde een probleem",
-  "withdrew the proposal": "trok het voorstel in",
-  "Choose two different players.": "Kies twee verschillende spelers.",
-  "Password saved": "Wachtwoord opgeslagen",
-  "Thanks! Your request has been submitted.": "Bedankt! Je aanvraag is ingediend.",
-  "Submit request": "Aanvraag versturen",
-  "This is the first time you're facing": "Dit is de eerste keer dat je het opneemt tegen",
-  "this player": "deze speler",
-  "The league winner receives a personalized printed garment, provided by LWPrints. Depending on availability, and in consultation, you can choose a printed T-shirt, a hoodie or a polo.": "De winnaar van de league ontvangt een gepersonaliseerd bedrukt kledingstuk, beschikbaar gesteld door LWPrints. Je kunt, in overleg en afhankelijk van de mogelijkheden en beschikbaarheid, kiezen uit een bedrukt T-shirt, een hoodie of een polo.",
-  "players": "spelers",
-  "You're taking part": "Jij doet mee",
-  "View tournament": "Bekijk toernooi",
-  "No tournaments yet": "Nog geen toernooien",
-  "your opponent": "je tegenstander",
-  "Match format": "Wedstrijdformaat",
-  "Sets": "Sets",
-  "Legs per match": "Legs per wedstrijd",
-  "Sets per match": "Sets per wedstrijd",
-  "Legs per set": "Legs per set",
-  "Legs per match must be at least 1.": "Legs per wedstrijd moet minstens 1 zijn.",
-  "Sets per match and legs per set must be at least 1.": "Sets per wedstrijd en legs per set moeten minstens 1 zijn.",
-  "Garment:": "Kledingstuk:",
-  "Size:": "Maat:",
-  "Color:": "Kleur:",
-  "Mark Tikkie sent": "Markeer Tikkie verstuurd",
-  "Tikkie sent": "Tikkie verstuurd",
-  "Marked as Tikkie sent": "Gemarkeerd als Tikkie verstuurd",
-}));
-const I18N_PATTERNS = [
-  [/^Welcome back, (.+)$/, (_, name) => `Welkom terug, ${name}`],
-  [/^Available from (.+)$/, (_, date) => `Beschikbaar vanaf ${date}`],
-  [/^This league starts on (.+) at (.+)\.$/, (_, date, time) => `Deze league start op ${date} om ${time} uur.`],
-  [/^(.+) won!$/, (_, name) => `${name} gewonnen!`],
-  [/^Determined on (.+)$/, (_, date) => `Bepaald op ${date}`],
-  [/^Pay within (\d+) hours of registering, or your spot will be released automatically\.$/,
-    (_, n) => `Betaal binnen ${n} uur na inschrijving, anders vervalt je plek automatisch.`],
-  [/^Refund possible up to (\d+) hours before the start\.$/, (_, n) => `Terugbetaling mogelijk tot ${n} uur voor aanvang.`],
-  [/^(.+) received\.$/, (_, amount) => `${amount} ontvangen.`],
-  [/^Your result: (.+) place$/, (_, place) => `Jouw resultaat: ${place} plaats`],
-  [/^Set to (.+)$/, (_, status) => `Zet op ${status}`],
-  [/^You proposed (.+), awaiting response$/, (_, when) => `Je hebt ${when} voorgesteld, wacht op reactie`],
-  [/^(.+) wins$/, (_, name) => `${name} wint`],
-  [/^Once a player wins (\d+) legs the match is decided - you don't have to play all (\d+) legs\.(?:\s+At (\d+)-(\d+) it's a draw\.)?\s+Your opponent needs to confirm the result before it counts\.$/,
-    (_, need, total, d1, d2) => `Zodra een speler ${need} legs wint is de wedstrijd beslist - jullie hoeven dan niet alle ${total} legs te spelen.` +
-      (d1 ? ` Bij ${d1}-${d2} is het gelijkspel.` : "") +
-      ` Je tegenstander moet de uitslag bevestigen voor het meetelt.`],
-  [/^This division only has (\d+) player\(s\) so far; at least 4 are needed to start\.$/,
-    (_, n) => `Deze divisie heeft nog maar ${n} speler(s); minimaal 4 nodig om te starten.`],
-  [/^(\d+) players in this division\.$/, (_, n) => `${n} spelers in deze divisie.`],
-
-  // Extra dynamische zinnen (ontdekt tijdens de Engelse conversie, niet in
-  // de oorspronkelijke patroonlijst).
-  [/^Once a player wins (\d+) legs the match is decided\.$/, (_, n) => `Zodra een speler ${n} legs wint is de wedstrijd beslist.`],
-  [/^The legs together can't exceed (\d+)\.$/, (_, n) => `Samen mogen de legs niet meer dan ${n} zijn.`],
-  [/^A draw is only possible at (\d+)-(\d+)\.$/, (_, a, b) => `Een gelijkspel kan alleen bij ${a}-${b}.`],
-  [/^A draw isn't possible with (\d+) legs\.$/, (_, n) => `Bij ${n} legs is een gelijkspel niet mogelijk.`],
-  [/^We sent a confirmation link to (.+)$/, (_, email) => `We stuurden een bevestigingslink naar ${email}`],
-  [/^If there's an account for (.+), a link is now in your inbox$/, (_, email) => `Als er een account is voor ${email}, ligt er nu een link in je inbox`],
-  [/^We sent a new activation link to (.+)$/, (_, email) => `We stuurden een nieuwe activatielink naar ${email}`],
-  [/^New activation email sent to (.+)$/, (_, email) => `Nieuwe activatiemail verstuurd naar ${email}`],
-  [/^Position (\d+) of (\d+) · (\d+) played(?: · (.+))?$/, (_, pos, total, played, pts) => `Positie ${pos} van ${total} · ${played} gespeeld${pts ? ` · ${pts}` : ""}`],
-  [/^(\d+) player\(s\) placed\. Note: (.+) had no average and now count\(s\) as 0\.$/,
-    (_, n, names) => `${n} speler(s) ingedeeld. Let op: ${names} had(den) geen gemiddelde en telt/tellen nu als 0.`],
-  [/^(\d+) player\(s\) placed\.$/, (_, n) => `${n} speler(s) ingedeeld.`],
-  [/^Congratulations to (.+)!$/, (_, name) => `Gefeliciteerd aan ${name}!`],
-  [/^This is the first time you're facing (.+)\.$/, (_, name) => `Dit is de eerste keer dat je het opneemt tegen ${name}.`],
-  [/^(\d+)\/12 players$/, (_, n) => `${n}/12 spelers`],
-  [/^Awaiting confirmation from (.+)$/, (_, name) => `Wacht op bevestiging van ${name === "your opponent" ? "je tegenstander" : name}`],
-  [/^Are you sure you want to delete (.+)\?$/, (_, name) => `Weet je zeker dat je ${name} wilt verwijderen?`],
-];
-
-// Noot: de "best of X (legs/sets)"-tekst in league-/tournament-kaarten wordt
-// altijd samengevoegd met andere delen (seizoen, format, datum) tot één
-// tekstnode via .join(" · "), dus kan niet los gematcht worden op een
-// vast patroon (zelfde beperking gold al voor "best of X" bij leagues in
-// het oorspronkelijke systeem). Blijft daarom onvertaald staan, net als
-// voorheen.
-
-new MutationObserver((mutations) => {
-  if (locale !== "nl") return;
-  for (const m of mutations) {
-    m.addedNodes.forEach((n) => translateNode(n));
-    if (m.type === "characterData") translateNode(m.target);
-  }
-}).observe(document.body, { childList: true, subtree: true, characterData: true });
-
-
 const STATUS = {
   draft: { label: "Draft", color: "#6B7280" },
   active: { label: "Active", color: "#2ECC71" },
@@ -826,7 +94,7 @@ function fmtDate(iso, withTime = true) {
   const d = new Date(iso);
   const opts = { day: "numeric", month: "short", year: "numeric" };
   if (withTime) { opts.hour = "2-digit"; opts.minute = "2-digit"; }
-  return d.toLocaleDateString(dateLocale(), opts);
+  return d.toLocaleDateString("en-GB", opts);
 }
 
 // Zet een ISO-timestamp om naar de waarde die een <input type="datetime-local">
@@ -1103,9 +371,7 @@ function fmtPrizeAmount(t) {
   return fmtMoney(t.prize_amount, t.prize_currency);
 }
 
-const ORDINALS_NL = { 1: "1e", 2: "2e", 3: "3e", 4: "4e", 5: "5e", 6: "6e", 7: "7e", 8: "8e" };
 function ordinal(n) {
-  if (locale === "nl") return ORDINALS_NL[n] || `${n}e`;
   const mod100 = n % 100;
   if (mod100 >= 11 && mod100 <= 13) return `${n}th`;
   if (n % 10 === 1) return `${n}st`;
@@ -2067,7 +1333,6 @@ async function resendSignupEmail(email) {
 }
 
 function renderLanding() {
-  currentPreAuthRender = renderLanding;
   const step = (num, title, text) => `
     <div class="landing-step">
       <div class="landing-step-num">${num}</div>
@@ -2099,7 +1364,6 @@ function renderLanding() {
           <span class="brand-name">Dart League</span>
         </div>
         <div style="display:flex;align-items:center;gap:10px">
-          ${langSwitcher()}
           <button class="btn ghost sm" onclick="renderLogin()">Log in</button>
         </div>
       </div>
@@ -2191,7 +1455,6 @@ function renderLanding() {
 }
 
 function renderLogin() {
-  currentPreAuthRender = renderLogin;
   app.innerHTML = authShell(
     "Dart League",
     "Log in to see your matches",
@@ -2234,7 +1497,6 @@ function renderLogin() {
 }
 
 function renderRegister() {
-  currentPreAuthRender = renderRegister;
   app.innerHTML = authShell(
     "Create account",
     "You'll be playing within a minute",
@@ -2290,7 +1552,6 @@ function renderRegister() {
 }
 
 function renderForgot() {
-  currentPreAuthRender = renderForgot;
   app.innerHTML = authShell(
     "Forgot password",
     "We'll send you a link to choose a new password",
@@ -2324,7 +1585,6 @@ function renderForgot() {
 
 // Scherm waar de gebruiker landt na het klikken op de reset-link.
 function renderNewPassword() {
-  currentPreAuthRender = renderNewPassword;
   app.innerHTML = authShell(
     "New password",
     "Choose a password to log in with",
@@ -2354,7 +1614,6 @@ function renderNewPassword() {
 // Scherm waar de gebruiker landt na het klikken op de activatielink uit de
 // registratiemail (zie signupRedirectTo() en de afhandeling in init()).
 function renderSignupConfirmed() {
-  currentPreAuthRender = renderSignupConfirmed;
   app.innerHTML = authShell(
     "Account activated",
     "",
@@ -2366,7 +1625,6 @@ function renderSignupConfirmed() {
 // Scherm voor een verlopen of ongeldige activatielink: duidelijke uitleg +
 // meteen de mogelijkheid om een nieuwe activatiemail aan te vragen.
 function renderSignupLinkError() {
-  currentPreAuthRender = renderSignupLinkError;
   app.innerHTML = authShell(
     "Link expired or invalid",
     "Request a new activation link below",
@@ -2525,7 +1783,6 @@ function renderShell() {
         <div class="brand"><img class="brand-mark" src="https://qspfphnailbelqmmzjbk.supabase.co/storage/v1/object/public/app-assets/favicon.png" alt=""><span class="brand-name">Dart League</span></div>
         ${links}
         ${orgLink}
-        <div style="margin-top:${isOrg ? "12px" : "auto"};padding-top:12px;${isOrg ? "" : "border-top:1px solid var(--line)"}">${langSwitcher()}</div>
       </nav>
       <main class="main"><div class="page" id="view">${loadingView()}</div></main>
     </div>
@@ -2858,8 +2115,8 @@ function leagueNextActionText(league) {
   }
   if (league.status === "scheduled") {
     const d = new Date(league.start_at);
-    const datePart = d.toLocaleDateString(dateLocale(), { day: "numeric", month: "long", year: "numeric", timeZone: league.timezone });
-    const timePart = d.toLocaleTimeString(dateLocale(), { hour: "2-digit", minute: "2-digit", timeZone: league.timezone });
+    const datePart = d.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: league.timezone });
+    const timePart = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: league.timezone });
     return `This league starts on ${datePart} at ${timePart}.`;
   }
   if (league.status === "active") {
@@ -3042,7 +2299,7 @@ async function viewPrizeDetail(id) {
             ${claim.color ? `Color: <strong style="color:var(--white)">${esc(claim.color)}</strong><br>` : ""}
           </div>` : ""}
         ${!claim || claim.status === "available" ? `
-          <button class="btn block mt16" onclick="openPrizeClaimDialog('${esc(id)}')">Claim prize</button>
+          <button class="btn block mt16" onclick="openPrizeClaimDialog('${esc(id)}')">Prize claimen</button>
         ` : locked ? `
           <p class="muted mt16" style="font-size:13px;margin-bottom:0">
             Je gegevens zijn bevestigd. Neem contact op met de organisator als er iets moet wijzigen.
@@ -4115,7 +3372,7 @@ async function changeLeagueStatus(id, status) {
 
 function confirmDeleteLeague(id, name) {
   openModal("Delete draft league", `
-    <p style="margin:0 0 4px">Are you sure you want to delete ${esc(name)}?</p>
+    <p style="margin:0 0 4px">Weet je zeker dat je <strong style="color:var(--white)">${esc(name)}</strong> wilt verwijderen?</p>
     <p class="muted" style="font-size:13px;margin:0">This action cannot be undone.</p>`,
     async () => {
       await db.deleteLeague(id);
@@ -5060,7 +4317,6 @@ async function boot() {
         db.myProfile(state.session.user.id),
         db.myOnboarding(state.session.user.id),
       ]);
-      adoptProfileLocale();
     } catch (e) {
       // Meestal: de SQL-migratie is nog niet gedraaid, dus er is geen
       // profielrij voor deze gebruiker.
@@ -5206,7 +4462,6 @@ function init() {
         db.myProfile(session.user.id).catch(() => null),
         db.myOnboarding(session.user.id).catch(() => null),
       ]);
-      adoptProfileLocale();
       if (awaitingSignupConfirmation) {
         awaitingSignupConfirmation = false;
         // De gebruiker moet zelf inloggen (zie de gewenste flow); niet

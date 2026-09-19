@@ -4323,6 +4323,40 @@ $$;
 grant execute on function public.register_for_tournament(uuid, text) to authenticated;
 
 
+-- ============================================================================
+-- 28. Draft tournaments may be deleted, mirroring the same restriction
+--     leagues already have (section 6) - active and finished tournaments
+--     may not, because of ongoing/historical data (entries, payment
+--     records, match results).
+-- ============================================================================
+
+-- Draft tournaments may be deleted; active and finished tournaments not,
+-- because of ongoing/historical data (entries, payment records, match
+-- results). This holds server-side regardless of what the frontend shows -
+-- the tournaments_delete_organizer RLS policy already allows delete for
+-- organizers, this trigger adds the status restriction on top. Linked
+-- entries, matches and payouts disappear automatically (on delete cascade);
+-- player accounts (profiles) are never touched.
+create or replace function public.protect_tournament_deletion()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if old.status <> 'draft' then
+    raise exception 'A % tournament cannot be deleted.', old.status;
+  end if;
+  return old;
+end;
+$$;
+
+drop trigger if exists on_tournaments_protect_deletion on public.tournaments;
+create trigger on_tournaments_protect_deletion
+  before delete on public.tournaments
+  for each row
+  execute function public.protect_tournament_deletion();
+
+
 -- ----------------------------------------------------------------------------
 -- TODO's voor een volgende migratie
 -- ----------------------------------------------------------------------------

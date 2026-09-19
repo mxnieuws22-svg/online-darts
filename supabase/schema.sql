@@ -153,7 +153,7 @@ set search_path = public
 as $$
 begin
   if new.legs_per_match is distinct from old.legs_per_match and old.status <> 'draft' then
-    raise exception 'Het aantal legs kan niet meer gewijzigd worden nadat de league actief is.';
+    raise exception 'The number of legs can no longer be changed once the league is active.';
   end if;
   return new;
 end;
@@ -555,7 +555,7 @@ set search_path = public
 as $$
 begin
   if old.status not in ('draft', 'scheduled') then
-    raise exception 'Een % league kan niet verwijderd worden.', old.status;
+    raise exception 'A % league cannot be deleted.', old.status;
   end if;
   return old;
 end;
@@ -801,7 +801,7 @@ declare
   s public.player_statistics%rowtype;
 begin
   if p_outcome not in ('win', 'draw', 'loss') then
-    raise exception 'Ongeldige uitslag: %.', p_outcome;
+    raise exception 'Invalid outcome: %.', p_outcome;
   end if;
 
   select * into s from public.player_statistics where player_id = p_player_id for update;
@@ -867,40 +867,40 @@ begin
   -- guard-clause niet zou afgaan en een anonieme aanroeper de controle kon
   -- omzeilen.
   if auth.uid() is null then
-    raise exception 'Je moet ingelogd zijn.';
+    raise exception 'You must be logged in.';
   end if;
 
   select * into m from public.league_matches where id = p_match_id for update;
 
   if m.id is null then
-    raise exception 'Wedstrijd niet gevonden.';
+    raise exception 'Match not found.';
   end if;
 
   if auth.uid() <> m.player_a_id and auth.uid() <> m.player_b_id and not public.is_organizer() then
-    raise exception 'Alleen de spelers van deze wedstrijd kunnen de uitslag doorgeven.';
+    raise exception 'Only the players of this match can submit the result.';
   end if;
 
   if m.status not in ('scheduled', 'in_progress') then
-    raise exception 'Deze wedstrijd staat niet meer open voor het invullen van een uitslag.';
+    raise exception 'This match is no longer open for entering a result.';
   end if;
 
   select legs_per_match into v_legs_per_match from public.leagues where id = m.league_id;
 
   if p_player_a_legs + p_player_b_legs <> v_legs_per_match then
-    raise exception 'Samen moeten de legs precies % zijn.', v_legs_per_match;
+    raise exception 'The legs together must be exactly %.', v_legs_per_match;
   end if;
 
   if p_player_a_legs = p_player_b_legs then
     if p_winner_id is not null then
-      raise exception 'Bij een gelijkspel mag er geen winnaar opgegeven worden.';
+      raise exception 'No winner can be given for a draw.';
     end if;
   else
     if p_winner_id is null or (p_winner_id <> m.player_a_id and p_winner_id <> m.player_b_id) then
-      raise exception 'De winnaar moet één van beide spelers zijn.';
+      raise exception 'The winner must be one of the two players.';
     end if;
     if (p_player_a_legs > p_player_b_legs and p_winner_id <> m.player_a_id)
        or (p_player_b_legs > p_player_a_legs and p_winner_id <> m.player_b_id) then
-      raise exception 'De gekozen winnaar komt niet overeen met de legscore.';
+      raise exception 'The chosen winner doesn''t match the leg score.';
     end if;
   end if;
 
@@ -944,24 +944,24 @@ begin
   -- kan een niet-ingelogde aanroeper de is_opponent-berekening hieronder
   -- omzeilen doordat die met een NULL auth.uid() ook NULL oplevert.
   if auth.uid() is null then
-    raise exception 'Je moet ingelogd zijn.';
+    raise exception 'You must be logged in.';
   end if;
 
   select * into m from public.league_matches where id = p_match_id for update;
 
   if m.id is null then
-    raise exception 'Wedstrijd niet gevonden.';
+    raise exception 'Match not found.';
   end if;
 
   if m.status <> 'pending_confirmation' then
-    raise exception 'Deze wedstrijd wacht niet op bevestiging.';
+    raise exception 'This match is not awaiting confirmation.';
   end if;
 
   is_opponent := (auth.uid() = m.player_a_id or auth.uid() = m.player_b_id)
                  and auth.uid() <> m.reported_by;
 
   if not (is_opponent or public.is_organizer()) then
-    raise exception 'Alleen de tegenstander of de organisator kan deze uitslag bevestigen.';
+    raise exception 'Only the opponent or the organizer can confirm this result.';
   end if;
 
   update public.league_matches
@@ -1007,24 +1007,24 @@ declare
   is_opponent boolean;
 begin
   if auth.uid() is null then
-    raise exception 'Je moet ingelogd zijn.';
+    raise exception 'You must be logged in.';
   end if;
 
   select * into m from public.league_matches where id = p_match_id for update;
 
   if m.id is null then
-    raise exception 'Wedstrijd niet gevonden.';
+    raise exception 'Match not found.';
   end if;
 
   if m.status <> 'pending_confirmation' then
-    raise exception 'Deze wedstrijd wacht niet op bevestiging.';
+    raise exception 'This match is not awaiting confirmation.';
   end if;
 
   is_opponent := (auth.uid() = m.player_a_id or auth.uid() = m.player_b_id)
                  and auth.uid() <> m.reported_by;
 
   if not (is_opponent or public.is_organizer()) then
-    raise exception 'Alleen de tegenstander of de organisator kan deze uitslag afkeuren.';
+    raise exception 'Only the opponent or the organizer can reject this result.';
   end if;
 
   update public.league_matches set
@@ -1134,7 +1134,7 @@ begin
       and id <> new.id;
 
   if v_count >= 12 then
-    raise exception 'Deze divisie zit al vol (maximaal 12 spelers).';
+    raise exception 'This division is already full (maximum 12 players).';
   end if;
 
   return new;
@@ -1167,7 +1167,7 @@ begin
     where division_id = new.division_id;
 
   if v_count < 4 then
-    raise exception 'Deze divisie heeft nog geen 4 spelers; er kunnen nog geen wedstrijden gepland worden.';
+    raise exception 'This division doesn''t have 4 players yet; no matches can be scheduled yet.';
   end if;
 
   return new;
@@ -1198,7 +1198,7 @@ set search_path = public
 as $$
 begin
   if auth.uid() is null then
-    raise exception 'Je moet ingelogd zijn.';
+    raise exception 'You must be logged in.';
   end if;
 
   return query
@@ -1247,27 +1247,27 @@ declare
   rec record;
 begin
   if auth.uid() is null then
-    raise exception 'Je moet ingelogd zijn.';
+    raise exception 'You must be logged in.';
   end if;
   if not public.is_organizer() then
-    raise exception 'Alleen de organisator kan automatisch indelen.';
+    raise exception 'Only the organizer can auto-assign.';
   end if;
 
   select status, name, season into v_status, v_league_name, v_season
     from public.leagues where id = p_league_id;
   if v_status is null then
-    raise exception 'League niet gevonden.';
+    raise exception 'League not found.';
   end if;
   if v_status <> 'draft' then
-    raise exception 'Automatisch indelen kan alleen zolang de league nog niet actief is.';
+    raise exception 'Auto-assigning is only possible while the league is not active yet.';
   end if;
 
   select count(*) into v_total from public.league_players where league_id = p_league_id;
   if v_total = 0 then
-    raise exception 'Er zijn nog geen spelers in deze league.';
+    raise exception 'There are no players in this league yet.';
   end if;
   if v_total > 12 then
-    raise exception 'Te veel spelers voor deze league (% spelers, max 12).', v_total;
+    raise exception 'Too many players for this league (% players, max 12).', v_total;
   end if;
 
   insert into public.league_divisions (league_id, name, rank)
@@ -1284,7 +1284,6 @@ begin
     select
       lp.player_id as p_id,
       p.display_name as p_name,
-      p.locale as p_locale,
       lp.division_id as old_division_id,
       coalesce(
         case when ps.average_sample_count >= 5 then ps.average_score end,
@@ -1314,7 +1313,7 @@ begin
 
       insert into public.notifications (player_id, type, title, body, league_id)
       select rec.p_id, 'division_assigned', nt.title, nt.body, p_league_id
-      from public.notif_text(rec.p_locale, 'division_assigned', jsonb_build_object('league_name', v_league_name)) nt;
+      from public.notif_text('division_assigned', jsonb_build_object('league_name', v_league_name)) nt;
     end if;
 
     player_id := rec.p_id;
@@ -1363,7 +1362,7 @@ set search_path = public
 as $$
 begin
   if auth.uid() is null then
-    raise exception 'Je moet ingelogd zijn.';
+    raise exception 'You must be logged in.';
   end if;
 
   return query
@@ -1717,19 +1716,19 @@ declare
   v_claim_id uuid;
 begin
   if auth.uid() is null then
-    raise exception 'Je moet ingelogd zijn.';
+    raise exception 'You must be logged in.';
   end if;
   if not public.is_organizer() then
-    raise exception 'Alleen de organisator kan divisiewinnaars bepalen.';
+    raise exception 'Only the organizer can determine division winners.';
   end if;
 
   select status, name, season into v_status, v_league_name, v_season
     from public.leagues where id = p_league_id;
   if v_status is null then
-    raise exception 'League niet gevonden.';
+    raise exception 'League not found.';
   end if;
   if v_status <> 'finished' then
-    raise exception 'Divisiewinnaars kunnen pas bepaald worden als de league is afgerond.';
+    raise exception 'Division winners can only be determined once the league is finished.';
   end if;
 
   for rec in
@@ -1764,9 +1763,9 @@ begin
       insert into public.prize_notifications (player_id, prize_claim_id, title, body)
       values (
         rec.pid, v_claim_id,
-        'Gefeliciteerd! Je hebt ' || v_league_name || ' gewonnen',
-        'Je bent winnaar geworden van ' || v_league_name || '. Je hebt een gepersonaliseerd ' ||
-        'kledingstuk gewonnen, beschikbaar gesteld door LWPrints.'
+        'Congratulations! You have won ' || v_league_name,
+        'You have won ' || v_league_name || '. You have been awarded a personalized ' ||
+        'garment, provided by LWPrints.'
       );
 
       won_player_id := rec.pid;
@@ -1795,19 +1794,19 @@ declare
   v_claim public.prize_claims%rowtype;
 begin
   if auth.uid() is null then
-    raise exception 'Je moet ingelogd zijn.';
+    raise exception 'You must be logged in.';
   end if;
 
   select player_id into v_winner_player_id
     from public.division_winners where id = p_division_winner_id;
   if v_winner_player_id is null or v_winner_player_id <> auth.uid() then
-    raise exception 'Dit is niet jouw prijs.';
+    raise exception 'This is not your prize.';
   end if;
 
   select * into v_claim from public.prize_claims
     where division_winner_id = p_division_winner_id for update;
   if v_claim.id is null then
-    raise exception 'Claim niet gevonden.';
+    raise exception 'Claim not found.';
   end if;
 
   if v_claim.status = 'available' then
@@ -1847,42 +1846,42 @@ declare
   v_claim public.prize_claims%rowtype;
 begin
   if auth.uid() is null then
-    raise exception 'Je moet ingelogd zijn.';
+    raise exception 'You must be logged in.';
   end if;
 
   select player_id into v_winner_player_id
     from public.division_winners where id = p_division_winner_id;
   if v_winner_player_id is null then
-    raise exception 'Prijs niet gevonden.';
+    raise exception 'Prize not found.';
   end if;
   if v_winner_player_id <> auth.uid() then
-    raise exception 'Dit is niet jouw prijs.';
+    raise exception 'This is not your prize.';
   end if;
 
   select * into v_claim from public.prize_claims
     where division_winner_id = p_division_winner_id for update;
   if v_claim.id is null then
-    raise exception 'Claim niet gevonden.';
+    raise exception 'Claim not found.';
   end if;
 
   if v_claim.status in ('confirmed', 'in_production', 'ready', 'delivered', 'cancelled') then
-    raise exception 'Deze prijs staat niet meer open om te wijzigen. Neem contact op met de organisator.';
+    raise exception 'This prize is no longer open for changes. Contact the organizer.';
   end if;
 
   if p_full_name is null or trim(p_full_name) = '' then
-    raise exception 'Vul je naam in.';
+    raise exception 'Enter your name.';
   end if;
   if p_email is null or p_email !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' then
-    raise exception 'Vul een geldig e-mailadres in.';
+    raise exception 'Enter a valid email address.';
   end if;
   if p_garment is not null and p_garment not in ('tshirt', 'hoodie', 'polo') then
-    raise exception 'Ongeldige keuze voor kledingstuk.';
+    raise exception 'Invalid garment choice.';
   end if;
   if p_size is not null and p_size not in ('xs', 's', 'm', 'l', 'xl', 'xxl', 'xxxl') then
-    raise exception 'Ongeldige maat.';
+    raise exception 'Invalid size.';
   end if;
   if not p_consent then
-    raise exception 'Je moet akkoord gaan met het delen van je gegevens met LWPrints om te kunnen claimen.';
+    raise exception 'You must agree to share your details with LWPrints to be able to claim.';
   end if;
 
   update public.prize_claims set
@@ -1930,21 +1929,21 @@ declare
   v_old_status text;
 begin
   if auth.uid() is null then
-    raise exception 'Je moet ingelogd zijn.';
+    raise exception 'You must be logged in.';
   end if;
   if not public.is_organizer() then
-    raise exception 'Alleen de organisator kan de status wijzigen.';
+    raise exception 'Only the organizer can change the status.';
   end if;
   if p_new_status not in (
     'available', 'claim_started', 'claimed', 'reviewing', 'contact_pending',
     'confirmed', 'in_production', 'ready', 'delivered', 'cancelled'
   ) then
-    raise exception 'Ongeldige status: %.', p_new_status;
+    raise exception 'Invalid status: %.', p_new_status;
   end if;
 
   select status into v_old_status from public.prize_claims where id = p_claim_id for update;
   if v_old_status is null then
-    raise exception 'Claim niet gevonden.';
+    raise exception 'Claim not found.';
   end if;
 
   update public.prize_claims set status = p_new_status where id = p_claim_id;
@@ -1996,12 +1995,12 @@ begin
     if new.start_at is distinct from old.start_at
        or new.timezone is distinct from old.timezone
        or new.division_count is distinct from old.division_count then
-      raise exception 'Startdatum, tijdzone en aantal divisies kunnen niet meer gewijzigd worden nadat de league actief is.';
+      raise exception 'Start date, timezone and number of divisions can no longer be changed once the league is active.';
     end if;
   end if;
 
   if new.status = 'scheduled' and (new.start_at is null or new.start_at <= now()) then
-    raise exception 'Stel een startdatum en -tijd in de toekomst in om de league te plannen.';
+    raise exception 'Set a start date and time in the future to schedule the league.';
   end if;
 
   if new.status = 'scheduled' and old.status <> 'scheduled' then
@@ -2013,7 +2012,7 @@ begin
       where lp.league_id = new.id
       limit 1;
     if v_conflict_name is not null then
-      raise exception 'Speler % zit al in een andere geplande of actieve league; los dit eerst op voordat je deze league plant.', v_conflict_name;
+      raise exception 'Player % is already in another scheduled or active league; resolve this before scheduling this league.', v_conflict_name;
     end if;
   end if;
 
@@ -2026,7 +2025,7 @@ begin
         and ld.rank > new.division_count
     ) into v_occupied;
     if v_occupied then
-      raise exception 'Er zitten nog spelers in een divisie die zou vervallen; verplaats hen eerst naar een lagere divisie.';
+      raise exception 'There are still players in a division that would be removed; move them to a lower division first.';
     end if;
   end if;
 
@@ -2154,10 +2153,10 @@ declare
 begin
   select * into v_league from public.leagues where id = p_league_id;
   if v_league is null then
-    raise exception 'League niet gevonden.';
+    raise exception 'League not found.';
   end if;
   if v_league.start_at is null then
-    raise exception 'League heeft nog geen startmoment.';
+    raise exception 'The league doesn''t have a start time yet.';
   end if;
 
   for div in
@@ -2256,8 +2255,7 @@ begin
   insert into public.notifications (player_id, type, title, body, league_id)
   select lp.player_id, 'league_started', nt.title, nt.body, new.id
   from public.league_players lp
-  join public.profiles p on p.id = lp.player_id
-  cross join lateral public.notif_text(p.locale, 'league_started', jsonb_build_object('league_name', new.name)) nt
+  cross join lateral public.notif_text('league_started', jsonb_build_object('league_name', new.name)) nt
   where lp.league_id = new.id;
 
   return new;
@@ -2313,7 +2311,7 @@ set search_path = public
 as $$
 begin
   if auth.uid() is null then
-    raise exception 'Je moet ingelogd zijn.';
+    raise exception 'You must be logged in.';
   end if;
   return public.activate_league(p_league_id);
 end;
@@ -2334,21 +2332,21 @@ declare
   v_opponent uuid;
 begin
   if auth.uid() is null then
-    raise exception 'Je moet ingelogd zijn.';
+    raise exception 'You must be logged in.';
   end if;
 
   select * into m from public.league_matches where id = p_match_id;
   if m is null then
-    raise exception 'Wedstrijd niet gevonden.';
+    raise exception 'Match not found.';
   end if;
   if auth.uid() <> m.player_a_id and auth.uid() <> m.player_b_id then
-    raise exception 'Alleen de deelnemers kunnen een moment voorstellen.';
+    raise exception 'Only the participants can propose a time.';
   end if;
   if m.status not in ('scheduled', 'in_progress') then
-    raise exception 'Deze wedstrijd staat niet meer open om te plannen.';
+    raise exception 'This match is no longer open for scheduling.';
   end if;
   if p_proposed_at <= now() then
-    raise exception 'Kies een moment in de toekomst.';
+    raise exception 'Choose a time in the future.';
   end if;
 
   v_opponent := case when auth.uid() = m.player_a_id then m.player_b_id else m.player_a_id end;
@@ -2367,7 +2365,7 @@ begin
 
   insert into public.notifications (player_id, type, title, body, league_match_id)
   select v_opponent, 'match_schedule_proposed', nt.title, nt.body, p_match_id
-  from public.notif_text((select locale from public.profiles where id = v_opponent), 'match_schedule_proposed') nt;
+  from public.notif_text('match_schedule_proposed') nt;
 end;
 $$;
 
@@ -2389,33 +2387,31 @@ declare
   m record;
   prop record;
   v_other uuid;
-  v_other_locale text;
 begin
   if auth.uid() is null then
-    raise exception 'Je moet ingelogd zijn.';
+    raise exception 'You must be logged in.';
   end if;
   if p_action not in ('accept', 'counter', 'dispute') then
-    raise exception 'Ongeldige actie.';
+    raise exception 'Invalid action.';
   end if;
 
   select * into m from public.league_matches where id = p_match_id;
   if m is null then
-    raise exception 'Wedstrijd niet gevonden.';
+    raise exception 'Match not found.';
   end if;
   if auth.uid() <> m.player_a_id and auth.uid() <> m.player_b_id then
-    raise exception 'Alleen de deelnemers kunnen reageren.';
+    raise exception 'Only the participants can respond.';
   end if;
 
   select * into prop from public.match_schedule_proposals where league_match_id = p_match_id for update;
   if prop is null then
-    raise exception 'Er is nog geen voorstel voor deze wedstrijd.';
+    raise exception 'There is no proposal for this match yet.';
   end if;
   if prop.proposed_by = auth.uid() then
-    raise exception 'Je kunt niet op je eigen voorstel reageren.';
+    raise exception 'You can''t respond to your own proposal.';
   end if;
 
   v_other := prop.proposed_by;
-  select locale into v_other_locale from public.profiles where id = v_other;
 
   if p_action = 'accept' then
     update public.match_schedule_proposals
@@ -2430,14 +2426,14 @@ begin
 
     insert into public.notifications (player_id, type, title, body, league_match_id)
     select v_other, 'match_schedule_accepted', nt.title, nt.body, p_match_id
-    from public.notif_text(v_other_locale, 'match_schedule_accepted') nt;
+    from public.notif_text('match_schedule_accepted') nt;
 
   elsif p_action = 'counter' then
     if p_proposed_at is null then
-      raise exception 'Geef een tegenvoorstel-moment op.';
+      raise exception 'Provide a counter-proposal time.';
     end if;
     if p_proposed_at <= now() then
-      raise exception 'Kies een moment in de toekomst.';
+      raise exception 'Choose a time in the future.';
     end if;
     update public.match_schedule_proposals
       set proposed_by = auth.uid(), proposed_at = p_proposed_at,
@@ -2449,7 +2445,7 @@ begin
 
     insert into public.notifications (player_id, type, title, body, league_match_id)
     select v_other, 'match_schedule_countered', nt.title, nt.body, p_match_id
-    from public.notif_text(v_other_locale, 'match_schedule_countered') nt;
+    from public.notif_text('match_schedule_countered') nt;
 
   else
     update public.match_schedule_proposals
@@ -2461,7 +2457,7 @@ begin
 
     insert into public.notifications (player_id, type, title, body, league_match_id)
     select v_other, 'match_schedule_disputed', nt.title, nt.body, p_match_id
-    from public.notif_text(v_other_locale, 'match_schedule_disputed', jsonb_build_object('note', p_note)) nt;
+    from public.notif_text('match_schedule_disputed', jsonb_build_object('note', p_note)) nt;
   end if;
 end;
 $$;
@@ -2553,7 +2549,7 @@ begin
     limit 1;
 
   if v_conflict_name is not null then
-    raise exception 'Deze speler zit al in een geplande of actieve league (%) en kan niet ook in deze league zitten.', v_conflict_name;
+    raise exception 'This player is already in a scheduled or active league (%) and cannot also be in this league.', v_conflict_name;
   end if;
 
   return new;
@@ -2604,7 +2600,7 @@ set search_path = public
 as $$
 begin
   if old.available_at is not null and new.available_at is distinct from old.available_at then
-    raise exception 'Het beschikbaarheidsmoment van een wedstrijd kan niet meer gewijzigd worden.';
+    raise exception 'The availability time of a match can no longer be changed.';
   end if;
   return new;
 end;
@@ -2680,18 +2676,18 @@ declare
   v_other uuid;
 begin
   if auth.uid() is null then
-    raise exception 'Je moet ingelogd zijn.';
+    raise exception 'You must be logged in.';
   end if;
 
   select * into prop from public.match_schedule_proposals where league_match_id = p_match_id for update;
   if prop is null then
-    raise exception 'Er is geen voorstel om in te trekken.';
+    raise exception 'There is no proposal to withdraw.';
   end if;
   if prop.proposed_by <> auth.uid() then
-    raise exception 'Je kunt alleen je eigen voorstel intrekken.';
+    raise exception 'You can only withdraw your own proposal.';
   end if;
   if prop.status = 'accepted' then
-    raise exception 'Een geaccepteerd voorstel kan niet meer ingetrokken worden.';
+    raise exception 'An accepted proposal can no longer be withdrawn.';
   end if;
 
   select case when m.player_a_id = auth.uid() then m.player_b_id else m.player_a_id end
@@ -2705,7 +2701,7 @@ begin
 
   insert into public.notifications (player_id, type, title, body, league_match_id)
   select v_other, 'match_schedule_withdrawn', nt.title, nt.body, p_match_id
-  from public.notif_text((select locale from public.profiles where id = v_other), 'match_schedule_withdrawn') nt;
+  from public.notif_text('match_schedule_withdrawn') nt;
 end;
 $$;
 
@@ -2724,7 +2720,7 @@ set search_path = public
 as $$
 begin
   if auth.uid() is null then
-    raise exception 'Je moet ingelogd zijn.';
+    raise exception 'You must be logged in.';
   end if;
 
   return query
@@ -2788,23 +2784,23 @@ declare
   v_row public.match_chat_messages;
 begin
   if auth.uid() is null then
-    raise exception 'Je moet ingelogd zijn.';
+    raise exception 'You must be logged in.';
   end if;
 
   select * into m from public.league_matches where id = p_match_id;
   if m is null then
-    raise exception 'Wedstrijd niet gevonden.';
+    raise exception 'Match not found.';
   end if;
   if auth.uid() <> m.player_a_id and auth.uid() <> m.player_b_id then
-    raise exception 'Alleen de twee spelers van deze wedstrijd kunnen hier chatten.';
+    raise exception 'Only the two players of this match can chat here.';
   end if;
 
   v_body := trim(p_body);
   if v_body = '' then
-    raise exception 'Typ eerst een bericht.';
+    raise exception 'Type a message first.';
   end if;
   if char_length(v_body) > 1000 then
-    raise exception 'Bericht is te lang (max 1000 tekens).';
+    raise exception 'Message is too long (max 1000 characters).';
   end if;
 
   insert into public.match_chat_messages (league_match_id, sender_id, body)
@@ -2815,7 +2811,7 @@ begin
 
   insert into public.notifications (player_id, type, title, body, league_match_id)
   select v_other, 'match_chat_message', nt.title, left(v_body, 120), p_match_id
-  from public.notif_text((select locale from public.profiles where id = v_other), 'match_chat_message') nt;
+  from public.notif_text('match_chat_message') nt;
 
   return v_row;
 end;
@@ -2868,29 +2864,29 @@ declare
   v_count int;
 begin
   if auth.uid() is null then
-    raise exception 'Je moet ingelogd zijn.';
+    raise exception 'You must be logged in.';
   end if;
 
   select status, max_players, registration_opens_at, registration_closes_at
     into v_status, v_max, v_opens, v_closes
     from public.tournaments where id = p_tournament_id;
   if v_status is null then
-    raise exception 'Toernooi niet gevonden.';
+    raise exception 'Tournament not found.';
   end if;
   if v_status <> 'active' then
-    raise exception 'Inschrijven kan niet (meer) voor dit toernooi.';
+    raise exception 'Registration is not (no longer) possible for this tournament.';
   end if;
   if v_opens is not null and v_opens > now() then
-    raise exception 'Inschrijving is nog niet geopend.';
+    raise exception 'Registration has not opened yet.';
   end if;
   if v_closes is not null and v_closes <= now() then
-    raise exception 'Inschrijving is gesloten.';
+    raise exception 'Registration is closed.';
   end if;
   if v_max is not null then
     select count(*) into v_count from public.tournament_entries
       where tournament_id = p_tournament_id and status <> 'withdrawn';
     if v_count >= v_max then
-      raise exception 'Dit toernooi zit vol.';
+      raise exception 'This tournament is full.';
     end if;
   end if;
 
@@ -2914,7 +2910,7 @@ set search_path = public
 as $$
 begin
   if auth.uid() is null then
-    raise exception 'Je moet ingelogd zijn.';
+    raise exception 'You must be logged in.';
   end if;
 
   update public.tournament_entries
@@ -2924,7 +2920,7 @@ begin
       and status <> 'withdrawn';
 
   if not found then
-    raise exception 'Je bent niet ingeschreven voor dit toernooi.';
+    raise exception 'You''re not registered for this tournament.';
   end if;
 end;
 $$;
@@ -3038,29 +3034,29 @@ declare
   v_payment_status text;
 begin
   if auth.uid() is null then
-    raise exception 'Je moet ingelogd zijn.';
+    raise exception 'You must be logged in.';
   end if;
 
   select status, max_players, registration_opens_at, registration_closes_at, entry_fee
     into v_status, v_max, v_opens, v_closes, v_entry_fee
     from public.tournaments where id = p_tournament_id;
   if v_status is null then
-    raise exception 'Toernooi niet gevonden.';
+    raise exception 'Tournament not found.';
   end if;
   if v_status <> 'active' then
-    raise exception 'Inschrijven kan niet (meer) voor dit toernooi.';
+    raise exception 'Registration is not (no longer) possible for this tournament.';
   end if;
   if v_opens is not null and v_opens > now() then
-    raise exception 'Inschrijving is nog niet geopend.';
+    raise exception 'Registration has not opened yet.';
   end if;
   if v_closes is not null and v_closes <= now() then
-    raise exception 'Inschrijving is gesloten.';
+    raise exception 'Registration is closed.';
   end if;
   if v_max is not null then
     select count(*) into v_count from public.tournament_entries
       where tournament_id = p_tournament_id and status <> 'withdrawn';
     if v_count >= v_max then
-      raise exception 'Dit toernooi zit vol.';
+      raise exception 'This tournament is full.';
     end if;
   end if;
 
@@ -3094,7 +3090,7 @@ set search_path = public
 as $$
 begin
   if auth.uid() is null then
-    raise exception 'Je moet ingelogd zijn.';
+    raise exception 'You must be logged in.';
   end if;
 
   update public.tournament_entries
@@ -3106,7 +3102,7 @@ begin
       and payment_status = 'pending';
 
   if not found then
-    raise exception 'Geen openstaande betaling gevonden om te melden.';
+    raise exception 'No outstanding payment found to report.';
   end if;
 end;
 $$;
@@ -3127,10 +3123,10 @@ declare
   v_player_id uuid;
 begin
   if auth.uid() is null then
-    raise exception 'Je moet ingelogd zijn.';
+    raise exception 'You must be logged in.';
   end if;
   if not public.is_organizer() then
-    raise exception 'Alleen de organisator kan een betaling bevestigen.';
+    raise exception 'Only the organizer can confirm a payment.';
   end if;
 
   update public.tournament_entries
@@ -3142,12 +3138,12 @@ begin
     returning tournament_id, player_id into v_tournament_id, v_player_id;
 
   if not found then
-    raise exception 'Geen openstaande betaling gevonden om te bevestigen.';
+    raise exception 'No outstanding payment found to confirm.';
   end if;
 
   insert into public.notifications (player_id, type, title, body)
   select v_player_id, 'tournament_payment_confirmed', nt.title, nt.body
-  from public.notif_text((select locale from public.profiles where id = v_player_id), 'tournament_payment_confirmed') nt;
+  from public.notif_text('tournament_payment_confirmed') nt;
 end;
 $$;
 
@@ -3167,10 +3163,10 @@ declare
   v_player_id uuid;
 begin
   if auth.uid() is null then
-    raise exception 'Je moet ingelogd zijn.';
+    raise exception 'You must be logged in.';
   end if;
   if not public.is_organizer() then
-    raise exception 'Alleen de organisator kan een betaling afwijzen.';
+    raise exception 'Only the organizer can reject a payment.';
   end if;
 
   update public.tournament_entries
@@ -3179,13 +3175,12 @@ begin
     returning player_id into v_player_id;
 
   if not found then
-    raise exception 'Geen openstaande betaling gevonden om af te wijzen.';
+    raise exception 'No outstanding payment found to reject.';
   end if;
 
   insert into public.notifications (player_id, type, title, body)
   select v_player_id, 'tournament_payment_rejected', nt.title, nt.body
   from public.notif_text(
-    (select locale from public.profiles where id = v_player_id),
     'tournament_payment_rejected',
     jsonb_build_object('reason', nullif(trim(p_reason), ''))
   ) nt;
@@ -3208,10 +3203,10 @@ declare
   v_player_id uuid;
 begin
   if auth.uid() is null then
-    raise exception 'Je moet ingelogd zijn.';
+    raise exception 'You must be logged in.';
   end if;
   if not public.is_organizer() then
-    raise exception 'Alleen de organisator kan een terugbetaling registreren.';
+    raise exception 'Only the organizer can register a refund.';
   end if;
 
   update public.tournament_entries
@@ -3220,12 +3215,12 @@ begin
     returning player_id into v_player_id;
 
   if not found then
-    raise exception 'Geen betaalde inschrijving gevonden om terug te betalen.';
+    raise exception 'No paid registration found to refund.';
   end if;
 
   insert into public.notifications (player_id, type, title, body)
   select v_player_id, 'tournament_refunded', nt.title, nt.body
-  from public.notif_text((select locale from public.profiles where id = v_player_id), 'tournament_refunded') nt;
+  from public.notif_text('tournament_refunded') nt;
 end;
 $$;
 
@@ -3253,8 +3248,7 @@ begin
   insert into public.notifications (player_id, type, title, body)
   select due.player_id, 'tournament_payment_expired', nt.title, nt.body
   from due
-  join public.profiles p on p.id = due.player_id
-  cross join lateral public.notif_text(p.locale, 'tournament_payment_expired', jsonb_build_object('tournament_name', due.tournament_name)) nt;
+  cross join lateral public.notif_text('tournament_payment_expired', jsonb_build_object('tournament_name', due.tournament_name)) nt;
 
   update public.tournament_entries e
     set payment_status = 'failed', status = 'withdrawn'
@@ -3330,25 +3324,25 @@ declare
   v_row public.tournament_payouts;
 begin
   if auth.uid() is null then
-    raise exception 'Je moet ingelogd zijn.';
+    raise exception 'You must be logged in.';
   end if;
   if not public.is_organizer() then
-    raise exception 'Alleen de organisator kan een uitbetaling vastleggen.';
+    raise exception 'Only the organizer can set a payout.';
   end if;
   if p_placement is null or p_placement <= 0 then
-    raise exception 'Plaatsing moet groter dan 0 zijn.';
+    raise exception 'Placement must be greater than 0.';
   end if;
   if p_prize_amount is null or p_prize_amount < 0 then
-    raise exception 'Bedrag mag niet negatief zijn.';
+    raise exception 'Amount cannot be negative.';
   end if;
   if not exists (select 1 from public.tournaments where id = p_tournament_id) then
-    raise exception 'Toernooi niet gevonden.';
+    raise exception 'Tournament not found.';
   end if;
   if not exists (
     select 1 from public.tournament_entries
     where tournament_id = p_tournament_id and player_id = p_player_id
   ) then
-    raise exception 'Deze speler staat niet ingeschreven voor dit toernooi.';
+    raise exception 'This player is not registered for this tournament.';
   end if;
 
   select * into v_existing
@@ -3356,7 +3350,7 @@ begin
     where tournament_id = p_tournament_id and placement = p_placement;
 
   if v_existing.id is not null and v_existing.payout_status = 'paid' then
-    raise exception 'Deze prijs is al uitbetaald en kan niet meer gewijzigd worden.';
+    raise exception 'This prize has already been paid out and can no longer be changed.';
   end if;
 
   insert into public.tournament_payouts
@@ -3393,10 +3387,10 @@ declare
   v_row public.tournament_payouts;
 begin
   if auth.uid() is null then
-    raise exception 'Je moet ingelogd zijn.';
+    raise exception 'You must be logged in.';
   end if;
   if not public.is_organizer() then
-    raise exception 'Alleen de organisator kan een uitbetaling goedkeuren.';
+    raise exception 'Only the organizer can approve a payout.';
   end if;
 
   update public.tournament_payouts
@@ -3407,7 +3401,7 @@ begin
     returning * into v_row;
 
   if v_row.id is null then
-    raise exception 'Geen openstaande uitbetaling gevonden om goed te keuren.';
+    raise exception 'No outstanding payout found to approve.';
   end if;
 
   return v_row;
@@ -3430,10 +3424,10 @@ declare
   v_reference text;
 begin
   if auth.uid() is null then
-    raise exception 'Je moet ingelogd zijn.';
+    raise exception 'You must be logged in.';
   end if;
   if not public.is_organizer() then
-    raise exception 'Alleen de organisator kan een uitbetaling als betaald registreren.';
+    raise exception 'Only the organizer can mark a payout as paid.';
   end if;
 
   v_reference := nullif(trim(p_payout_reference), '');
@@ -3446,7 +3440,7 @@ begin
     returning * into v_row;
 
   if v_row.id is null then
-    raise exception 'Geen goedgekeurde uitbetaling gevonden om als betaald te markeren.';
+    raise exception 'No approved payout found to mark as paid.';
   end if;
 
   return v_row;
@@ -3538,48 +3532,48 @@ declare
   v_key text;
 begin
   if auth.uid() is null then
-    raise exception 'Je moet ingelogd zijn.';
+    raise exception 'You must be logged in.';
   end if;
 
   select * into m from public.league_matches where id = p_match_id for update;
 
   if m.id is null then
-    raise exception 'Wedstrijd niet gevonden.';
+    raise exception 'Match not found.';
   end if;
 
   if auth.uid() <> m.player_a_id and auth.uid() <> m.player_b_id and not public.is_organizer() then
-    raise exception 'Alleen de spelers van deze wedstrijd kunnen de uitslag doorgeven.';
+    raise exception 'Only the players of this match can submit the result.';
   end if;
 
   if m.status not in ('scheduled', 'in_progress') then
-    raise exception 'Deze wedstrijd staat niet meer open voor het invullen van een uitslag.';
+    raise exception 'This match is no longer open for entering a result.';
   end if;
 
   select legs_per_match into v_legs_per_match from public.leagues where id = m.league_id;
   v_legs_to_win := v_legs_per_match / 2 + 1;
 
   if p_player_a_legs + p_player_b_legs > v_legs_per_match then
-    raise exception 'Samen mogen de legs niet meer dan % zijn.', v_legs_per_match;
+    raise exception 'The legs together can''t exceed %.', v_legs_per_match;
   end if;
 
   if p_player_a_legs = p_player_b_legs then
     if p_player_a_legs * 2 <> v_legs_per_match then
-      raise exception 'Een gelijkspel kan alleen bij % - % (de helft van % legs).',
+      raise exception 'A draw is only possible at %-% (half of % legs).',
         v_legs_per_match / 2, v_legs_per_match / 2, v_legs_per_match;
     end if;
     if p_winner_id is not null then
-      raise exception 'Bij een gelijkspel mag er geen winnaar opgegeven worden.';
+      raise exception 'No winner can be given for a draw.';
     end if;
   else
     if greatest(p_player_a_legs, p_player_b_legs) <> v_legs_to_win then
-      raise exception 'Zodra een speler % legs heeft gewonnen is de wedstrijd beslist.', v_legs_to_win;
+      raise exception 'Once a player has won % legs the match is decided.', v_legs_to_win;
     end if;
     if p_winner_id is null or (p_winner_id <> m.player_a_id and p_winner_id <> m.player_b_id) then
-      raise exception 'De winnaar moet één van beide spelers zijn.';
+      raise exception 'The winner must be one of the two players.';
     end if;
     if (p_player_a_legs > p_player_b_legs and p_winner_id <> m.player_a_id)
        or (p_player_b_legs > p_player_a_legs and p_winner_id <> m.player_b_id) then
-      raise exception 'De gekozen winnaar komt niet overeen met de legscore.';
+      raise exception 'The chosen winner doesn''t match the leg score.';
     end if;
   end if;
 
@@ -3588,12 +3582,12 @@ begin
   if p_player_a_average is null or p_player_b_average is null
      or p_player_a_180s is null or p_player_b_180s is null
      or p_player_a_highest_checkout is null or p_player_b_highest_checkout is null then
-    raise exception 'Vul Gemiddelde, 180''s en Hoogste finish in voor beide spelers.';
+    raise exception 'Enter Average, 180''s and Highest finish for both players.';
   end if;
 
   foreach v_key in array v_required_keys loop
     if (p_extra_a->>v_key) is null or (p_extra_b->>v_key) is null then
-      raise exception 'Vul alle statistieken in voor beide spelers (Scoring, Eerste 9 gem., Checkouts, Worpen, Beste leg, 60+/80+/100+/140+).';
+      raise exception 'Enter all statistics for both players (Scoring, First 9 avg., Checkouts, Darts thrown, Best leg, 60+/80+/100+/140+).';
     end if;
   end loop;
 
@@ -3665,18 +3659,18 @@ declare
   v_row public.league_matches;
 begin
   if auth.uid() is null then
-    raise exception 'Je moet ingelogd zijn.';
+    raise exception 'You must be logged in.';
   end if;
   if not public.is_organizer() then
-    raise exception 'Alleen de organisator kan een wedstrijd inplannen.';
+    raise exception 'Only the organizer can schedule a match.';
   end if;
   if p_player_a_id = p_player_b_id then
-    raise exception 'Kies twee verschillende spelers.';
+    raise exception 'Choose two different players.';
   end if;
 
   select name into v_league_name from public.leagues where id = p_league_id;
   if v_league_name is null then
-    raise exception 'League niet gevonden.';
+    raise exception 'League not found.';
   end if;
 
   insert into public.league_matches
@@ -3686,10 +3680,9 @@ begin
   returning * into v_row;
 
   insert into public.notifications (player_id, type, title, body, league_match_id)
-  select p.id, 'match_scheduled', nt.title, nt.body, v_row.id
-  from public.profiles p
-  cross join lateral public.notif_text(p.locale, 'match_scheduled', jsonb_build_object('league_name', v_league_name)) nt
-  where p.id in (p_player_a_id, p_player_b_id);
+  select pid, 'match_scheduled', nt.title, nt.body, v_row.id
+  from unnest(array[p_player_a_id, p_player_b_id]) as pid
+  cross join lateral public.notif_text('match_scheduled', jsonb_build_object('league_name', v_league_name)) nt;
 
   return v_row;
 end;
@@ -3729,13 +3722,11 @@ begin
   insert into public.notifications (player_id, type, title, body, league_match_id)
   select due.player_a_id, 'match_available', nt.title, nt.body, due.id
   from due
-  join public.profiles p on p.id = due.player_a_id
-  cross join lateral public.notif_text(p.locale, 'match_available', jsonb_build_object('league_name', due.league_name)) nt
+  cross join lateral public.notif_text('match_available', jsonb_build_object('league_name', due.league_name)) nt
   union all
   select due.player_b_id, 'match_available', nt.title, nt.body, due.id
   from due
-  join public.profiles p on p.id = due.player_b_id
-  cross join lateral public.notif_text(p.locale, 'match_available', jsonb_build_object('league_name', due.league_name)) nt;
+  cross join lateral public.notif_text('match_available', jsonb_build_object('league_name', due.league_name)) nt;
 
   update public.league_matches m
     set available_notified_at = now()
@@ -3888,143 +3879,66 @@ alter table public.leagues
 
 
 -- ============================================================================
--- 23. Internationalisatie (NL/EN). De taalkeuze staat al op de hoofdpagina
---     (renderLanding in js/app.js, vóór inloggen via localStorage) en wordt
---     na inloggen bij het profiel opgeslagen (profiles.locale), zodat
---     database-gegenereerde meldingen - en dus ook de e-mail/push-kanalen uit
---     secties 20/21, die simpelweg doorsturen wat hier als title/body wordt
---     opgeslagen - in de taal van de ONTVANGER aankomen, niet die van de
---     afzender. RPC-foutmeldingen (raise exception) blijven bewust
---     Nederlands: die worden vrijwel altijd al client-side afgevangen voordat
---     de RPC wordt aangeroepen.
+-- 23. Centralized notification text. One lookup per notification type (the
+--     existing `type` column on notifications, reused as the lookup key)
+--     instead of writing the title/body out separately in every calling
+--     function. p_params carries the loose values (e.g. league_name) that
+--     go into the text; for match_schedule_disputed/tournament_payment_rejected,
+--     'note'/'reason' is free text the other user typed themselves - that is
+--     used as-is, with a default text only when nothing was filled in.
+--     match_chat_message only returns a title; the chat content itself
+--     (also free text) is added by the caller.
 -- ============================================================================
 
 alter table public.profiles
-  add column if not exists locale text not null default 'nl' check (locale in ('nl', 'en'));
-
--- Eén centrale vertaaltabel per notificatie-type (de bestaande `type`-kolom
--- op notifications, hergebruikt als vertaalsleutel) i.p.v. de titel/body al
--- vertaald los in elke aanroepende functie uit te schrijven. p_params draagt
--- de losse waarden aan (bv. league_name) die in de tekst passen; voor
--- match_schedule_disputed/tournament_payment_rejected is 'note'/'reason' de
--- vrije tekst die de andere gebruiker zelf typte - die wordt nooit vertaald,
--- alleen de standaardtekst als er niets is ingevuld. match_chat_message
--- geeft alleen een titel terug; de chatinhoud zelf (ook vrije tekst) wordt
--- door de aanroeper zelf toegevoegd.
-create or replace function public.notif_text(p_locale text, p_key text, p_params jsonb default '{}'::jsonb)
+  drop column if exists locale;
+create or replace function public.notif_text(p_key text, p_params jsonb default '{}'::jsonb)
 returns table(title text, body text)
 language plpgsql
 as $$
-declare
-  v_en boolean := p_locale = 'en';
 begin
   case p_key
     when 'division_assigned' then
-      if v_en then
-        title := 'You''ve been placed!';
-        body := 'You''re playing in ' || (p_params->>'league_name') || '. Check the standings and your opponents.';
-      else
-        title := 'Je bent ingedeeld!';
-        body := 'Je speelt mee in ' || (p_params->>'league_name') || '. Bekijk de stand en je tegenstanders.';
-      end if;
+      title := 'You''ve been placed!';
+      body := 'You''re playing in ' || (p_params->>'league_name') || '. Check the standings and your opponents.';
     when 'league_started' then
-      if v_en then
-        title := 'The league has started: ' || (p_params->>'league_name');
-        body := 'Check out your matches.';
-      else
-        title := 'De league is gestart: ' || (p_params->>'league_name');
-        body := 'Bekijk je wedstrijden.';
-      end if;
+      title := 'The league has started: ' || (p_params->>'league_name');
+      body := 'Check out your matches.';
     when 'match_schedule_proposed' then
-      if v_en then
-        title := 'New proposal for your match';
-        body := 'Respond: accept, counter-propose, or report a problem.';
-      else
-        title := 'Nieuw voorstel voor jullie wedstrijd';
-        body := 'Reageer: accepteer, doe een tegenvoorstel of meld een probleem.';
-      end if;
+      title := 'New proposal for your match';
+      body := 'Respond: accept, counter-propose, or report a problem.';
     when 'match_schedule_accepted' then
-      if v_en then
-        title := 'Proposal accepted';
-        body := 'Your match is scheduled.';
-      else
-        title := 'Voorstel geaccepteerd';
-        body := 'Jullie wedstrijd staat gepland.';
-      end if;
+      title := 'Proposal accepted';
+      body := 'Your match is scheduled.';
     when 'match_schedule_countered' then
-      if v_en then
-        title := 'Counter-proposal received';
-        body := 'Respond to the newly proposed time.';
-      else
-        title := 'Tegenvoorstel ontvangen';
-        body := 'Reageer op het nieuwe voorgestelde moment.';
-      end if;
+      title := 'Counter-proposal received';
+      body := 'Respond to the newly proposed time.';
     when 'match_schedule_disputed' then
-      if v_en then
-        title := 'Problem reported';
-        body := coalesce(p_params->>'note', 'A problem was reported with the proposed time.');
-      else
-        title := 'Probleem gemeld';
-        body := coalesce(p_params->>'note', 'Er is een probleem gemeld met het voorgestelde moment.');
-      end if;
+      title := 'Problem reported';
+      body := coalesce(p_params->>'note', 'A problem was reported with the proposed time.');
     when 'match_schedule_withdrawn' then
-      if v_en then
-        title := 'Proposal withdrawn';
-        body := 'The proposed time for your match has been withdrawn.';
-      else
-        title := 'Voorstel ingetrokken';
-        body := 'Het voorgestelde moment voor jullie wedstrijd is ingetrokken.';
-      end if;
+      title := 'Proposal withdrawn';
+      body := 'The proposed time for your match has been withdrawn.';
     when 'match_chat_message' then
-      title := case when v_en then 'New message' else 'Nieuw bericht' end;
+      title := 'New message';
     when 'tournament_payment_confirmed' then
-      if v_en then
-        title := 'Payment confirmed';
-        body := 'Your registration is final.';
-      else
-        title := 'Betaling bevestigd';
-        body := 'Je inschrijving is definitief.';
-      end if;
+      title := 'Payment confirmed';
+      body := 'Your registration is final.';
     when 'tournament_payment_rejected' then
-      if v_en then
-        title := 'Payment not found';
-        body := coalesce(p_params->>'reason', 'Your reported payment could not be confirmed. Your registration has lapsed.');
-      else
-        title := 'Betaling niet gevonden';
-        body := coalesce(p_params->>'reason', 'Je gemelde betaling kon niet worden bevestigd. Je inschrijving is vervallen.');
-      end if;
+      title := 'Payment not found';
+      body := coalesce(p_params->>'reason', 'Your reported payment could not be confirmed. Your registration has lapsed.');
     when 'tournament_refunded' then
-      if v_en then
-        title := 'Refund registered';
-        body := 'Your entry fee has been refunded.';
-      else
-        title := 'Terugbetaling geregistreerd';
-        body := 'Je inschrijfgeld is teruggestort.';
-      end if;
+      title := 'Refund registered';
+      body := 'Your entry fee has been refunded.';
     when 'tournament_payment_expired' then
-      if v_en then
-        title := 'Reservation expired';
-        body := 'You did not pay in time for ' || (p_params->>'tournament_name') || '. Your spot has been released.';
-      else
-        title := 'Reservering verlopen';
-        body := 'Je hebt niet op tijd betaald voor ' || (p_params->>'tournament_name') || '. Je plek is vrijgegeven.';
-      end if;
+      title := 'Reservation expired';
+      body := 'You did not pay in time for ' || (p_params->>'tournament_name') || '. Your spot has been released.';
     when 'match_scheduled' then
-      if v_en then
-        title := 'New match scheduled';
-        body := 'A match has been scheduled for you in ' || (p_params->>'league_name') || '.';
-      else
-        title := 'Nieuwe wedstrijd ingepland';
-        body := 'Er is een wedstrijd voor je ingepland in ' || (p_params->>'league_name') || '.';
-      end if;
+      title := 'New match scheduled';
+      body := 'A match has been scheduled for you in ' || (p_params->>'league_name') || '.';
     when 'match_available' then
-      if v_en then
-        title := 'New match available';
-        body := 'You have a new match to play in ' || (p_params->>'league_name') || '.';
-      else
-        title := 'Nieuwe wedstrijd beschikbaar';
-        body := 'Je hebt een nieuwe wedstrijd om te spelen in ' || (p_params->>'league_name') || '.';
-      end if;
+      title := 'New match available';
+      body := 'You have a new match to play in ' || (p_params->>'league_name') || '.';
     else
       title := p_key;
   end case;
@@ -4032,11 +3946,7 @@ begin
 end;
 $$;
 
-revoke all on function public.notif_text(text, text, jsonb) from public, anon, authenticated;
-
--- Bestaande, al verstuurde meldingen blijven Nederlands (historische data,
--- niet met terugwerkende kracht vertaald); alleen nieuwe meldingen vanaf nu
--- gebruiken notif_text().
+revoke all on function public.notif_text(text, jsonb) from public, anon, authenticated;
 
 
 -- ----------------------------------------------------------------------------
@@ -4095,6 +4005,7 @@ alter table public.tournament_entries
   add column if not exists tikkie_sent_at timestamptz;
 
 comment on column public.tournament_entries.tikkie_sent_at is 'Set by the organizer once they have sent this player a Tikkie payment request. Purely informational (a to-do check for the organizer) - does not affect the payment deadline, which still counts from created_at.';
+
 
 
 -- ============================================================================
@@ -4308,6 +4219,7 @@ create policy "profiles_update_own_or_organizer"
   to authenticated
   using (id = (select auth.uid()) or public.is_organizer())
   with check (id = (select auth.uid()) or public.is_organizer());
+
 
 
 -- ----------------------------------------------------------------------------

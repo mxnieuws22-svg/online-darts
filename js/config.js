@@ -1,12 +1,12 @@
 // js/config.js
 //
-// Vul hier de twee waarden in uit je Supabase-project:
+// Fill in the two values here from your Supabase project:
 // Project Settings -> API.
 //
-// De anon key hoort publiek te zijn: hij staat in elke browser die je
-// site opent. Je beveiliging zit in de Row Level Security-regels van je
-// database, niet in het geheimhouden van deze sleutel.
-// Zet hier NOOIT je service_role key neer.
+// The anon key is meant to be public: it ships in every browser that opens
+// your site. Your security comes from the Row Level Security policies on
+// your database, not from keeping this key secret.
+// NEVER put your service_role key here.
 
 window.APP_CONFIG = {
   SUPABASE_URL: "https://qspfphnailbelqmmzjbk.supabase.co",

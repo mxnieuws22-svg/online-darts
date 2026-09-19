@@ -1075,8 +1075,8 @@ const db = {
     return data || [];
   },
 
-  async registerForTournament(tournamentId) {
-    const { error } = await sb.rpc("register_for_tournament", { p_tournament_id: tournamentId });
+  async registerForTournament(tournamentId, paymentMethod) {
+    const { error } = await sb.rpc("register_for_tournament", { p_tournament_id: tournamentId, p_payment_method: paymentMethod || null });
     if (error) throw error;
   },
 
@@ -2670,11 +2670,14 @@ function tournamentMatchRow(m) {
 function myPaymentBlock(t, entry) {
   if (!entry || entry.payment_status === "not_required") return "";
   const fee = t.entry_fee != null ? fmtMoney(t.entry_fee, t.prize_currency) : "";
+  const methodLabel = entry.payment_method === "tikkie" ? "Tikkie" : entry.payment_method === "bank_transfer" ? "Bank transfer" : null;
+  const instructions = entry.payment_method === "tikkie" ? t.payment_instructions_tikkie
+    : entry.payment_method === "bank_transfer" ? t.payment_instructions_bank : null;
   if (entry.payment_status === "pending") {
     return `
       <div class="card" style="margin-bottom:16px">
-        <div class="row-title" style="font-size:14px;margin-bottom:6px">Entry fee: ${esc(fee)}</div>
-        ${t.payment_instructions ? `<p class="row-sub" style="white-space:pre-wrap;margin:0 0 10px">${esc(t.payment_instructions)}</p>` : ""}
+        <div class="row-title" style="font-size:14px;margin-bottom:6px">Entry fee: ${esc(fee)}${methodLabel ? ` · via ${esc(methodLabel)}` : ""}</div>
+        ${instructions ? `<p class="row-sub" style="white-space:pre-wrap;margin:0 0 10px">${esc(instructions)}</p>` : ""}
         ${t.payment_deadline_hours ? `<p class="muted" style="font-size:12.5px;margin:0 0 10px">Pay within ${t.payment_deadline_hours} hours of registering, or your spot will be released automatically.</p>` : ""}
         <button class="btn sm" id="submitPaymentBtn">I've paid</button>
       </div>`;
@@ -2807,7 +2810,7 @@ async function viewTournamentDetail(id) {
 
     ${!isOrg ? `
       <div style="margin-bottom:16px">
-        ${canRegister ? `<button class="btn block" onclick="registerForTournament('${esc(t.id)}')">${isPaidTournament ? "Register and pay" : "Register"}</button>` : ""}
+        ${canRegister ? `<button class="btn block" onclick="registerForTournament('${esc(t.id)}', ${isPaidTournament})">${isPaidTournament ? "Register and pay" : "Register"}</button>` : ""}
         ${canWithdraw ? `<button class="btn ghost block" onclick="withdrawFromTournament('${esc(t.id)}')">Withdraw</button>` : ""}
         ${!canRegister && !canWithdraw ? `<p class="muted" style="font-size:13px;margin:0">${esc(registrationClosedReason(status))}</p>` : ""}
       </div>
@@ -2829,10 +2832,10 @@ async function viewTournamentDetail(id) {
               ${avatar(e.player, "sm")}
               <div class="row-main">
                 <div class="row-title">${esc(e.player?.display_name || "?")}</div>
-                <div class="row-sub">${paymentStatusBadge(e.payment_status)}${e.payment_reference ? ` · ${esc(e.payment_reference)}` : ""}${e.tikkie_sent_at ? ` · Tikkie sent` : ""}</div>
+                <div class="row-sub">${paymentStatusBadge(e.payment_status)}${e.payment_method ? ` · ${esc(e.payment_method === "tikkie" ? "Tikkie" : "Bank transfer")}` : ""}${e.payment_reference ? ` · ${esc(e.payment_reference)}` : ""}${e.tikkie_sent_at ? ` · Tikkie sent` : ""}</div>
               </div>
               <div style="display:flex;gap:6px;flex-shrink:0">
-                ${e.payment_status === "pending" && !e.tikkie_sent_at ? `<button class="btn ghost sm mark-tikkie-sent-btn" data-entry-id="${esc(e.id)}">Mark Tikkie sent</button>` : ""}
+                ${e.payment_status === "pending" && e.payment_method === "tikkie" && !e.tikkie_sent_at ? `<button class="btn ghost sm mark-tikkie-sent-btn" data-entry-id="${esc(e.id)}">Mark Tikkie sent</button>` : ""}
                 <button class="btn ghost sm reject-payment-btn" data-entry-id="${esc(e.id)}">Reject</button>
                 <button class="btn sm confirm-payment-btn" data-entry-id="${esc(e.id)}">Confirm</button>
               </div>
@@ -2888,7 +2891,7 @@ async function viewTournamentDetail(id) {
       : `<div class="card">${emptyView("No match schedule yet", "The schedule will appear once the tournament starts.", "darts")}</div>`}
   `);
 
-  document.getElementById("submitPaymentBtn")?.addEventListener("click", () => openSubmitPaymentDialog(myEntry.id));
+  document.getElementById("submitPaymentBtn")?.addEventListener("click", () => openSubmitPaymentDialog(myEntry.id, myEntry.payment_method));
   document.querySelectorAll(".mark-tikkie-sent-btn").forEach((el) => {
     el.onclick = async () => {
       try {
@@ -2899,7 +2902,8 @@ async function viewTournamentDetail(id) {
     };
   });
   document.querySelectorAll(".confirm-payment-btn").forEach((el) => {
-    el.onclick = () => openConfirmPaymentDialog(el.dataset.entryId, t.entry_fee, t.prize_currency);
+    const entry = pendingEntries.find((e) => e.id === el.dataset.entryId);
+    el.onclick = () => openConfirmPaymentDialog(el.dataset.entryId, t.entry_fee, t.prize_currency, entry?.payment_method);
   });
   document.querySelectorAll(".reject-payment-btn").forEach((el) => {
     el.onclick = () => openRejectPaymentDialog(el.dataset.entryId);
@@ -3646,7 +3650,8 @@ function openTournamentDialog(existing) {
     </div>
     <div id="paidFields" style="display:${Number(t.entry_fee) > 0 ? "block" : "none"}">
       <div class="field"><label for="tpdh">Payment deadline <span class="muted" style="font-weight:400">(hours after registering, optional)</span></label><input id="tpdh" type="number" min="1" value="${t.payment_deadline_hours ?? ""}"></div>
-      <div class="field"><label for="tpinstr">Payment instructions <span class="muted" style="font-weight:400">(e.g. Tikkie link/phone number)</span></label><textarea id="tpinstr" rows="2" placeholder="E.g. Send €10 via Tikkie to 06-12345678">${esc(t.payment_instructions || "")}</textarea></div>
+      <div class="field"><label for="tpinstrtikkie">Payment instructions — Tikkie <span class="muted" style="font-weight:400">(shown to players who pick Tikkie)</span></label><textarea id="tpinstrtikkie" rows="2" placeholder="E.g. Send €10 via Tikkie to 06-12345678">${esc(t.payment_instructions_tikkie || "")}</textarea></div>
+      <div class="field"><label for="tpinstrbank">Payment instructions — Bank transfer <span class="muted" style="font-weight:400">(shown to players who pick bank transfer)</span></label><textarea id="tpinstrbank" rows="2" placeholder="E.g. Transfer €10 to IBAN NL00BANK0123456789">${esc(t.payment_instructions_bank || "")}</textarea></div>
       <div class="field"><label for="trefpolicy">Cancellation terms <span class="muted" style="font-weight:400">(optional)</span></label><textarea id="trefpolicy" rows="2" placeholder="E.g. Full refund up to 24 hours before the start">${esc(t.refund_policy || "")}</textarea></div>
       <div class="field"><label for="trefcutoff">Refund possible up to <span class="muted" style="font-weight:400">(hours before the start, optional)</span></label><input id="trefcutoff" type="number" min="0" value="${t.refund_cutoff_hours ?? ""}"></div>
     </div>
@@ -3750,7 +3755,8 @@ function openTournamentDialog(existing) {
         entry_fee: entryFee,
         min_players: minPlayers ? Number(minPlayers) : null,
         payment_deadline_hours: isPaid && bg.querySelector("#tpdh").value ? Number(bg.querySelector("#tpdh").value) : null,
-        payment_instructions: isPaid ? (bg.querySelector("#tpinstr").value.trim() || null) : null,
+        payment_instructions_tikkie: isPaid ? (bg.querySelector("#tpinstrtikkie").value.trim() || null) : null,
+        payment_instructions_bank: isPaid ? (bg.querySelector("#tpinstrbank").value.trim() || null) : null,
         refund_policy: isPaid ? (bg.querySelector("#trefpolicy").value.trim() || null) : null,
         refund_cutoff_hours: isPaid && bg.querySelector("#trefcutoff").value ? Number(bg.querySelector("#trefcutoff").value) : null,
         prize_type: prizeType,
@@ -3836,12 +3842,29 @@ async function openEditTournamentDialog(id) {
   } catch (e) { toast(errText(e)); }
 }
 
-async function registerForTournament(id) {
-  try {
-    await db.registerForTournament(id);
-    toast("You're registered!");
-    router();
-  } catch (e) { toast(errText(e)); }
+async function registerForTournament(id, isPaidTournament) {
+  if (!isPaidTournament) {
+    try {
+      await db.registerForTournament(id);
+      toast("You're registered!");
+      router();
+    } catch (e) { toast(errText(e)); }
+    return;
+  }
+  openModal("Choose payment method", `
+    <p class="muted" style="font-size:13px;margin:0 0 12px">Dutch players can pay via Tikkie; everyone else pays by bank transfer.</p>
+    <div class="field">
+      <label><input type="radio" name="pm" value="tikkie" checked> Tikkie (Netherlands)</label>
+    </div>
+    <div class="field">
+      <label><input type="radio" name="pm" value="bank_transfer"> Bank transfer (international)</label>
+    </div>`,
+    async (bg) => {
+      const method = bg.querySelector('input[name="pm"]:checked')?.value;
+      await db.registerForTournament(id, method);
+      toast("You're registered!");
+      router();
+    }, "Register and pay");
 }
 
 async function withdrawFromTournament(id) {
@@ -3852,10 +3875,11 @@ async function withdrawFromTournament(id) {
   } catch (e) { toast(errText(e)); }
 }
 
-function openSubmitPaymentDialog(entryId) {
+function openSubmitPaymentDialog(entryId, paymentMethod) {
+  const via = paymentMethod === "bank_transfer" ? "bank transfer" : "Tikkie";
   openModal("Report payment", `
-    <p class="muted" style="font-size:13px;margin:0 0 12px">Only report this after you've actually transferred the amount via Tikkie. The admin will check this before your registration becomes final.</p>
-    <div class="field"><label for="spr">Reference <span class="muted" style="font-weight:400">(optional, e.g. Tikkie description)</span></label><input id="spr" placeholder="E.g. TIKKIE-123"></div>`,
+    <p class="muted" style="font-size:13px;margin:0 0 12px">Only report this after you've actually transferred the amount via ${esc(via)}. The admin will check this before your registration becomes final.</p>
+    <div class="field"><label for="spr">Reference <span class="muted" style="font-weight:400">(optional, e.g. ${esc(paymentMethod === "bank_transfer" ? "payment description" : "Tikkie description")})</span></label><input id="spr" placeholder="${esc(paymentMethod === "bank_transfer" ? "E.g. your name" : "E.g. TIKKIE-123")}"></div>`,
     async (bg) => {
       const ref = bg.querySelector("#spr").value.trim() || null;
       await db.submitTournamentPayment(entryId, ref);
@@ -3864,9 +3888,10 @@ function openSubmitPaymentDialog(entryId) {
     }, "I've paid");
 }
 
-function openConfirmPaymentDialog(entryId, defaultAmount, currency) {
+function openConfirmPaymentDialog(entryId, defaultAmount, currency, paymentMethod) {
+  const via = paymentMethod === "bank_transfer" ? "your own bank account" : "your own Tikkie overview";
   openModal("Confirm payment", `
-    <p class="muted" style="font-size:13px;margin:0 0 12px">Only confirm after you actually see the amount in your own Tikkie overview.</p>
+    <p class="muted" style="font-size:13px;margin:0 0 12px">Only confirm after you actually see the amount in ${esc(via)}.</p>
     <div class="field"><label for="cpa">Amount received (${esc(currency || "EUR")})</label><input id="cpa" type="number" min="0" step="0.01" value="${defaultAmount ?? ""}" required></div>`,
     async (bg) => {
       const amount = Number(bg.querySelector("#cpa").value);

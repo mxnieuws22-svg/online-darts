@@ -4221,6 +4221,107 @@ create policy "profiles_update_own_or_organizer"
   with check (id = (select auth.uid()) or public.is_organizer());
 
 
+-- ============================================================================
+-- 27. Payment method per tournament entry: Dutch players pay via Tikkie,
+--     everyone else by bank transfer. The player picks their own method at
+--     registration (no assumption about nationality) - splits the single
+--     free-text payment_instructions field into one per method, and stores
+--     the player's choice on the entry so the right instructions can be
+--     shown to them.
+-- ============================================================================
+
+alter table public.tournaments
+  add column if not exists payment_instructions_tikkie text,
+  add column if not exists payment_instructions_bank text;
+
+update public.tournaments
+  set payment_instructions_tikkie = coalesce(payment_instructions_tikkie, payment_instructions),
+      payment_instructions_bank = coalesce(payment_instructions_bank, payment_instructions)
+  where payment_instructions is not null;
+
+alter table public.tournaments drop column if exists payment_instructions;
+
+comment on column public.tournaments.payment_instructions_tikkie is 'Free-text payment instructions shown to players who chose Tikkie as their payment method.';
+comment on column public.tournaments.payment_instructions_bank is 'Free-text payment instructions shown to players who chose bank transfer as their payment method (e.g. IBAN).';
+
+alter table public.tournament_entries
+  add column if not exists payment_method text check (payment_method in ('tikkie', 'bank_transfer'));
+
+comment on column public.tournament_entries.payment_method is 'Payment method the player chose at registration (only set when payment_status <> not_required). Determines which of the tournament''s two payment_instructions_* fields is shown to them.';
+
+drop function if exists public.register_for_tournament(uuid);
+
+create or replace function public.register_for_tournament(p_tournament_id uuid, p_payment_method text default null)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_status text;
+  v_max int;
+  v_opens timestamptz;
+  v_closes timestamptz;
+  v_entry_fee numeric;
+  v_count int;
+  v_payment_status text;
+  v_payment_method text;
+begin
+  if auth.uid() is null then
+    raise exception 'You must be logged in.';
+  end if;
+
+  select status, max_players, registration_opens_at, registration_closes_at, entry_fee
+    into v_status, v_max, v_opens, v_closes, v_entry_fee
+    from public.tournaments where id = p_tournament_id;
+  if v_status is null then
+    raise exception 'Tournament not found.';
+  end if;
+  if v_status <> 'active' then
+    raise exception 'Registration is not (no longer) possible for this tournament.';
+  end if;
+  if v_opens is not null and v_opens > now() then
+    raise exception 'Registration has not opened yet.';
+  end if;
+  if v_closes is not null and v_closes <= now() then
+    raise exception 'Registration is closed.';
+  end if;
+  if v_max is not null then
+    select count(*) into v_count from public.tournament_entries
+      where tournament_id = p_tournament_id and status <> 'withdrawn';
+    if v_count >= v_max then
+      raise exception 'This tournament is full.';
+    end if;
+  end if;
+
+  v_payment_status := case when v_entry_fee is not null and v_entry_fee > 0 then 'pending' else 'not_required' end;
+
+  if v_payment_status = 'pending' then
+    if p_payment_method is null or p_payment_method not in ('tikkie', 'bank_transfer') then
+      raise exception 'Choose a payment method.';
+    end if;
+    v_payment_method := p_payment_method;
+  else
+    v_payment_method := null;
+  end if;
+
+  insert into public.tournament_entries (tournament_id, player_id, status, payment_status, payment_method)
+  values (p_tournament_id, auth.uid(), 'registered', v_payment_status, v_payment_method)
+  on conflict (tournament_id, player_id) do update
+    set status = 'registered',
+        payment_status = v_payment_status,
+        payment_method = v_payment_method,
+        submitted_at = null,
+        paid_at = null,
+        refunded_at = null,
+        payment_reference = null,
+        amount_paid = null
+    where tournament_entries.status = 'withdrawn';
+end;
+$$;
+
+grant execute on function public.register_for_tournament(uuid, text) to authenticated;
+
 
 -- ----------------------------------------------------------------------------
 -- TODO's voor een volgende migratie

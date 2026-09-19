@@ -1284,7 +1284,6 @@ begin
     select
       lp.player_id as p_id,
       p.display_name as p_name,
-      p.locale as p_locale,
       lp.division_id as old_division_id,
       coalesce(
         case when ps.average_sample_count >= 5 then ps.average_score end,
@@ -1314,7 +1313,7 @@ begin
 
       insert into public.notifications (player_id, type, title, body, league_id)
       select rec.p_id, 'division_assigned', nt.title, nt.body, p_league_id
-      from public.notif_text(rec.p_locale, 'division_assigned', jsonb_build_object('league_name', v_league_name)) nt;
+      from public.notif_text('division_assigned', jsonb_build_object('league_name', v_league_name)) nt;
     end if;
 
     player_id := rec.p_id;
@@ -2256,8 +2255,7 @@ begin
   insert into public.notifications (player_id, type, title, body, league_id)
   select lp.player_id, 'league_started', nt.title, nt.body, new.id
   from public.league_players lp
-  join public.profiles p on p.id = lp.player_id
-  cross join lateral public.notif_text(p.locale, 'league_started', jsonb_build_object('league_name', new.name)) nt
+  cross join lateral public.notif_text('league_started', jsonb_build_object('league_name', new.name)) nt
   where lp.league_id = new.id;
 
   return new;
@@ -2367,7 +2365,7 @@ begin
 
   insert into public.notifications (player_id, type, title, body, league_match_id)
   select v_opponent, 'match_schedule_proposed', nt.title, nt.body, p_match_id
-  from public.notif_text((select locale from public.profiles where id = v_opponent), 'match_schedule_proposed') nt;
+  from public.notif_text('match_schedule_proposed') nt;
 end;
 $$;
 
@@ -2389,7 +2387,6 @@ declare
   m record;
   prop record;
   v_other uuid;
-  v_other_locale text;
 begin
   if auth.uid() is null then
     raise exception 'Je moet ingelogd zijn.';
@@ -2415,7 +2412,6 @@ begin
   end if;
 
   v_other := prop.proposed_by;
-  select locale into v_other_locale from public.profiles where id = v_other;
 
   if p_action = 'accept' then
     update public.match_schedule_proposals
@@ -2430,7 +2426,7 @@ begin
 
     insert into public.notifications (player_id, type, title, body, league_match_id)
     select v_other, 'match_schedule_accepted', nt.title, nt.body, p_match_id
-    from public.notif_text(v_other_locale, 'match_schedule_accepted') nt;
+    from public.notif_text('match_schedule_accepted') nt;
 
   elsif p_action = 'counter' then
     if p_proposed_at is null then
@@ -2449,7 +2445,7 @@ begin
 
     insert into public.notifications (player_id, type, title, body, league_match_id)
     select v_other, 'match_schedule_countered', nt.title, nt.body, p_match_id
-    from public.notif_text(v_other_locale, 'match_schedule_countered') nt;
+    from public.notif_text('match_schedule_countered') nt;
 
   else
     update public.match_schedule_proposals
@@ -2461,7 +2457,7 @@ begin
 
     insert into public.notifications (player_id, type, title, body, league_match_id)
     select v_other, 'match_schedule_disputed', nt.title, nt.body, p_match_id
-    from public.notif_text(v_other_locale, 'match_schedule_disputed', jsonb_build_object('note', p_note)) nt;
+    from public.notif_text('match_schedule_disputed', jsonb_build_object('note', p_note)) nt;
   end if;
 end;
 $$;
@@ -2705,7 +2701,7 @@ begin
 
   insert into public.notifications (player_id, type, title, body, league_match_id)
   select v_other, 'match_schedule_withdrawn', nt.title, nt.body, p_match_id
-  from public.notif_text((select locale from public.profiles where id = v_other), 'match_schedule_withdrawn') nt;
+  from public.notif_text('match_schedule_withdrawn') nt;
 end;
 $$;
 
@@ -2815,7 +2811,7 @@ begin
 
   insert into public.notifications (player_id, type, title, body, league_match_id)
   select v_other, 'match_chat_message', nt.title, left(v_body, 120), p_match_id
-  from public.notif_text((select locale from public.profiles where id = v_other), 'match_chat_message') nt;
+  from public.notif_text('match_chat_message') nt;
 
   return v_row;
 end;
@@ -3147,7 +3143,7 @@ begin
 
   insert into public.notifications (player_id, type, title, body)
   select v_player_id, 'tournament_payment_confirmed', nt.title, nt.body
-  from public.notif_text((select locale from public.profiles where id = v_player_id), 'tournament_payment_confirmed') nt;
+  from public.notif_text('tournament_payment_confirmed') nt;
 end;
 $$;
 
@@ -3185,7 +3181,6 @@ begin
   insert into public.notifications (player_id, type, title, body)
   select v_player_id, 'tournament_payment_rejected', nt.title, nt.body
   from public.notif_text(
-    (select locale from public.profiles where id = v_player_id),
     'tournament_payment_rejected',
     jsonb_build_object('reason', nullif(trim(p_reason), ''))
   ) nt;
@@ -3225,7 +3220,7 @@ begin
 
   insert into public.notifications (player_id, type, title, body)
   select v_player_id, 'tournament_refunded', nt.title, nt.body
-  from public.notif_text((select locale from public.profiles where id = v_player_id), 'tournament_refunded') nt;
+  from public.notif_text('tournament_refunded') nt;
 end;
 $$;
 
@@ -3253,8 +3248,7 @@ begin
   insert into public.notifications (player_id, type, title, body)
   select due.player_id, 'tournament_payment_expired', nt.title, nt.body
   from due
-  join public.profiles p on p.id = due.player_id
-  cross join lateral public.notif_text(p.locale, 'tournament_payment_expired', jsonb_build_object('tournament_name', due.tournament_name)) nt;
+  cross join lateral public.notif_text('tournament_payment_expired', jsonb_build_object('tournament_name', due.tournament_name)) nt;
 
   update public.tournament_entries e
     set payment_status = 'failed', status = 'withdrawn'
@@ -3686,10 +3680,9 @@ begin
   returning * into v_row;
 
   insert into public.notifications (player_id, type, title, body, league_match_id)
-  select p.id, 'match_scheduled', nt.title, nt.body, v_row.id
-  from public.profiles p
-  cross join lateral public.notif_text(p.locale, 'match_scheduled', jsonb_build_object('league_name', v_league_name)) nt
-  where p.id in (p_player_a_id, p_player_b_id);
+  select pid, 'match_scheduled', nt.title, nt.body, v_row.id
+  from unnest(array[p_player_a_id, p_player_b_id]) as pid
+  cross join lateral public.notif_text('match_scheduled', jsonb_build_object('league_name', v_league_name)) nt;
 
   return v_row;
 end;
@@ -3729,13 +3722,11 @@ begin
   insert into public.notifications (player_id, type, title, body, league_match_id)
   select due.player_a_id, 'match_available', nt.title, nt.body, due.id
   from due
-  join public.profiles p on p.id = due.player_a_id
-  cross join lateral public.notif_text(p.locale, 'match_available', jsonb_build_object('league_name', due.league_name)) nt
+  cross join lateral public.notif_text('match_available', jsonb_build_object('league_name', due.league_name)) nt
   union all
   select due.player_b_id, 'match_available', nt.title, nt.body, due.id
   from due
-  join public.profiles p on p.id = due.player_b_id
-  cross join lateral public.notif_text(p.locale, 'match_available', jsonb_build_object('league_name', due.league_name)) nt;
+  cross join lateral public.notif_text('match_available', jsonb_build_object('league_name', due.league_name)) nt;
 
   update public.league_matches m
     set available_notified_at = now()
@@ -3888,143 +3879,66 @@ alter table public.leagues
 
 
 -- ============================================================================
--- 23. Internationalisatie (NL/EN). De taalkeuze staat al op de hoofdpagina
---     (renderLanding in js/app.js, vóór inloggen via localStorage) en wordt
---     na inloggen bij het profiel opgeslagen (profiles.locale), zodat
---     database-gegenereerde meldingen - en dus ook de e-mail/push-kanalen uit
---     secties 20/21, die simpelweg doorsturen wat hier als title/body wordt
---     opgeslagen - in de taal van de ONTVANGER aankomen, niet die van de
---     afzender. RPC-foutmeldingen (raise exception) blijven bewust
---     Nederlands: die worden vrijwel altijd al client-side afgevangen voordat
---     de RPC wordt aangeroepen.
+-- 23. Centralized notification text. One lookup per notification type (the
+--     existing `type` column on notifications, reused as the lookup key)
+--     instead of writing the title/body out separately in every calling
+--     function. p_params carries the loose values (e.g. league_name) that
+--     go into the text; for match_schedule_disputed/tournament_payment_rejected,
+--     'note'/'reason' is free text the other user typed themselves - that is
+--     used as-is, with a default text only when nothing was filled in.
+--     match_chat_message only returns a title; the chat content itself
+--     (also free text) is added by the caller.
 -- ============================================================================
 
 alter table public.profiles
-  add column if not exists locale text not null default 'nl' check (locale in ('nl', 'en'));
-
--- Eén centrale vertaaltabel per notificatie-type (de bestaande `type`-kolom
--- op notifications, hergebruikt als vertaalsleutel) i.p.v. de titel/body al
--- vertaald los in elke aanroepende functie uit te schrijven. p_params draagt
--- de losse waarden aan (bv. league_name) die in de tekst passen; voor
--- match_schedule_disputed/tournament_payment_rejected is 'note'/'reason' de
--- vrije tekst die de andere gebruiker zelf typte - die wordt nooit vertaald,
--- alleen de standaardtekst als er niets is ingevuld. match_chat_message
--- geeft alleen een titel terug; de chatinhoud zelf (ook vrije tekst) wordt
--- door de aanroeper zelf toegevoegd.
-create or replace function public.notif_text(p_locale text, p_key text, p_params jsonb default '{}'::jsonb)
+  drop column if exists locale;
+create or replace function public.notif_text(p_key text, p_params jsonb default '{}'::jsonb)
 returns table(title text, body text)
 language plpgsql
 as $$
-declare
-  v_en boolean := p_locale = 'en';
 begin
   case p_key
     when 'division_assigned' then
-      if v_en then
-        title := 'You''ve been placed!';
-        body := 'You''re playing in ' || (p_params->>'league_name') || '. Check the standings and your opponents.';
-      else
-        title := 'Je bent ingedeeld!';
-        body := 'Je speelt mee in ' || (p_params->>'league_name') || '. Bekijk de stand en je tegenstanders.';
-      end if;
+      title := 'You''ve been placed!';
+      body := 'You''re playing in ' || (p_params->>'league_name') || '. Check the standings and your opponents.';
     when 'league_started' then
-      if v_en then
-        title := 'The league has started: ' || (p_params->>'league_name');
-        body := 'Check out your matches.';
-      else
-        title := 'De league is gestart: ' || (p_params->>'league_name');
-        body := 'Bekijk je wedstrijden.';
-      end if;
+      title := 'The league has started: ' || (p_params->>'league_name');
+      body := 'Check out your matches.';
     when 'match_schedule_proposed' then
-      if v_en then
-        title := 'New proposal for your match';
-        body := 'Respond: accept, counter-propose, or report a problem.';
-      else
-        title := 'Nieuw voorstel voor jullie wedstrijd';
-        body := 'Reageer: accepteer, doe een tegenvoorstel of meld een probleem.';
-      end if;
+      title := 'New proposal for your match';
+      body := 'Respond: accept, counter-propose, or report a problem.';
     when 'match_schedule_accepted' then
-      if v_en then
-        title := 'Proposal accepted';
-        body := 'Your match is scheduled.';
-      else
-        title := 'Voorstel geaccepteerd';
-        body := 'Jullie wedstrijd staat gepland.';
-      end if;
+      title := 'Proposal accepted';
+      body := 'Your match is scheduled.';
     when 'match_schedule_countered' then
-      if v_en then
-        title := 'Counter-proposal received';
-        body := 'Respond to the newly proposed time.';
-      else
-        title := 'Tegenvoorstel ontvangen';
-        body := 'Reageer op het nieuwe voorgestelde moment.';
-      end if;
+      title := 'Counter-proposal received';
+      body := 'Respond to the newly proposed time.';
     when 'match_schedule_disputed' then
-      if v_en then
-        title := 'Problem reported';
-        body := coalesce(p_params->>'note', 'A problem was reported with the proposed time.');
-      else
-        title := 'Probleem gemeld';
-        body := coalesce(p_params->>'note', 'Er is een probleem gemeld met het voorgestelde moment.');
-      end if;
+      title := 'Problem reported';
+      body := coalesce(p_params->>'note', 'A problem was reported with the proposed time.');
     when 'match_schedule_withdrawn' then
-      if v_en then
-        title := 'Proposal withdrawn';
-        body := 'The proposed time for your match has been withdrawn.';
-      else
-        title := 'Voorstel ingetrokken';
-        body := 'Het voorgestelde moment voor jullie wedstrijd is ingetrokken.';
-      end if;
+      title := 'Proposal withdrawn';
+      body := 'The proposed time for your match has been withdrawn.';
     when 'match_chat_message' then
-      title := case when v_en then 'New message' else 'Nieuw bericht' end;
+      title := 'New message';
     when 'tournament_payment_confirmed' then
-      if v_en then
-        title := 'Payment confirmed';
-        body := 'Your registration is final.';
-      else
-        title := 'Betaling bevestigd';
-        body := 'Je inschrijving is definitief.';
-      end if;
+      title := 'Payment confirmed';
+      body := 'Your registration is final.';
     when 'tournament_payment_rejected' then
-      if v_en then
-        title := 'Payment not found';
-        body := coalesce(p_params->>'reason', 'Your reported payment could not be confirmed. Your registration has lapsed.');
-      else
-        title := 'Betaling niet gevonden';
-        body := coalesce(p_params->>'reason', 'Je gemelde betaling kon niet worden bevestigd. Je inschrijving is vervallen.');
-      end if;
+      title := 'Payment not found';
+      body := coalesce(p_params->>'reason', 'Your reported payment could not be confirmed. Your registration has lapsed.');
     when 'tournament_refunded' then
-      if v_en then
-        title := 'Refund registered';
-        body := 'Your entry fee has been refunded.';
-      else
-        title := 'Terugbetaling geregistreerd';
-        body := 'Je inschrijfgeld is teruggestort.';
-      end if;
+      title := 'Refund registered';
+      body := 'Your entry fee has been refunded.';
     when 'tournament_payment_expired' then
-      if v_en then
-        title := 'Reservation expired';
-        body := 'You did not pay in time for ' || (p_params->>'tournament_name') || '. Your spot has been released.';
-      else
-        title := 'Reservering verlopen';
-        body := 'Je hebt niet op tijd betaald voor ' || (p_params->>'tournament_name') || '. Je plek is vrijgegeven.';
-      end if;
+      title := 'Reservation expired';
+      body := 'You did not pay in time for ' || (p_params->>'tournament_name') || '. Your spot has been released.';
     when 'match_scheduled' then
-      if v_en then
-        title := 'New match scheduled';
-        body := 'A match has been scheduled for you in ' || (p_params->>'league_name') || '.';
-      else
-        title := 'Nieuwe wedstrijd ingepland';
-        body := 'Er is een wedstrijd voor je ingepland in ' || (p_params->>'league_name') || '.';
-      end if;
+      title := 'New match scheduled';
+      body := 'A match has been scheduled for you in ' || (p_params->>'league_name') || '.';
     when 'match_available' then
-      if v_en then
-        title := 'New match available';
-        body := 'You have a new match to play in ' || (p_params->>'league_name') || '.';
-      else
-        title := 'Nieuwe wedstrijd beschikbaar';
-        body := 'Je hebt een nieuwe wedstrijd om te spelen in ' || (p_params->>'league_name') || '.';
-      end if;
+      title := 'New match available';
+      body := 'You have a new match to play in ' || (p_params->>'league_name') || '.';
     else
       title := p_key;
   end case;
@@ -4032,11 +3946,7 @@ begin
 end;
 $$;
 
-revoke all on function public.notif_text(text, text, jsonb) from public, anon, authenticated;
-
--- Bestaande, al verstuurde meldingen blijven Nederlands (historische data,
--- niet met terugwerkende kracht vertaald); alleen nieuwe meldingen vanaf nu
--- gebruiken notif_text().
+revoke all on function public.notif_text(text, jsonb) from public, anon, authenticated;
 
 
 -- ----------------------------------------------------------------------------

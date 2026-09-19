@@ -33,750 +33,21 @@ const state = {
 
 const app = document.getElementById("app");
 
-/* -------------------------------------------------------------------------
-   1b. Taal (NL/EN)
-
-   De app wordt intern altijd in het Nederlands opgebouwd (alle HTML-strings
-   verderop in dit bestand blijven Nederlands) - Engels is een vertaallaag
-   die na elke render over de DOM heen loopt (translateNode/MutationObserver
-   hieronder) en exacte/patroon-matches uit I18N_EN vervangt. Dat betekent:
-   geen enkele render-/component-functie hoeft aangepast te worden, en een
-   niet-vertaalde (of dynamische, bv. een spelersnaam) tekst blijft gewoon
-   onvertaald zichtbaar in plaats van te breken.
-
-   Taalvoorkeur: vóór inloggen alleen in localStorage (zichtbaar/instelbaar
-   op de hoofdpagina, zie renderLanding); na inloggen ook bij het profiel
-   bewaard (profiles.locale) zodat database-gegenereerde meldingen en de
-   e-mail/push-kanalen (die simpelweg doorsturen wat de database als
-   title/body meegeeft) in de taal van de ontvanger aankomen.
-   ------------------------------------------------------------------------- */
-
-let locale = (() => {
-  try {
-    const saved = localStorage.getItem("locale");
-    if (saved === "nl" || saved === "en") return saved;
-  } catch (e) { /* localStorage niet beschikbaar (privénavigatie e.d.) */ }
-  return "nl";
-})();
-
-// Voor <input type="datetime-local">/toLocaleDateString/toLocaleTimeString.
-function dateLocale() {
-  return locale === "en" ? "en-GB" : "nl-NL";
-}
-
-// Vóór inloggen is er geen router() om opnieuw te renderen - elk pre-auth-
-// scherm (renderLanding/renderLogin/enz.) zet zichzelf hier neer zodat
-// setLocale() weet wat het opnieuw moet tekenen.
-let currentPreAuthRender = null;
-
-// Na inloggen wint de opgeslagen taalvoorkeur van het profiel (bv. na
-// inloggen op een nieuw toestel dat nog geen eigen voorkeur had).
-function adoptProfileLocale() {
-  const l = state.profile?.locale;
-  if ((l === "nl" || l === "en") && l !== locale) {
-    locale = l;
-    try { localStorage.setItem("locale", l); } catch (e) { /* zie hierboven */ }
-  }
-}
-
-function setLocale(l) {
-  if (l !== "nl" && l !== "en") return;
-  if (l === locale) return;
-  locale = l;
-  try { localStorage.setItem("locale", l); } catch (e) { /* zie hierboven */ }
-  if (state.profile?.id && sb) {
-    sb.from("profiles").update({ locale: l }).eq("id", state.profile.id).then(() => {});
-  }
-  if (state.session) {
-    router();
-  } else if (currentPreAuthRender) {
-    currentPreAuthRender();
-  }
-}
-
-function langSwitcher(extraStyle = "") {
-  return `
-    <div class="lang-switch" style="display:inline-flex;border:1px solid var(--line);border-radius:999px;padding:2px;gap:2px;${extraStyle}">
-      <button type="button" class="btn ghost sm" style="padding:4px 10px;border-radius:999px;${locale === "nl" ? "background:var(--line)" : ""}" onclick="setLocale('nl')" aria-pressed="${locale === "nl"}">NL</button>
-      <button type="button" class="btn ghost sm" style="padding:4px 10px;border-radius:999px;${locale === "en" ? "background:var(--line)" : ""}" onclick="setLocale('en')" aria-pressed="${locale === "en"}">EN</button>
-    </div>`;
-}
-
-// Vertaalt exacte tekstnodes/attributen tegen I18N_EN; alles wat niet
-// voorkomt (namen, cijfers, datums die al los locale-aware geformatteerd
-// worden, enz.) blijft ongemoeid staan.
-function translateNode(node) {
-  if (locale !== "en") return;
-  if (node.nodeType === Node.TEXT_NODE) {
-    const raw = node.textContent;
-    const trimmed = raw.trim();
-    if (!trimmed) return;
-    const exact = I18N_EN.get(trimmed);
-    if (exact) {
-      node.textContent = raw.replace(trimmed, exact);
-      return;
-    }
-    for (const [re, fn] of I18N_PATTERNS) {
-      const m = trimmed.match(re);
-      if (m) {
-        node.textContent = raw.replace(trimmed, fn(...m));
-        return;
-      }
-    }
-    return;
-  }
-  if (node.nodeType !== Node.ELEMENT_NODE) return;
-  for (const attr of ["placeholder", "aria-label", "alt", "title"]) {
-    const v = node.getAttribute?.(attr);
-    if (v && I18N_EN.has(v)) node.setAttribute(attr, I18N_EN.get(v));
-  }
-  node.childNodes.forEach(translateNode);
-}
-
-function translatePage(root = document.body) {
-  translateNode(root);
-}
-
-// Vertaaltabel NL -> EN. Geen sleutels, gewoon de exacte Nederlandse tekst
-// zoals die gerenderd wordt (zie translateNode hierboven) - zo hoeft geen
-// enkele render-/component-functie omgebouwd te worden en blijft alles wat
-// hier nog niet in staat gewoon Nederlands zichtbaar (nooit kapot).
-const I18N_EN = new Map(Object.entries({
-  // Merk/algemeen
-  "Voor elke darter": "For every darts player",
-  "Inloggen": "Log in",
-  "Uitloggen": "Log out",
-  "Opslaan": "Save",
-  "Annuleren": "Cancel",
-  "Sluiten": "Close",
-  "Bezig...": "Working...",
-  "Terug": "Back",
-
-  // Statussen (STATUS/TOURNAMENT_STATUS_LABELS/PRIZE_STATUS/PAYMENT_STATUS_LABELS)
-  "Concept": "Draft",
-  "Actief": "Active",
-  "Afgerond": "Finished",
-  "Gepland": "Scheduled",
-  "Bezig": "In progress",
-  "Ter bevestiging": "Awaiting confirmation",
-  "Bevestigd": "Confirmed",
-  "Geannuleerd": "Cancelled",
-  "Gespeeld": "Played",
-  "Nog niet gestart": "Not started yet",
-  "Afspraak bevestigd": "Time confirmed",
-  "Afspraak voorgesteld": "Time proposed",
-  "Beschikbaar": "Available",
-  "Binnenkort": "Coming up",
-  "Inschrijving geopend": "Registration open",
-  "Inschrijving gesloten": "Registration closed",
-  "Vol": "Full",
-  "Bezig met claimen": "Claim in progress",
-  "Aanvraag ingediend": "Claim submitted",
-  "Wordt beoordeeld": "Under review",
-  "Contact volgt nog": "Contact to follow",
-  "Wordt gemaakt": "Being made",
-  "Klaar om op te halen": "Ready for pickup",
-  "Uitgereikt": "Delivered",
-  "Betaling nog niet gemeld": "Payment not yet reported",
-  "Betaling gemeld, wacht op bevestiging": "Payment reported, awaiting confirmation",
-  "Betaling bevestigd": "Payment confirmed",
-  "Betaling afgewezen/verlopen": "Payment rejected/expired",
-  "Teruggestort": "Refunded",
-  "Knock-out": "Knockout",
-  "Poules": "Groups",
-  "Poules + knock-out": "Groups + knockout",
-  "Inschrijving is nog niet geopend.": "Registration hasn't opened yet.",
-  "Inschrijving is gesloten.": "Registration is closed.",
-  "Dit toernooi zit vol.": "This tournament is full.",
-  "Dit toernooi is al begonnen.": "This tournament has already started.",
-  "Dit toernooi is afgerond.": "This tournament has finished.",
-  "Dit toernooi is nog niet gepubliceerd.": "This tournament hasn't been published yet.",
-  "Prijzengeld": "Prize money",
-  "Fysieke prijs": "Physical prize",
-  "Prijs wordt later bekendgemaakt": "Prize to be announced later",
-  "Geen prijs": "No prize",
-
-  // Generieke schermtoestanden/foutmeldingen
-  "Dit lukte niet": "Something went wrong",
-  "Opnieuw laden": "Reload",
-  "E-mailadres of wachtwoord klopt niet.": "Email address or password is incorrect.",
-  "Bevestig eerst je e-mailadres via de link in je mail.": "Confirm your email address via the link in your inbox first.",
-  "Er bestaat al een account met dit e-mailadres.": "An account with this email address already exists.",
-  "Je wachtwoord moet minimaal 6 tekens zijn.": "Your password must be at least 6 characters.",
-  "Te veel pogingen. Wacht even en probeer opnieuw.": "Too many attempts. Wait a moment and try again.",
-  "Geen verbinding met de server. Controleer je internet.": "No connection to the server. Check your internet.",
-  "Er ging iets mis.": "Something went wrong.",
-
-  // Wedstrijdkaart
-  "Speler A": "Player A",
-  "Speler B": "Player B",
-  "Gelijkspel": "Draw",
-
-  // Navigatie
-  "Home": "Home",
-  "Leagues": "Leagues",
-  "Toernooien": "Tournaments",
-  "Wedstrijden": "Matches",
-  "Statistieken": "Statistics",
-  "Profiel": "Profile",
-  "Beheer": "Admin",
-  "Hoofdmenu": "Main menu",
-
-  // Landingspagina
-  "Speel mee in leagues en toernooien, plan je wedstrijden en houd je scores en statistieken automatisch bij — allemaal op één plek.":
-    "Join leagues and tournaments, schedule your matches and track your scores and stats automatically — all in one place.",
-  "Gratis account aanmaken": "Create a free account",
-  "Zo werkt het": "How it works",
-  "Gratis te gebruiken · geen creditcard nodig": "Free to use · no credit card needed",
-  "Voor Scolia en DartCounter": "For Scolia and DartCounter",
-  "Log in om de standen, wedstrijden en statistieken van je league te bekijken.": "Log in to see your league's standings, matches and statistics.",
-  "Zo ziet jouw stand eruit": "This is what your standings look like",
-  "Een voorbeeld — jouw eigen cijfers verschijnen zodra je meedoet.": "An example — your own numbers will appear once you join.",
-  "Winratio": "Win ratio",
-  "Gemiddelde": "Average",
-  "Beste finish": "Best finish",
-  "Maak een account": "Create an account",
-  "Binnen een minuut aangemeld, zonder gedoe.": "Signed up within a minute, no hassle.",
-  "Sluit je aan bij een league of toernooi": "Join a league or tournament",
-  "De beheerder zet ze voor je klaar, jij doet mee.": "The admin sets them up for you, you just join in.",
-  "Speel en volg je voortgang": "Play and track your progress",
-  "Standen, uitslagen en statistieken staan direct klaar.": "Standings, results and statistics are ready right away.",
-  "Wat je krijgt": "What you get",
-  "Automatische standen": "Automatic standings",
-  "Elke afgeronde wedstrijd werkt de ranglijst meteen bij.": "Every finished match updates the leaderboard instantly.",
-  "Persoonlijke statistieken": "Personal statistics",
-  "Gemiddelde, 180's, checkouts en winratio per speler.": "Average, 180s, checkouts and win ratio per player.",
-  "Organisatordashboard": "Admin dashboard",
-  "Leagues en toernooien beheren vanuit één overzicht.": "Manage leagues and tournaments from a single overview.",
-  "Overal te gebruiken": "Use it anywhere",
-  "Werkt in de browser, op telefoon, tablet en desktop.": "Works in the browser, on phone, tablet and desktop.",
-  "Klaar om mee te doen?": "Ready to join in?",
-  "Maak een gratis account aan en speel je eerste wedstrijd binnen een minuut.": "Create a free account and play your first match within a minute.",
-
-  // Auth-schermen
-  "Log in om je wedstrijden te zien": "Log in to see your matches",
-  "E-mailadres": "Email address",
-  "Wachtwoord": "Password",
-  "Wachtwoord vergeten?": "Forgot password?",
-  "Nog geen account?": "Don't have an account yet?",
-  "Maak er een aan": "Create one",
-  "Account aanmaken": "Create account",
-  "Je speelt binnen een minuut mee": "You'll be playing within a minute",
-  "Naam": "Name",
-  "Minimaal 8 tekens": "At least 8 characters",
-  "Heb je al een account?": "Already have an account?",
-  "Vul je naam in.": "Enter your name.",
-  "Vul een geldig e-mailadres in.": "Enter a valid email address.",
-  "Kies een wachtwoord van minimaal 8 tekens.": "Choose a password of at least 8 characters.",
-  "Check je mail": "Check your email",
-  "Terug naar inloggen": "Back to login",
-  "Wachtwoord vergeten": "Forgot password",
-  "We sturen je een link om een nieuw wachtwoord te kiezen": "We'll send you a link to choose a new password",
-  "Stuur de link": "Send the link",
-  "Nieuw wachtwoord": "New password",
-  "Kies een wachtwoord om mee in te loggen": "Choose a password to log in with",
-  "Wachtwoord opslaan": "Save password",
-  "Account geactiveerd": "Account activated",
-  "Je account is succesvol geactiveerd!": "Your account has been successfully activated!",
-  "Naar inloggen": "Go to login",
-  "Link verlopen of ongeldig": "Link expired or invalid",
-  "Vraag hieronder een nieuwe activatielink aan": "Request a new activation link below",
-  "Verstuur activatiemail opnieuw": "Resend activation email",
-
-  // Home
-  "Dit is jouw darts-overzicht.": "This is your darts overview.",
-  "Bekijk je prijs →": "View your prize →",
-  "Eerstvolgende wedstrijd": "Next match",
-  "Alle wedstrijden": "All matches",
-  "Wedstrijd bekijken": "View match",
-  "Niets ingepland": "Nothing scheduled",
-  "Zodra de organisator een wedstrijd voor je inplant, staat hij hier.": "Once the admin schedules a match for you, it'll show up here.",
-  "Mijn league & divisie": "My league & division",
-  "Nog niet ingedeeld": "Not placed yet",
-  "Zodra de organisator je indeelt in een league, zie je hier je overzicht.": "Once the admin places you in a league, you'll see your overview here.",
-  "Zodra de organisator je indeelt in een league, zie je hier je divisie.": "Once the admin places you in a league, you'll see your division here.",
-  "League-overzicht": "League overview",
-  "Positie": "Position",
-  "Punten": "Points",
-  "Snelle acties": "Quick actions",
-  "Mijn divisie": "My division",
-
-  // Mijn divisie
-  "Jouw divisie": "Your division",
-  "Bekijk de hele league →": "View the whole league →",
-  "Huidige wedstrijd": "Current match",
-  "Uitslag controleren": "Check result",
-  "Uitslag doorgeven": "Report result",
-  "Datum & uur van deze wedstrijd": "Date & time of this match",
-  "Chat": "Chat",
-  "Onderlinge wedstrijden": "Head-to-head matches",
-  "Geen open wedstrijden": "No open matches",
-  "Je hebt op dit moment geen wedstrijden om te spelen.": "You currently have no matches to play.",
-  "Wedstrijden deze week": "Matches this week",
-  "Dit is je huidige wedstrijd hierboven.": "This is your current match above.",
-  "Bekijk wedstrijd": "View match",
-  "Stand": "Standings",
-  "Nog geen indeling": "No divisions yet",
-  "Geen wedstrijden": "No matches",
-  "Nog geen wedstrijden": "No matches yet",
-
-  // Leagues
-  "Hoe werkt de league?": "How does the league work?",
-  "Meer info ↓": "More info ↓",
-  "Minder info ↑": "Less info ↑",
-  "Een league is één groep van maximaal 12 spelers, gerangschikt op punten: 1e, 2e, 3e, enzovoort. Wil je meerdere niveaus (bv. een 1e en 2e divisie), maak daar dan aparte leagues voor aan.":
-    "A league is a single group of up to 12 players, ranked by points: 1st, 2nd, 3rd, and so on. Want multiple levels (e.g. a 1st and 2nd division)? Create separate leagues for those.",
-  "De wedstrijden worden automatisch ingedeeld, één ronde per week.": "Matches are scheduled automatically, one round per week.",
-  "De winnaar van de league ontvangt een kampioenstitel en een gepersonaliseerde prijs, beschikbaar gesteld door LWPrints. Dit kan bijvoorbeeld een bedrukt T-shirt, hoodie of polo zijn.":
-    "The league winner receives a champion title and a personalized prize, provided by LWPrints. This could for example be a printed T-shirt, hoodie or polo.",
-  "Nog geen leagues": "No leagues yet",
-  "Stel een startdatum en -tijd in en klik op 'Inplannen' om de league te plannen.": "Set a start date and time and click 'Schedule' to plan the league.",
-  "De league is gestart.": "The league has started.",
-  "Deze league is afgerond.": "This league has finished.",
-  "Planning": "Schedule",
-  "Status": "Status",
-  "Spelers": "Players",
-  "Tijdzone": "Timezone",
-  "Wedstrijden aangemaakt": "Matches created",
-  "Beschrijving": "Description",
-  "optioneel": "optional",
-  "Startdatum en -tijd": "Start date and time",
-  "Einddatum": "End date",
-  "Inplannen": "Schedule",
-  "Automatisch indelen": "Auto-assign",
-  "Speler indelen": "Place player",
-  "Automatisch indelen: rangschikt spelers op gemiddelde (max 12 spelers per league).": "Auto-assign: ranks players by average (max 12 players per league).",
-  "Er zijn nog geen spelers ingedeeld in deze league.": "No players have been placed in this league yet.",
-  "Winnaar & prijs": "Winner & prize",
-  "Alle prijzen beheren": "Manage all prizes",
-  "Bepaal winnaar": "Determine winner",
-  "De winnaar krijgt automatisch een melding en kan zijn prijs claimen (beschikbaar gesteld door LWPrints).": "The winner automatically gets notified and can claim their prize (provided by LWPrints).",
-  "Er is nog niets ingepland voor deze league.": "Nothing has been scheduled for this league yet.",
-  "Stel eerst een startdatum en -tijd in om te kunnen plannen.": "Set a start date and time first before you can schedule.",
-  "Kies een startmoment in de toekomst.": "Choose a start time in the future.",
-  "League ingepland.": "League scheduled.",
-  "Gegevens opgeslagen.": "Data saved.",
-  "Winnaar bepaald en op de hoogte gebracht.": "Winner determined and notified.",
-  "Geen winnaar: er is nog geen wedstrijd gespeeld.": "No winner: no match has been played yet.",
-
-  // Prijs
-  "Status van je claim": "Status of your claim",
-
-  // Toernooien
-  "Strijd tegen andere spelers en maak kans op mooie prijzen.": "Compete against other players and win great prizes.",
-  "Toernooien met mogelijk prijzengeld": "Tournaments with possible prize money",
-  "Neem deel aan darttoernooien en strijd tegen andere spelers. Afhankelijk van het toernooi kunnen er prijzen of prijzengeld beschikbaar zijn.":
-    "Take part in darts tournaments and compete against other players. Depending on the tournament, prizes or prize money may be available.",
-  "Alle toernooien": "All tournaments",
-  "Aankomende toernooien": "Upcoming tournaments",
-  "Mijn toernooien": "My tournaments",
-  "Afgeronde toernooien": "Finished tournaments",
-  "Nog geen toernooien beschikbaar": "No tournaments available yet",
-  "Er zijn momenteel geen toernooien beschikbaar. Kom later terug om mee te doen aan een nieuw toernooi.":
-    "There are currently no tournaments available. Check back later to join a new tournament.",
-  "Nog onbekend": "Unknown yet",
-  "Ik heb betaald": "I've paid",
-  "Wacht op bevestiging door de organisator.": "Awaiting confirmation from the admin.",
-  "Toernooi niet gevonden": "Tournament not found",
-  "Dit toernooi bestaat niet (meer).": "This tournament no longer exists.",
-  "Format": "Format",
-  "Speelwijze": "Play mode",
-  "Deelnemers": "Entrants",
-  "Minimum aantal spelers": "Minimum number of players",
-  "Inschrijving opent": "Registration opens",
-  "Inschrijving sluit": "Registration closes",
-  "Inschrijfgeld": "Entry fee",
-  "Annuleringsvoorwaarden": "Cancellation terms",
-  "Inschrijven en betalen": "Register and pay",
-  "Inschrijven": "Register",
-  "Uitschrijven": "Withdraw",
-  "Toernooi bewerken": "Edit tournament",
-  "Toernooiregels": "Tournament rules",
-  "Betalingen": "Payments",
-  "Geen openstaande betalingen": "No outstanding payments",
-  "Afwijzen": "Reject",
-  "Bevestigen": "Confirm",
-  "Terugbetalen": "Refund",
-  "Nog geen deelnemers": "No entrants yet",
-  "Uitbetalingen": "Payouts",
-  "Nog geen uitbetalingen vastgelegd": "No payouts recorded yet",
-  "Uitbetaling toevoegen": "Add payout",
-  "Goedkeuren": "Approve",
-  "Als betaald markeren": "Mark as paid",
-  "Wedstrijdschema": "Match schedule",
-  "Nog geen wedstrijdschema": "No match schedule yet",
-  "Het schema verschijnt zodra het toernooi begint.": "The schedule will appear once the tournament starts.",
-  "Betaald": "Paid",
-  "Goedgekeurd": "Approved",
-  "Wacht op goedkeuring": "Awaiting approval",
-  "uitbetaald": "paid out",
-  "goedgekeurd, wordt overgemaakt": "approved, will be transferred",
-  "wacht op goedkeuring": "awaiting approval",
-  "Hoe werkt de prijzenpot?": "How does the prize pool work?",
-  "De pot wordt berekend als inschrijfgeld × het aantal spelers dat daadwerkelijk heeft betaald. Zolang de inschrijving nog open is, is het genoemde bedrag dus een voorlopige schatting - pas zodra de inschrijving sluit staat de pot definitief vast.":
-    "The pool is calculated as entry fee × the number of players who actually paid. As long as registration is still open, the amount shown is a provisional estimate - the pool is only final once registration closes.",
-  "Dit toernooi heeft een vast prijzenbedrag. Dat bedrag staat vooraf vast, ongeacht het aantal deelnemers.":
-    "This tournament has a fixed prize amount. That amount is set in advance, regardless of the number of entrants.",
-  "Het genoemde bedrag is het totale prijzengeld voor dit toernooi.": "The amount shown is the total prize money for this tournament.",
-  "Per eindpositie is al een deel van de pot toegewezen (zie hierboven) - als percentage van de pot of als vast bedrag.":
-    "A share of the pool has already been assigned per final position (see above) - either as a percentage of the pool or as a fixed amount.",
-  "De organisator heeft nog geen verdeling per eindpositie vastgelegd.": "The admin hasn't set a distribution per final position yet.",
-  "Na afloop van het toernooi legt de organisator de uitbetaling per eindpositie handmatig vast, keurt deze goed en maakt het bedrag zelf over (bijvoorbeeld via Tikkie). Dit gaat niet automatisch via de app - de app houdt alleen bij wat er zou moeten gebeuren.":
-    "After the tournament, the admin manually records the payout per final position, approves it and transfers the amount themselves (e.g. via Tikkie). This doesn't happen automatically through the app - the app only tracks what should happen.",
-  "Moment voorstellen": "Propose a time",
-  "Probleem gemeld, wacht op reactie": "Problem reported, awaiting response",
-  "Intrekken": "Withdraw",
-  "Accepteren": "Accept",
-  "Tegenvoorstel": "Counter-proposal",
-  "Probleem melden": "Report a problem",
-
-  // Beheer (organisator)
-  "Beheer": "Admin",
-  "Het overzicht van je organisatie": "The overview of your organization",
-  "Actieve leagues": "Active leagues",
-  "Actieve toernooien": "Active tournaments",
-  "Open wedstrijden": "Open matches",
-  "Snel aanmaken": "Quick create",
-  "League": "League",
-  "Toernooi": "Tournament",
-  "Wedstrijd": "Match",
-  "Beheren": "Manage",
-  "Prijzen": "Prizes",
-  "Instellingen": "Settings",
-  "Laatste uitslagen": "Latest results",
-  "Nog geen uitslagen": "No results yet",
-  "Iedereen die een account heeft": "Everyone who has an account",
-  "Zoek op naam": "Search by name",
-  "Geen spelers gevonden": "No players found",
-  "Pas je zoekterm aan.": "Adjust your search term.",
-  "jij": "you",
-  "Rol weghalen": "Remove role",
-  "Maak organisator": "Make admin",
-  "Speler is nu organisator": "Player is now admin",
-  "Rol weggehaald": "Role removed",
-  "Aanmaken en van status wisselen": "Create and switch status",
-  "Nieuwe league": "New league",
-  "Verwijderen": "Delete",
-  "Maak je eerste league aan.": "Create your first league.",
-  "Status aangepast": "Status updated",
-  "Concept-league verwijderen": "Delete draft league",
-  "Deze actie kan niet ongedaan worden gemaakt.": "This action cannot be undone.",
-  "League verwijderd": "League deleted",
-  "Aanmaken en inzien": "Create and view",
-  "Nieuw toernooi": "New tournament",
-  "Maak je eerste toernooi aan.": "Create your first tournament.",
-  "Inplannen en uitslagen bevestigen": "Schedule and confirm results",
-  "Nieuwe wedstrijd": "New match",
-  "Wacht op bevestiging": "Awaiting confirmation",
-  "Spelers bevestigen dit normaal gesproken zelf bij elkaar. Grijp hier alleen in als dat vastloopt.":
-    "Players normally confirm this between themselves. Only step in here if that gets stuck.",
-  "Plan je eerste wedstrijd in.": "Schedule your first match.",
-  "Voorkeuren voor je organisatie": "Preferences for your organization",
-  "Nog niets in te stellen": "Nothing to configure yet",
-  "Standaard speltype, aantal legs en notificaties komen hier.": "Default game type, number of legs and notifications will go here.",
-
-  // Profiel
-  "Je gegevens en je rol": "Your details and your role",
-  "Foto wijzigen": "Change photo",
-  "Organisator": "Admin",
-  "Speler": "Player",
-  "Naam wijzigen": "Change name",
-  "Kort overzicht": "Quick overview",
-  "Gewonnen": "Won",
-  "Meldingen": "Notifications",
-  "Pushmeldingen op dit toestel": "Push notifications on this device",
-  "Ontvang een melding zodra er een wedstrijd voor je is ingepland of een speelmoment wordt voorgesteld - ook als de app niet open staat. Op iPhone: zet de site eerst via Safari op je beginscherm (deel-icoon → Zet op beginscherm) voordat je dit inschakelt.":
-    "Get notified as soon as a match is scheduled for you or a time is proposed - even when the app isn't open. On iPhone: first add the site to your home screen via Safari (share icon → Add to Home Screen) before enabling this.",
-  "Inschakelen op dit toestel": "Enable on this device",
-  "League-indeling": "League placement",
-  "Nog niet ingedeeld door de organisator.": "Not placed by the admin yet.",
-  "Bekijk mijn divisie": "View my division",
-  "Nog niet ingedeeld in een league.": "Not placed in a league yet.",
-  "Spelersgegevens": "Player details",
-  "Platform": "Platform",
-  "Gemiddelde (3 darts)": "Average (3 darts)",
-  "Enkel zichtbaar voor de beheerder.": "Only visible to the admin.",
-  "Gegevens wijzigen": "Change details",
-  "Kies een foto kleiner dan 5 MB.": "Choose a photo smaller than 5 MB.",
-  "Foto uploaden...": "Uploading photo...",
-  "Foto gewijzigd": "Photo changed",
-
-  // Standenoverzicht
-  "Speler": "Player",
-  "Ptn": "Pts",
-  "Gesp.": "Pld",
-  "G": "D",
-  "V": "L",
-  "Vorm": "Form",
-  "Saldo": "Diff",
-  "Gem.": "Avg",
-  "Jouw divisie": "Your division",
-  "Nog niet ingedeeld door de organisator": "Not placed by the admin yet",
-  "Nog geen spelers in deze divisie.": "No players in this division yet.",
-
-  // Datum & uur / geschiedenis / chat / onderlinge wedstrijden
-  "Geschiedenis": "History",
-  "Iemand": "Someone",
-  "Stel samen met je tegenstander een datum en tijd voor. Het voorstel wordt naar de andere speler gestuurd. Die speler kan het accepteren of een ander voorstel doen.":
-    "Agree on a date and time with your opponent. The proposal is sent to the other player, who can accept it or make a different proposal.",
-  "Nog geen eerdere ontmoetingen": "No previous meetings yet",
-  "Alleen jij en je tegenstander kunnen dit gesprek zien.": "Only you and your opponent can see this conversation.",
-  "Nog geen berichten. Stuur de eerste!": "No messages yet. Send the first one!",
-  "Typ een bericht...": "Type a message...",
-  "Stuur": "Send",
-  "Gelijk": "Draw",
-  "Gewonnen": "Won",
-  "Verloren": "Lost",
-  "Tegenvoorstel doen": "Make a counter-proposal",
-  "Moment voorstellen": "Propose a time",
-  "Datum en tijd": "Date and time",
-  "Opmerking": "Note",
-  "Bijv. reden van het voorstel": "E.g. reason for the proposal",
-  "Kies een datum en tijd.": "Choose a date and time.",
-  "Voorstel verstuurd.": "Proposal sent.",
-  "Tegenvoorstel versturen": "Send counter-proposal",
-  "Voorstel versturen": "Send proposal",
-  "Voorstel geaccepteerd.": "Proposal accepted.",
-  "Probleem gemeld bij je tegenstander.": "Problem reported to your opponent.",
-  "Voorstel ingetrokken.": "Proposal withdrawn.",
-
-  // Je wedstrijden
-  "Je wedstrijden": "Your matches",
-  "Alles waar jij aan meedoet": "Everything you're taking part in",
-  "Zodra je bent ingedeeld, verschijnen ze hier.": "Once you're placed, they'll show up here.",
-  "Open": "Open",
-  "Gespeeld": "Played",
-
-  // Statistieken
-  "Je cijfers over alle bevestigde wedstrijden": "Your numbers across all confirmed matches",
-  "Nog geen cijfers": "No numbers yet",
-  "Speel je eerste wedstrijd om hier iets te zien.": "Play your first match to see something here.",
-  "Verloren": "Lost",
-  "Checkout": "Checkout",
-  "Deze cijfers worden bijgewerkt zodra wedstrijden bevestigd zijn.": "These numbers are updated as soon as matches are confirmed.",
-
-  // Beheer: prijzen
-  "Divisiewinnaars en hun prijsclaim (LWPrints)": "Division winners and their prize claim (LWPrints)",
-  "Nog geen divisiewinnaars": "No division winners yet",
-  "Bepaal winnaars op een afgeronde league-pagina.": "Determine winners on a finished league's page.",
-  "Claim niet gevonden": "Claim not found",
-  "Ga terug naar Prijzen.": "Go back to Prizes.",
-  "Status wijzigen": "Change status",
-  "Nieuwe status": "New status",
-  "Notitie": "Note",
-  "optioneel, komt in de historie": "optional, appears in the history",
-  "Status opslaan": "Save status",
-  "Markeer als uitgereikt": "Mark as delivered",
-  "Ingevulde gegevens": "Submitted details",
-  "Naam": "Name",
-  "E-mail": "Email",
-  "Telefoon": "Phone",
-  "Kledingstuk": "Garment",
-  "Maat": "Size",
-  "Kleur": "Color",
-  "Bedrukking/ontwerp": "Print/design",
-  "Opmerkingen van winnaar": "Winner's comments",
-  "Toestemming delen met LWPrints": "Consent to share with LWPrints",
-  "Nee": "No",
-  "Nog niets ingevuld door de winnaar.": "Nothing filled in by the winner yet.",
-  "Beheerdersnotitie": "Admin note",
-  "Interne notitie, bijv. contactpogingen": "Internal note, e.g. contact attempts",
-  "Historie": "History",
-  "Nog geen statuswijzigingen.": "No status changes yet.",
-  "door": "by",
-  "Status bijgewerkt": "Status updated",
-  "Gemarkeerd als uitgereikt": "Marked as delivered",
-  "Notitie opgeslagen": "Note saved",
-
-  // Naam/spelersgegevens/league/toernooi aanmaken
-  "Vul een naam in.": "Enter a name.",
-  "Naam gewijzigd": "Name changed",
-  "Spelersgegevens wijzigen": "Change player details",
-  "Voornaam": "First name",
-  "Achternaam": "Last name",
-  "Nickname (Scolia / DartCounter)": "Nickname (Scolia / DartCounter)",
-  "Vul je voor- en achternaam in.": "Enter your first and last name.",
-  "Vul je nickname in.": "Enter your nickname.",
-  "Vul een geldig gemiddelde in.": "Enter a valid average.",
-  "Spelersgegevens opgeslagen": "Player details saved",
-  "Nieuwe league": "New league",
-  "Seizoen": "Season",
-  "Bijv. 2026": "E.g. 2026",
-  "Speltype": "Game type",
-  "League aangemaakt. Voeg spelers toe en deel ze in.": "League created. Add players and assign them.",
-  "League aanmaken": "Create league",
-  "Nieuw toernooi": "New tournament",
-  "Opzet": "Format",
-
-  // Wedstrijd inplannen/uitslag doorgeven/controleren
-  "Wie heeft gewonnen?": "Who won?",
-  "Winnaar": "Winner",
-  "per speler": "per player",
-  "Meer statistieken": "More statistics",
-  "Scoring": "Scoring",
-  "Eerste 9 gem.": "First 9 avg.",
-  "Checkouts geraakt": "Checkouts hit",
-  "Checkout pogingen": "Checkout attempts",
-  "Worpen": "Darts thrown",
-  "Beste leg": "Best leg",
-  "darts": "darts",
-  "Kies wie er gewonnen heeft, of gelijkspel.": "Choose who won, or a draw.",
-  "Vul beide legscores in.": "Enter both leg scores.",
-  "Bij gelijke legs is het een gelijkspel.": "Equal legs means it's a draw.",
-  "De legs zijn niet gelijk, dus kies wie er gewonnen heeft.": "The legs aren't equal, so choose who won.",
-  "De gekozen winnaar komt niet overeen met de legscore.": "The chosen winner doesn't match the leg score.",
-  "Vul alle statistieken in voor beide spelers (Gemiddelde, 180's, Hoogste finish, Scoring, Eerste 9 gem., Checkouts, Worpen, Beste leg, 60+/80+/100+/140+).":
-    "Fill in all statistics for both players (Average, 180s, Highest checkout, Scoring, First 9 avg., Checkouts, Darts thrown, Best leg, 60+/80+/100+/140+).",
-  "Doorgegeven. Je tegenstander bevestigt de uitslag.": "Submitted. Your opponent will confirm the result.",
-  "Uitslag versturen": "Submit result",
-  "Uitslag controleren": "Check result",
-  "Klopt dit?": "Is this correct?",
-  "Legs": "Legs",
-  "Checkout %": "Checkout %",
-  "Checkouts": "Checkouts",
-  "Afkeuren": "Reject",
-  "Uitslag bevestigd": "Result confirmed",
-  "Uitslag afgekeurd. Kan opnieuw worden ingevuld.": "Result rejected. It can be submitted again.",
-
-  // Toernooi aanmaken/bewerken
-  "Bijv. Clubkampioenschap": "E.g. Club championship",
-  "Onbekend": "Unknown",
-  "Online": "Online",
-  "Offline": "Offline",
-  "Scoresysteem": "Scoring system",
-  "Maximum aantal spelers": "Maximum number of players",
-  "Concept (nog niet zichtbaar voor spelers)": "Draft (not visible to players yet)",
-  "Inschrijfgeld (€)": "Entry fee (€)",
-  "Betaaldeadline": "Payment deadline",
-  "uren na inschrijving, optioneel": "hours after registering, optional",
-  "Betaalinstructies": "Payment instructions",
-  "bijv. Tikkie-link/telefoonnummer": "e.g. Tikkie link/phone number",
-  "Bijv. Stuur € 10 via Tikkie naar 06-12345678": "E.g. Send €10 via Tikkie to 06-12345678",
-  "Bijv. Volledige terugbetaling tot 24 uur voor aanvang": "E.g. Full refund up to 24 hours before the start",
-  "Terugbetaling mogelijk tot": "Refund possible up to",
-  "uren voor aanvang, optioneel": "hours before the start, optional",
-  "Prijs": "Prize",
-  "Nog niet bekend": "Not known yet",
-  "Prijzenpot": "Prize pool",
-  "Vast bedrag, geen verdeling": "Fixed amount, no distribution",
-  "Vast bedrag met verdeling": "Fixed amount with distribution",
-  "Berekend uit inschrijfgeld x betaalde deelnemers": "Calculated from entry fee × paid entrants",
-  "Bedrag (€)": "Amount (€)",
-  "Prijsverdeling per plaatsing": "Prize distribution per placement",
-  "Plaats toevoegen": "Add placement",
-  "Omschrijving": "Description",
-  "Bijv. Gepersonaliseerd dartshirt": "E.g. Personalized darts shirt",
-  "Regels of extra info voor deelnemers": "Rules or extra info for entrants",
-  "Inschrijving moet sluiten na het openen.": "Registration must close after it opens.",
-  "Minimum aantal spelers kan niet hoger zijn dan het maximum.": "Minimum number of players cannot be higher than the maximum.",
-  "Inschrijfgeld mag niet negatief zijn.": "Entry fee cannot be negative.",
-  "De percentages in de prijsverdeling mogen samen niet meer dan 100% zijn.": "The percentages in the prize distribution cannot add up to more than 100%.",
-  "Bij een pot op basis van inschrijfgeld zijn alleen percentages toegestaan - het totaalbedrag staat pas na afloop vast.":
-    "For a pool based on entry fees, only percentages are allowed - the total amount is only final once the tournament ends.",
-  "De vaste bedragen in de prijsverdeling zijn hoger dan de totale pot.": "The fixed amounts in the prize distribution exceed the total pool.",
-  "Toernooi bijgewerkt": "Tournament updated",
-  "Toernooi aangemaakt": "Tournament created",
-  "Wijzigingen opslaan": "Save changes",
-  "Toernooi aanmaken": "Create tournament",
-  "Type": "Type",
-  "% van de pot": "% of the pool",
-  "Vast bedrag (€)": "Fixed amount (€)",
-  "Waarde": "Value",
-  "Toernooi niet gevonden.": "Tournament not found.",
-  "Je bent ingeschreven!": "You're registered!",
-  "Je bent uitgeschreven.": "You've withdrawn.",
-
-  // Betalingen/uitbetalingen (organisator + speler)
-  "Betaling melden": "Report payment",
-  "Meld dit pas nadat je het bedrag daadwerkelijk via Tikkie hebt overgemaakt. De organisator controleert dit voordat je inschrijving definitief wordt.":
-    "Only report this after you've actually transferred the amount via Tikkie. The admin will check this before your registration becomes final.",
-  "Referentie": "Reference",
-  "optioneel, bijv. Tikkie-omschrijving": "optional, e.g. Tikkie description",
-  "Bijv. TIKKIE-123": "E.g. TIKKIE-123",
-  "Betaling gemeld. De organisator controleert dit.": "Payment reported. The admin will check this.",
-  "Betaling bevestigen": "Confirm payment",
-  "Bevestig pas nadat je het bedrag daadwerkelijk in je eigen Tikkie-overzicht ziet staan.": "Only confirm after you actually see the amount in your own Tikkie overview.",
-  "Ontvangen bedrag": "Amount received",
-  "Vul een geldig bedrag in.": "Enter a valid amount.",
-  "Betaling bevestigd.": "Payment confirmed.",
-  "Betaling afwijzen": "Reject payment",
-  "Reden": "Reason",
-  "optioneel, wordt getoond aan de speler": "optional, shown to the player",
-  "Bijv. bedrag niet ontvangen": "E.g. amount not received",
-  "Betaling afgewezen. De plek is vrijgegeven.": "Payment rejected. The spot has been released.",
-  "Terugbetaling registreren": "Register refund",
-  "Bevestig dat je": "Confirm that you",
-  "hebt teruggestort aan": "have refunded",
-  "Dit registreert alleen dat de terugbetaling is gedaan - de app maakt zelf geen geld over.": "This only records that the refund was made - the app doesn't transfer money itself.",
-  "Terugbetaling geregistreerd.": "Refund registered.",
-  "Plaatsing": "Placement",
-  "Vul een geldige plaatsing in.": "Enter a valid placement.",
-  "Kies een speler.": "Choose a player.",
-  "Uitbetaling vastgelegd.": "Payout recorded.",
-  "Uitbetaling goedgekeurd.": "Payout approved.",
-  "Registreer dit pas nadat je het bedrag daadwerkelijk via Tikkie hebt overgemaakt.": "Only record this after you've actually transferred the amount via Tikkie.",
-  "Bijv. Tikkie-omschrijving": "E.g. Tikkie description",
-  "Uitbetaling geregistreerd als betaald.": "Payout recorded as paid.",
-
-  // Wedstrijd inplannen (organisator)
-  "Divisie": "Division",
-  "Geen divisie": "No division",
-  "Wanneer": "When",
-  "Maak eerst een league aan.": "Create a league first.",
-  "Je hebt minstens twee spelers nodig.": "You need at least two players.",
-  "Wedstrijd ingepland": "Match scheduled",
-  "Wedstrijd inplannen": "Schedule match",
-}));
-
-// Voor gerenderde zinnen met een dynamische waarde erin (bv. een naam of
-// datum) - de statische delen worden hier vertaald, het interpolatie-
-// gedeelte (elke ($1/$2/...) capture group) blijft ongewijzigd overgenomen.
-const I18N_PATTERNS = [
-  [/^Welkom terug, (.+)$/, (_, name) => `Welcome back, ${name}`],
-  [/^Beschikbaar vanaf (.+)$/, (_, date) => `Available from ${date}`],
-  [/^Deze league start op (.+) om (.+) uur\.$/, (_, date, time) => `This league starts on ${date} at ${time}.`],
-  [/^(.+) gewonnen!$/, (_, name) => `${name} won!`],
-  [/^Bepaald op (.+)$/, (_, date) => `Determined on ${date}`],
-  [/^Betaal binnen (\d+) uur na inschrijving, anders vervalt je plek automatisch\.$/,
-    (_, n) => `Pay within ${n} hours of registering, or your spot will be released automatically.`],
-  [/^Terugbetaling mogelijk tot (\d+) uur voor aanvang\.$/, (_, n) => `Refund possible up to ${n} hours before the start.`],
-  [/^(.+) ontvangen\.$/, (_, amount) => `${amount} received.`],
-  [/^Jouw resultaat: (.+) plaats$/, (_, place) => `Your result: ${place} place`],
-  [/^Zet op (.+)$/, (_, status) => `Set to ${status}`],
-  [/^Je hebt (.+) voorgesteld, wacht op reactie$/, (_, when) => `You proposed ${when}, awaiting response`],
-  [/^(.+) wint$/, (_, name) => `${name} wins`],
-  [/^Zodra een speler (\d+) legs wint is de wedstrijd beslist - jullie hoeven dan niet alle (\d+) legs te spelen\.(?:\s+Bij (\d+)-(\d+) is het gelijkspel\.)?\s+Je tegenstander moet de uitslag bevestigen voor het meetelt\.$/,
-    (_, need, total, d1, d2) => `Once a player wins ${need} legs the match is decided - you don't have to play all ${total} legs.` +
-      (d1 ? ` At ${d1}-${d2} it's a draw.` : "") +
-      ` Your opponent needs to confirm the result before it counts.`],
-  [/^Deze divisie heeft nog maar (\d+) speler\(s\); minimaal 4 nodig om te starten\.$/,
-    (_, n) => `This division only has ${n} player(s) so far; at least 4 are needed to start.`],
-  [/^(\d+) spelers in deze divisie\.$/, (_, n) => `${n} players in this division.`],
-];
-
-new MutationObserver((mutations) => {
-  if (locale !== "en") return;
-  for (const m of mutations) {
-    m.addedNodes.forEach((n) => translateNode(n));
-    if (m.type === "characterData") translateNode(m.target);
-  }
-}).observe(document.body, { childList: true, subtree: true, characterData: true });
-
 const STATUS = {
-  draft: { label: "Concept", color: "#6B7280" },
-  active: { label: "Actief", color: "#2ECC71" },
-  finished: { label: "Afgerond", color: "#9B7BD9" },
-  scheduled: { label: "Gepland", color: "#4EA1F7" },
-  in_progress: { label: "Bezig", color: "#F47B20" },
-  pending_confirmation: { label: "Ter bevestiging", color: "#F5B942" },
-  confirmed: { label: "Bevestigd", color: "#2ECC71" },
-  cancelled: { label: "Geannuleerd", color: "#E74C3C" },
+  draft: { label: "Draft", color: "#6B7280" },
+  active: { label: "Active", color: "#2ECC71" },
+  finished: { label: "Finished", color: "#9B7BD9" },
+  scheduled: { label: "Scheduled", color: "#4EA1F7" },
+  in_progress: { label: "In progress", color: "#F47B20" },
+  pending_confirmation: { label: "Awaiting confirmation", color: "#F5B942" },
+  confirmed: { label: "Confirmed", color: "#2ECC71" },
+  cancelled: { label: "Cancelled", color: "#E74C3C" },
 };
 
 const TOURNAMENT_TYPES = {
-  knockout: "Knock-out",
-  groups: "Poules",
-  groups_and_knockout: "Poules + knock-out",
+  knockout: "Knockout",
+  groups: "Groups",
+  groups_and_knockout: "Groups + knockout",
 };
 
 const GARMENT_LABELS = { tshirt: "T-shirt", hoodie: "Hoodie", polo: "Polo" };
@@ -785,16 +56,16 @@ const SIZE_LABELS = { xs: "XS", s: "S", m: "M", l: "L", xl: "XL", xxl: "XXL", xx
 // Statussen van een prijsclaim: label voor de winnaar (vriendelijk, geen
 // interne termen) en voor de organisator (exacte statusnaam), plus kleur.
 const PRIZE_STATUS = {
-  available:         { label: "Beschikbaar",              color: "#4EA1F7" },
-  claim_started:     { label: "Bezig met claimen",         color: "#4EA1F7" },
-  claimed:           { label: "Aanvraag ingediend",        color: "#F5B942" },
-  reviewing:         { label: "Wordt beoordeeld",          color: "#F5B942" },
-  contact_pending:   { label: "Contact volgt nog",         color: "#F5B942" },
-  confirmed:         { label: "Bevestigd",                 color: "#2ECC71" },
-  in_production:     { label: "Wordt gemaakt",             color: "#9B7BD9" },
-  ready:             { label: "Klaar om op te halen",      color: "#2ECC71" },
-  delivered:         { label: "Uitgereikt",                color: "#2ECC71" },
-  cancelled:         { label: "Geannuleerd",                color: "#6B7280" },
+  available:         { label: "Available",              color: "#4EA1F7" },
+  claim_started:     { label: "Claim in progress",         color: "#4EA1F7" },
+  claimed:           { label: "Claim submitted",        color: "#F5B942" },
+  reviewing:         { label: "Under review",          color: "#F5B942" },
+  contact_pending:   { label: "Contact to follow",         color: "#F5B942" },
+  confirmed:         { label: "Confirmed",                 color: "#2ECC71" },
+  in_production:     { label: "Being made",             color: "#9B7BD9" },
+  ready:             { label: "Ready for pickup",      color: "#2ECC71" },
+  delivered:         { label: "Delivered",                color: "#2ECC71" },
+  cancelled:         { label: "Cancelled",                color: "#6B7280" },
 };
 
 function prizeStatusBadge(status) {
@@ -823,7 +94,7 @@ function fmtDate(iso, withTime = true) {
   const d = new Date(iso);
   const opts = { day: "numeric", month: "short", year: "numeric" };
   if (withTime) { opts.hour = "2-digit"; opts.minute = "2-digit"; }
-  return d.toLocaleDateString(dateLocale(), opts);
+  return d.toLocaleDateString("en-GB", opts);
 }
 
 // Zet een ISO-timestamp om naar de waarde die een <input type="datetime-local">
@@ -854,13 +125,13 @@ function toast(msg) {
 // Vertaalt Supabase-foutmeldingen naar iets dat een dartspeler begrijpt.
 function errText(error) {
   const m = String(error?.message || error || "");
-  if (/Invalid login credentials/i.test(m)) return "E-mailadres of wachtwoord klopt niet.";
-  if (/Email not confirmed/i.test(m)) return "Bevestig eerst je e-mailadres via de link in je mail.";
-  if (/User already registered/i.test(m)) return "Er bestaat al een account met dit e-mailadres.";
-  if (/Password should be at least/i.test(m)) return "Je wachtwoord moet minimaal 6 tekens zijn.";
-  if (/rate limit|too many/i.test(m)) return "Te veel pogingen. Wacht even en probeer opnieuw.";
-  if (/Failed to fetch|NetworkError/i.test(m)) return "Geen verbinding met de server. Controleer je internet.";
-  return m || "Er ging iets mis.";
+  if (/Invalid login credentials/i.test(m)) return "Email address or password is incorrect.";
+  if (/Email not confirmed/i.test(m)) return "Confirm your email address via the link in your inbox first.";
+  if (/User already registered/i.test(m)) return "An account with this email address already exists.";
+  if (/Password should be at least/i.test(m)) return "Your password must be at least 6 characters.";
+  if (/rate limit|too many/i.test(m)) return "Too many attempts. Wait a moment and try again.";
+  if (/Failed to fetch|NetworkError/i.test(m)) return "No connection to the server. Check your internet.";
+  return m || "Something went wrong.";
 }
 
 const icon = {
@@ -936,9 +207,9 @@ function errorView(error) {
   return `
     <div class="state">
       <div class="state-ico" style="color:#E74C3C">${icon.warn}</div>
-      <div class="state-title">Dit lukte niet</div>
+      <div class="state-title">Something went wrong</div>
       <div class="state-sub">${esc(errText(error))}</div>
-      <button class="btn ghost sm mt16" onclick="location.reload()">Opnieuw laden</button>
+      <button class="btn ghost sm mt16" onclick="location.reload()">Reload</button>
     </div>`;
 }
 
@@ -947,19 +218,19 @@ function errorView(error) {
 // onderliggende status-kolom (die rapporteren/bevestigen/statistieken
 // aanstuurt) blijft ongewijzigd.
 function matchDisplayStatus(m) {
-  if (m.status === "cancelled") return { label: "Geannuleerd", color: "#E74C3C" };
-  if (m.status === "confirmed") return { label: "Gespeeld", color: "#2ECC71" };
+  if (m.status === "cancelled") return { label: "Cancelled", color: "#E74C3C" };
+  if (m.status === "confirmed") return { label: "Played", color: "#2ECC71" };
   if (m.available_at && new Date(m.available_at) > new Date()) {
-    return { label: "Nog niet gestart", color: "#6B7280" };
+    return { label: "Not started yet", color: "#6B7280" };
   }
   const p = m.schedule_proposal;
   if (p) {
-    if (p.status === "accepted") return { label: "Afspraak bevestigd", color: "#2ECC71" };
+    if (p.status === "accepted") return { label: "Time confirmed", color: "#2ECC71" };
     if (p.status === "pending" || p.status === "countered" || p.status === "disputed") {
-      return { label: "Afspraak voorgesteld", color: "#F5B942" };
+      return { label: "Time proposed", color: "#F5B942" };
     }
   }
-  return { label: "Beschikbaar", color: "#4EA1F7" };
+  return { label: "Available", color: "#4EA1F7" };
 }
 
 function matchStatusBadge(m) {
@@ -969,8 +240,8 @@ function matchStatusBadge(m) {
 
 // Beschikbaarheidstekst onder een nog niet gespeelde wedstrijd.
 function matchAvailabilityLine(m, status) {
-  if (status.label === "Nog niet gestart" && m.available_at) {
-    return `<div class="match-meta" style="margin-top:4px">Beschikbaar vanaf ${esc(fmtDate(m.available_at, false))}</div>`;
+  if (status.label === "Not started yet" && m.available_at) {
+    return `<div class="match-meta" style="margin-top:4px">Available from ${esc(fmtDate(m.available_at, false))}</div>`;
   }
   return "";
 }
@@ -990,11 +261,11 @@ function matchCard(m) {
       </div>
       <div class="match-row">
         <div class="mp ${aWin ? "winner" : ""}">
-          ${avatar(a, "sm")}<span class="mp-name">${esc(a?.display_name || "Speler A")}</span>
+          ${avatar(a, "sm")}<span class="mp-name">${esc(a?.display_name || "Player A")}</span>
         </div>
         <span class="vs">VS</span>
         <div class="mp right ${bWin ? "winner" : ""}">
-          ${avatar(b, "sm")}<span class="mp-name">${esc(b?.display_name || "Speler B")}</span>
+          ${avatar(b, "sm")}<span class="mp-name">${esc(b?.display_name || "Player B")}</span>
         </div>
       </div>
       ${played ? `
@@ -1003,7 +274,7 @@ function matchCard(m) {
           <span class="score-sep">-</span>
           <span class="score ${bWin ? "win" : ""}">${m.player_b_legs}</span>
         </div>
-        ${isDraw ? `<div class="center muted" style="font-size:12.5px;margin-top:4px">Gelijkspel</div>` : ""}` : ""}
+        ${isDraw ? `<div class="center muted" style="font-size:12.5px;margin-top:4px">Draw</div>` : ""}` : ""}
       ${m.scheduled_at ? `<div class="match-meta">${icon.clock}<span>${esc(fmtDate(m.scheduled_at))}</span></div>` : ""}
       ${!played && m.status !== "cancelled" ? matchAvailabilityLine(m, status) : ""}
     </div>`;
@@ -1032,13 +303,13 @@ function leagueCard(l, clickable = true) {
 // matchDisplayStatus voor wedstrijden) - de echte status-kolom
 // (draft/active/finished) blijft ongewijzigd en stuurt niets extra aan.
 const TOURNAMENT_STATUS_LABELS = {
-  draft: "Concept",
-  upcoming: "Binnenkort",
-  registration_open: "Inschrijving geopend",
-  registration_closed: "Inschrijving gesloten",
-  full: "Vol",
-  in_progress: "Bezig",
-  finished: "Afgerond",
+  draft: "Draft",
+  upcoming: "Coming up",
+  registration_open: "Registration open",
+  registration_closed: "Registration closed",
+  full: "Full",
+  in_progress: "In progress",
+  finished: "Finished",
 };
 const TOURNAMENT_STATUS_COLORS = {
   draft: "#6B7280",
@@ -1075,12 +346,12 @@ function tournamentStatusBadge(t, entryCount) {
 
 function registrationClosedReason(status) {
   return {
-    upcoming: "Inschrijving is nog niet geopend.",
-    registration_closed: "Inschrijving is gesloten.",
-    full: "Dit toernooi zit vol.",
-    in_progress: "Dit toernooi is al begonnen.",
-    finished: "Dit toernooi is afgerond.",
-    draft: "Dit toernooi is nog niet gepubliceerd.",
+    upcoming: "Registration hasn't opened yet.",
+    registration_closed: "Registration is closed.",
+    full: "This tournament is full.",
+    in_progress: "This tournament has already started.",
+    finished: "This tournament has finished.",
+    draft: "This tournament hasn't been published yet.",
   }[status.key] || "";
 }
 
@@ -1094,17 +365,13 @@ function fmtPrizeAmount(t) {
   return fmtMoney(t.prize_amount, t.prize_currency);
 }
 
-const ORDINALS_NL = { 1: "1e", 2: "2e", 3: "3e", 4: "4e", 5: "5e", 6: "6e", 7: "7e", 8: "8e" };
 function ordinal(n) {
-  if (locale === "en") {
-    const mod100 = n % 100;
-    if (mod100 >= 11 && mod100 <= 13) return `${n}th`;
-    if (n % 10 === 1) return `${n}st`;
-    if (n % 10 === 2) return `${n}nd`;
-    if (n % 10 === 3) return `${n}rd`;
-    return `${n}th`;
-  }
-  return ORDINALS_NL[n] || `${n}e`;
+  const mod100 = n % 100;
+  if (mod100 >= 11 && mod100 <= 13) return `${n}th`;
+  if (n % 10 === 1) return `${n}st`;
+  if (n % 10 === 2) return `${n}nd`;
+  if (n % 10 === 3) return `${n}rd`;
+  return `${n}th`;
 }
 
 // De prijzenpot: vast bedrag (staat meteen vast), of berekend uit
@@ -1139,7 +406,7 @@ function prizeLine(t, paidCount = 0) {
     const pool = prizePoolInfo(t, paidCount);
     const lines = prizeDistributionLines(t, pool);
     return `
-      <div class="row-title" style="font-size:14px">Prijzengeld</div>
+      <div class="row-title" style="font-size:14px">Prize money</div>
       ${pool
         ? `<div class="row-sub" style="white-space:normal">${esc(fmtMoney(pool.amount, t.prize_currency))}${pool.pending ? ` <span class="muted">(voorlopig, o.b.v. ${pool.paidCount} betaalde deelnemer${pool.paidCount === 1 ? "" : "s"})</span>` : ""}</div>`
         : (t.prize_amount != null ? `<div class="row-sub" style="white-space:normal">${esc(fmtPrizeAmount(t))}</div>` : "")}
@@ -1147,21 +414,21 @@ function prizeLine(t, paidCount = 0) {
   }
   if (t.prize_type === "physical") {
     return `
-      <div class="row-title" style="font-size:14px">Fysieke prijs</div>
+      <div class="row-title" style="font-size:14px">Physical prize</div>
       ${t.prize_description ? `<div class="row-sub" style="white-space:normal">${esc(t.prize_description)}</div>` : ""}`;
   }
   if (t.prize_type === "unknown") {
-    return `<div class="row-title" style="font-size:14px;white-space:normal">Prijs wordt later bekendgemaakt</div>`;
+    return `<div class="row-title" style="font-size:14px;white-space:normal">Prize to be announced later</div>`;
   }
-  return `<div class="muted" style="font-size:14px">Geen prijs</div>`;
+  return `<div class="muted" style="font-size:14px">No prize</div>`;
 }
 
 const PAYMENT_STATUS_LABELS = {
-  pending: "Betaling nog niet gemeld",
-  submitted: "Betaling gemeld, wacht op bevestiging",
-  paid: "Betaling bevestigd",
-  failed: "Betaling afgewezen/verlopen",
-  refunded: "Teruggestort",
+  pending: "Payment not yet reported",
+  submitted: "Payment reported, awaiting confirmation",
+  paid: "Payment confirmed",
+  failed: "Payment rejected/expired",
+  refunded: "Refunded",
 };
 const PAYMENT_STATUS_COLORS = {
   pending: "#6B7280",
@@ -1200,7 +467,7 @@ function tournamentCard(t, opts = {}) {
         <span>${entryCount}${t.max_players ? `/${t.max_players}` : ""} spelers</span>
         ${isMine ? `<span style="color:var(--accent);font-weight:600">Jij doet mee</span>` : ""}
       </div>
-      ${t.entry_fee > 0 ? `<div class="muted" style="font-size:13px;margin-bottom:8px">Inschrijfgeld: ${esc(fmtMoney(t.entry_fee, t.prize_currency))}</div>` : ""}
+      ${t.entry_fee > 0 ? `<div class="muted" style="font-size:13px;margin-bottom:8px">Entry fee: ${esc(fmtMoney(t.entry_fee, t.prize_currency))}</div>` : ""}
       <div style="margin-bottom:14px">${prizeLine(t, paidCount)}</div>
       <button class="btn ghost sm block" onclick="go('toernooien/${esc(t.id)}')">Bekijk toernooi</button>
     </div>`;
@@ -1216,7 +483,7 @@ function groupStandingsByDivision(rows) {
   for (const r of rows) {
     const key = r.divisionId || "none";
     if (!groups.has(key)) {
-      groups.set(key, { id: key, name: r.divisionName || "Geen divisie", rank: r.divisionRank, rows: [] });
+      groups.set(key, { id: key, name: r.divisionName || "No division", rank: r.divisionRank, rows: [] });
     }
     groups.get(key).rows.push(r);
   }
@@ -1226,8 +493,8 @@ function groupStandingsByDivision(rows) {
 }
 
 // Toont een divisie als kaart: naam, aantal spelers, en de ranglijst met
-// punten, W-G-V, legsaldo en gemiddelde. `opts.meId` markeert de kaart en de
-// rij van de ingelogde speler ("Jouw divisie"). `opts.divisionCount` bepaalt
+// punten, W-D-L, legsaldo en gemiddelde. `opts.meId` markeert de kaart en de
+// rij van de ingelogde speler ("Your division"). `opts.divisionCount` bepaalt
 // - samen met group.rank - of promotie/degradatie-pijltjes getoond worden;
 // dit is altijd een voorspelling op basis van de huidige (mogelijk nog
 // lopende) tussenstand, niet een definitief resultaat.
@@ -1235,7 +502,7 @@ function groupStandingsByDivision(rows) {
 // resultaten, oudste eerst.
 function formDots(form, compact = false) {
   const colorFor = { W: "#2ECC71", D: "#8A93AA", L: "#E74C3C" };
-  const labelFor = { W: "Gewonnen", D: "Gelijk", L: "Verloren" };
+  const labelFor = { W: "Won", D: "Draw", L: "Lost" };
   if (!form || !form.length) return compact ? `<span class="muted">&mdash;</span>` : "";
   return `<div style="display:flex;gap:3px;${compact ? "" : "margin-top:4px"}">
     ${form.map((f) => `<span style="width:7px;height:7px;border-radius:50%;background:${colorFor[f] || "#8A93AA"};display:inline-block" title="${labelFor[f] || f}"></span>`).join("")}
@@ -1243,7 +510,7 @@ function formDots(form, compact = false) {
 }
 
 // Volledige standentabel van een divisie: #, speler, punten, gespeeld,
-// W/G/V, vorm, legs voor/tegen, saldo en gemiddelde - horizontaal
+// W/D/L, vorm, legs voor/tegen, saldo en gemiddelde - horizontaal
 // scrollbaar op smalle schermen. Promotie-/degradatiezone en de eigen rij
 // krijgen een subtiele achtergrondkleur; de koploper krijgt een kroontje.
 function divisionStandingsCard(group, opts = {}) {
@@ -1260,18 +527,18 @@ function divisionStandingsCard(group, opts = {}) {
         <div class="row-main">
           <h2 style="margin:0">${esc(group.name)}</h2>
           <div class="muted" style="font-size:12.5px;margin-top:2px">${isUnassigned
-            ? "Nog niet ingedeeld door de organisator"
-            : `${group.rows.length}/12 spelers`}</div>
+            ? "Not placed by the admin yet"
+            : `${group.rows.length}/12 players`}</div>
         </div>
-        ${isMyDivision ? `<span class="badge" style="color:#F47B20;border-color:#F47B2066;background:#F47B2022">Jouw divisie</span>` : ""}
+        ${isMyDivision ? `<span class="badge" style="color:#F47B20;border-color:#F47B2066;background:#F47B2022">Your division</span>` : ""}
       </div>
       ${group.rows.length ? `
       <div class="table-scroll">
         <table class="standings-table">
           <thead>
             <tr>
-              <th>#</th><th>Speler</th><th>Ptn</th><th>Gesp.</th><th>W</th><th>G</th><th>V</th>
-              <th>Vorm</th><th>Legs+</th><th>Legs-</th><th>Saldo</th><th>Gem.</th>
+              <th>#</th><th>Player</th><th>Pts</th><th>Pld</th><th>W</th><th>D</th><th>L</th>
+              <th>Form</th><th>Legs+</th><th>Legs-</th><th>Diff</th><th>Avg</th>
             </tr>
           </thead>
           <tbody>
@@ -1286,7 +553,7 @@ function divisionStandingsCard(group, opts = {}) {
                   <td>${!isUnassigned && i === 0 ? `<span style="display:inline-flex;width:13px;height:13px;color:#F47B20;vertical-align:-2px;margin-right:3px">${icon.trophy}</span>` : ""}${i + 1}</td>
                   <td class="player-cell">
                     ${avatar(r.player, "sm")}
-                    <span>${esc(r.player?.display_name || "?")}${isMe ? ` <span class="muted" style="font-weight:400">(jij)</span>` : ""}</span>
+                    <span>${esc(r.player?.display_name || "?")}${isMe ? ` <span class="muted" style="font-weight:400">(you)</span>` : ""}</span>
                   </td>
                   <td style="font-weight:700">${r.points}</td>
                   <td>${r.played}</td>
@@ -1303,7 +570,7 @@ function divisionStandingsCard(group, opts = {}) {
           </tbody>
         </table>
       </div>`
-        : `<p class="muted" style="font-size:13.5px;margin:0">Nog geen spelers in deze divisie.</p>`}
+        : `<p class="muted" style="font-size:13.5px;margin:0">No players in this division yet.</p>`}
     </div>`;
 }
 
@@ -1496,7 +763,7 @@ const db = {
     if (error) throw error;
   },
 
-  // Stand per divisie: punten (2 win / 1 gelijk / 0 verlies), legsaldo en
+  // Standings per divisie: punten (2 win / 1 gelijk / 0 verlies), legsaldo en
   // gemiddelde als tiebreaker. Draait volledig server-side (security-definer
   // functie), want de sortering mag intern het PRIVATE zelf-opgegeven
   // gemiddelde gebruiken (player_onboarding) zonder dat aan andere spelers
@@ -1762,7 +1029,7 @@ const db = {
   },
 
   // Alle (niet-ingetrokken + ingetrokken) inschrijvingen voor een set
-  // toernooien in één keer - voor aantallen/"Mijn toernooien" op de
+  // toernooien in één keer - voor aantallen/"My tournaments" op de
   // overzichtspagina, zonder N+1 query's.
   async tournamentEntryCounts(tournamentIds) {
     if (!tournamentIds.length) return [];
@@ -1923,7 +1190,7 @@ const db = {
     return data;
   },
 
-  // Uitslag doorgeven. Draait via een security-definer functie in de
+  // Report result. Draait via een security-definer functie in de
   // database, die onthoudt wie hem invulde (reported_by) zodat diezelfde
   // speler hem niet ook kan bevestigen. Zet de status op
   // pending_confirmation; de tegenstander (of de organisator) bevestigt of
@@ -1946,13 +1213,13 @@ const db = {
     if (error) throw error;
   },
 
-  // Bevestigen telt de wedstrijd mee in player_statistics (in de database).
+  // Confirm telt de wedstrijd mee in player_statistics (in de database).
   async confirmMatch(matchId) {
     const { error } = await sb.rpc("confirm_league_match_result", { p_match_id: matchId });
     if (error) throw error;
   },
 
-  // Afkeuren zet de wedstrijd terug naar 'scheduled' zodat de uitslag
+  // Reject zet de wedstrijd terug naar 'scheduled' zodat de uitslag
   // opnieuw ingevuld kan worden.
   async rejectMatch(matchId) {
     const { error } = await sb.rpc("reject_league_match_result", { p_match_id: matchId });
@@ -2019,14 +1286,14 @@ function showAuthError(msg, extraHtml = "") {
 
 async function handleResendClick(email, btnEl) {
   btnEl.disabled = true;
-  btnEl.textContent = "Bezig...";
+  btnEl.textContent = "Working...";
   const error = await resendSignupEmail(email);
   if (error) {
     btnEl.disabled = false;
-    btnEl.textContent = "Verstuur activatiemail opnieuw";
+    btnEl.textContent = "Resend activation email";
     return toast(errText(error));
   }
-  toast(`Nieuwe activatiemail verstuurd naar ${email}`);
+  toast(`New activation email sent to ${email}`);
   btnEl.remove();
 }
 
@@ -2052,7 +1319,6 @@ async function resendSignupEmail(email) {
 }
 
 function renderLanding() {
-  currentPreAuthRender = renderLanding;
   const step = (num, title, text) => `
     <div class="landing-step">
       <div class="landing-step-num">${num}</div>
@@ -2084,8 +1350,7 @@ function renderLanding() {
           <span class="brand-name">Dart League</span>
         </div>
         <div style="display:flex;align-items:center;gap:10px">
-          ${langSwitcher()}
-          <button class="btn ghost sm" onclick="renderLogin()">Inloggen</button>
+          <button class="btn ghost sm" onclick="renderLogin()">Log in</button>
         </div>
       </div>
 
@@ -2093,27 +1358,27 @@ function renderLanding() {
         <div class="landing-hero-panel">
           <div class="landing-hero-ring" aria-hidden="true"></div>
           <div class="landing-hero-inner">
-            <span class="landing-eyebrow">${icon.target}&nbsp;Voor elke darter</span>
+            <span class="landing-eyebrow">${icon.target}&nbsp;For every darts player</span>
             <h1 class="landing-wordmark">Dart League</h1>
-            <p class="sub">Speel mee in leagues en toernooien, plan je wedstrijden en houd je scores en statistieken automatisch bij &mdash; allemaal op één plek.</p>
+            <p class="sub">Join leagues and tournaments, schedule your matches and track your scores and stats automatically &mdash; all in one place.</p>
             <div class="landing-cta">
-              <button class="btn" onclick="renderRegister()">Gratis account aanmaken</button>
-              <button class="btn ghost" onclick="renderLogin()">Inloggen</button>
-              <button class="btn ghost" onclick="document.getElementById('hoe-het-werkt').scrollIntoView({behavior:'smooth'})">Zo werkt het</button>
+              <button class="btn" onclick="renderRegister()">Create a free account</button>
+              <button class="btn ghost" onclick="renderLogin()">Log in</button>
+              <button class="btn ghost" onclick="document.getElementById('hoe-het-werkt').scrollIntoView({behavior:'smooth'})">How it works</button>
             </div>
-            <p class="landing-hero-note">Gratis te gebruiken &middot; geen creditcard nodig</p>
-            <p class="landing-hero-note" style="margin-top:4px">Voor Scolia en DartCounter</p>
+            <p class="landing-hero-note">Free to use &middot; no credit card needed</p>
+            <p class="landing-hero-note" style="margin-top:4px">For Scolia and DartCounter</p>
           </div>
         </div>
 
         <div class="landing-notice">
           ${icon.shield}
-          <span>Log in om de standen, wedstrijden en statistieken van je league te bekijken.</span>
+          <span>Log in to see your league's standings, matches and statistics.</span>
         </div>
 
         <div class="landing-section">
-          <h2>Zo ziet jouw stand eruit</h2>
-          <p class="sub">Een voorbeeld &mdash; jouw eigen cijfers verschijnen zodra je meedoet.</p>
+          <h2>This is what your standings look like</h2>
+          <p class="sub">An example &mdash; your own numbers will appear once you join.</p>
           <div class="landing-highlight">
             <div class="card" style="margin:0">
               <div class="match-top">
@@ -2137,37 +1402,37 @@ function renderLanding() {
               </div>
             </div>
             <div class="landing-tile-grid">
-              ${tile("#2ECC71", "Winratio", "68%", "Sanne")}
-              ${tile("#4EA1F7", "Gemiddelde", "58.4", "Rick")}
+              ${tile("#2ECC71", "Win ratio", "68%", "Sanne")}
+              ${tile("#4EA1F7", "Average", "58.4", "Rick")}
               ${tile("#F5B942", "180's", "24", "Sanne")}
-              ${tile("#9B7BD9", "Beste finish", "121", "Rick")}
+              ${tile("#9B7BD9", "Best finish", "121", "Rick")}
             </div>
           </div>
         </div>
 
         <div class="landing-section" id="hoe-het-werkt">
-          <h2>Zo werkt het</h2>
+          <h2>How it works</h2>
           <div class="landing-step-list">
-            ${step("01", "Maak een account", "Binnen een minuut aangemeld, zonder gedoe.")}
-            ${step("02", "Sluit je aan bij een league of toernooi", "De beheerder zet ze voor je klaar, jij doet mee.")}
-            ${step("03", "Speel en volg je voortgang", "Standen, uitslagen en statistieken staan direct klaar.")}
+            ${step("01", "Create an account", "Signed up within a minute, no hassle.")}
+            ${step("02", "Join a league or tournament", "The admin sets them up for you, you just join in.")}
+            ${step("03", "Play and track your progress", "Standings, results and statistics are ready right away.")}
           </div>
         </div>
 
         <div class="landing-section">
-          <h2>Wat je krijgt</h2>
+          <h2>What you get</h2>
           <div class="landing-feature-grid">
-            ${feature("01", "Automatische standen", "Elke afgeronde wedstrijd werkt de ranglijst meteen bij.")}
-            ${feature("02", "Persoonlijke statistieken", "Gemiddelde, 180's, checkouts en winratio per speler.")}
-            ${feature("03", "Organisatordashboard", "Leagues en toernooien beheren vanuit één overzicht.")}
-            ${feature("04", "Overal te gebruiken", "Werkt in de browser, op telefoon, tablet en desktop.")}
+            ${feature("01", "Automatic standings", "Every finished match updates the leaderboard instantly.")}
+            ${feature("02", "Personal statistics", "Average, 180s, checkouts and win ratio per player.")}
+            ${feature("03", "Admin dashboard", "Manage leagues and tournaments from a single overview.")}
+            ${feature("04", "Use it anywhere", "Works in the browser, on phone, tablet and desktop.")}
           </div>
         </div>
 
         <div class="landing-final">
-          <h2>Klaar om mee te doen?</h2>
-          <p>Maak een gratis account aan en speel je eerste wedstrijd binnen een minuut.</p>
-          <button class="btn" onclick="renderRegister()">Gratis account aanmaken</button>
+          <h2>Ready to join in?</h2>
+          <p>Create a free account and play your first match within a minute.</p>
+          <button class="btn" onclick="renderRegister()">Create a free account</button>
         </div>
       </div>
 
@@ -2176,26 +1441,25 @@ function renderLanding() {
 }
 
 function renderLogin() {
-  currentPreAuthRender = renderLogin;
   app.innerHTML = authShell(
     "Dart League",
-    "Log in om je wedstrijden te zien",
+    "Log in to see your matches",
     `<form id="f" novalidate>
       <div class="field">
-        <label for="email">E-mailadres</label>
+        <label for="email">Email address</label>
         <input id="email" type="email" autocomplete="email" required>
       </div>
       <div class="field">
-        <label for="pw">Wachtwoord</label>
+        <label for="pw">Password</label>
         <input id="pw" type="password" autocomplete="current-password" required>
       </div>
-      <button class="btn block" id="submit" type="submit">Inloggen</button>
+      <button class="btn block" id="submit" type="submit">Log in</button>
       <div class="center mt16">
-        <button class="linkbtn" type="button" onclick="renderForgot()">Wachtwoord vergeten?</button>
+        <button class="linkbtn" type="button" onclick="renderForgot()">Forgot password?</button>
       </div>
     </form>`,
-    `<div class="auth-alt">Nog geen account?
-      <button class="linkbtn" onclick="renderRegister()">Maak er een aan</button>
+    `<div class="auth-alt">Don't have an account yet?
+      <button class="linkbtn" onclick="renderRegister()">Create one</button>
     </div>`
   );
 
@@ -2204,14 +1468,14 @@ function renderLogin() {
     const btn = document.getElementById("submit");
     const email = document.getElementById("email").value.trim();
     const pw = document.getElementById("pw").value;
-    if (!email || !pw) return showAuthError("Vul je e-mailadres en wachtwoord in.");
+    if (!email || !pw) return showAuthError("Enter your email address and password.");
     busy(btn, true);
     const { error } = await sb.auth.signInWithPassword({ email, password: pw });
     if (error) {
-      busy(btn, false, "Inloggen");
+      busy(btn, false, "Log in");
       const unconfirmed = /Email not confirmed/i.test(error.message || "");
       showAuthError(errText(error), unconfirmed
-        ? `<button type="button" class="linkbtn" style="padding:0;margin-top:8px" onclick="handleResendClick('${esc(email)}', this)">Verstuur activatiemail opnieuw</button>`
+        ? `<button type="button" class="linkbtn" style="padding:0;margin-top:8px" onclick="handleResendClick('${esc(email)}', this)">Resend activation email</button>`
         : "");
     }
     // Bij succes neemt onAuthStateChange het over.
@@ -2219,28 +1483,27 @@ function renderLogin() {
 }
 
 function renderRegister() {
-  currentPreAuthRender = renderRegister;
   app.innerHTML = authShell(
-    "Account aanmaken",
-    "Je speelt binnen een minuut mee",
+    "Create account",
+    "You'll be playing within a minute",
     `<form id="f" novalidate>
       <div class="field">
-        <label for="name">Naam</label>
+        <label for="name">Name</label>
         <input id="name" type="text" autocomplete="name" required>
       </div>
       <div class="field">
-        <label for="email">E-mailadres</label>
+        <label for="email">Email address</label>
         <input id="email" type="email" autocomplete="email" required>
       </div>
       <div class="field">
-        <label for="pw">Wachtwoord</label>
+        <label for="pw">Password</label>
         <input id="pw" type="password" autocomplete="new-password" required>
-        <div class="field-error" id="pwHint" style="color:var(--muted)">Minimaal 8 tekens</div>
+        <div class="field-error" id="pwHint" style="color:var(--muted)">At least 8 characters</div>
       </div>
-      <button class="btn block" id="submit" type="submit">Account aanmaken</button>
+      <button class="btn block" id="submit" type="submit">Create account</button>
     </form>`,
-    `<div class="auth-alt">Heb je al een account?
-      <button class="linkbtn" onclick="renderLogin()">Inloggen</button>
+    `<div class="auth-alt">Already have an account?
+      <button class="linkbtn" onclick="renderLogin()">Log in</button>
     </div>`
   );
 
@@ -2251,9 +1514,9 @@ function renderRegister() {
     const email = document.getElementById("email").value.trim();
     const pw = document.getElementById("pw").value;
 
-    if (!name) return showAuthError("Vul je naam in.");
-    if (!email.includes("@")) return showAuthError("Vul een geldig e-mailadres in.");
-    if (pw.length < 8) return showAuthError("Kies een wachtwoord van minimaal 8 tekens.");
+    if (!name) return showAuthError("Enter your name.");
+    if (!email.includes("@")) return showAuthError("Enter a valid email address.");
+    if (pw.length < 8) return showAuthError("Choose a password of at least 8 characters.");
 
     busy(btn, true);
     const { data, error } = await sb.auth.signUp({
@@ -2261,64 +1524,62 @@ function renderRegister() {
       password: pw,
       options: { data: { display_name: name }, emailRedirectTo: signupRedirectTo() },
     });
-    if (error) { busy(btn, false, "Account aanmaken"); return showAuthError(errText(error)); }
+    if (error) { busy(btn, false, "Create account"); return showAuthError(errText(error)); }
 
     // Staat e-mailbevestiging aan, dan is er nog geen sessie.
     if (!data.session) {
       app.innerHTML = authShell(
-        "Check je mail",
-        `We stuurden een bevestigingslink naar ${email}`,
-        `<button class="btn block" onclick="renderLogin()">Terug naar inloggen</button>`
+        "Check your email",
+        `We sent a confirmation link to ${email}`,
+        `<button class="btn block" onclick="renderLogin()">Back to login</button>`
       );
     }
   };
 }
 
 function renderForgot() {
-  currentPreAuthRender = renderForgot;
   app.innerHTML = authShell(
-    "Wachtwoord vergeten",
-    "We sturen je een link om een nieuw wachtwoord te kiezen",
+    "Forgot password",
+    "We'll send you a link to choose a new password",
     `<form id="f" novalidate>
       <div class="field">
-        <label for="email">E-mailadres</label>
+        <label for="email">Email address</label>
         <input id="email" type="email" autocomplete="email" required>
       </div>
-      <button class="btn block" id="submit" type="submit">Stuur de link</button>
+      <button class="btn block" id="submit" type="submit">Send the link</button>
     </form>`,
-    `<div class="auth-alt"><button class="linkbtn" onclick="renderLogin()">Terug naar inloggen</button></div>`
+    `<div class="auth-alt"><button class="linkbtn" onclick="renderLogin()">Back to login</button></div>`
   );
 
   document.getElementById("f").onsubmit = async (e) => {
     e.preventDefault();
     const btn = document.getElementById("submit");
     const email = document.getElementById("email").value.trim();
-    if (!email.includes("@")) return showAuthError("Vul een geldig e-mailadres in.");
+    if (!email.includes("@")) return showAuthError("Enter a valid email address.");
     busy(btn, true);
     const { error } = await sb.auth.resetPasswordForEmail(email, {
       redirectTo: `${location.origin}${location.pathname}#/nieuw-wachtwoord`,
     });
-    if (error) { busy(btn, false, "Stuur de link"); return showAuthError(errText(error)); }
+    if (error) { busy(btn, false, "Send the link"); return showAuthError(errText(error)); }
     app.innerHTML = authShell(
-      "Check je mail",
-      `Als er een account is voor ${email}, ligt er nu een link in je inbox`,
-      `<button class="btn block" onclick="renderLogin()">Terug naar inloggen</button>`
+      "Check your email",
+      `If there's an account for ${email}, a link is now in your inbox`,
+      `<button class="btn block" onclick="renderLogin()">Back to login</button>`
     );
   };
 }
 
 // Scherm waar de gebruiker landt na het klikken op de reset-link.
 function renderNewPassword() {
-  currentPreAuthRender = renderNewPassword;
   app.innerHTML = authShell(
-    "Nieuw wachtwoord",
-    "Kies een wachtwoord om mee in te loggen",
+    "New password",
+    "Choose a password to log in with",
     `<form id="f" novalidate>
       <div class="field">
-        <label for="pw">Nieuw wachtwoord</label>
+        <label for="pw">New password</label>
         <input id="pw" type="password" autocomplete="new-password" required>
       </div>
-      <button class="btn block" id="submit" type="submit">Wachtwoord opslaan</button>
+      <button class="btn block" id="submit" type="submit">Save password</button>
     </form>`
   );
 
@@ -2326,12 +1587,12 @@ function renderNewPassword() {
     e.preventDefault();
     const btn = document.getElementById("submit");
     const pw = document.getElementById("pw").value;
-    if (pw.length < 8) return showAuthError("Kies een wachtwoord van minimaal 8 tekens.");
+    if (pw.length < 8) return showAuthError("Choose a password of at least 8 characters.");
     busy(btn, true);
     const { error } = await sb.auth.updateUser({ password: pw });
-    if (error) { busy(btn, false, "Wachtwoord opslaan"); return showAuthError(errText(error)); }
+    if (error) { busy(btn, false, "Save password"); return showAuthError(errText(error)); }
     location.hash = "#/";
-    toast("Wachtwoord opgeslagen");
+    toast("Password saved");
     boot();
   };
 }
@@ -2339,44 +1600,42 @@ function renderNewPassword() {
 // Scherm waar de gebruiker landt na het klikken op de activatielink uit de
 // registratiemail (zie signupRedirectTo() en de afhandeling in init()).
 function renderSignupConfirmed() {
-  currentPreAuthRender = renderSignupConfirmed;
   app.innerHTML = authShell(
-    "Account geactiveerd",
+    "Account activated",
     "",
-    `<div class="alert ok">Je account is succesvol geactiveerd!</div>
-     <button class="btn block" onclick="renderLogin()">Naar inloggen</button>`
+    `<div class="alert ok">Your account has been successfully activated!</div>
+     <button class="btn block" onclick="renderLogin()">Go to login</button>`
   );
 }
 
 // Scherm voor een verlopen of ongeldige activatielink: duidelijke uitleg +
 // meteen de mogelijkheid om een nieuwe activatiemail aan te vragen.
 function renderSignupLinkError() {
-  currentPreAuthRender = renderSignupLinkError;
   app.innerHTML = authShell(
-    "Link verlopen of ongeldig",
-    "Vraag hieronder een nieuwe activatielink aan",
+    "Link expired or invalid",
+    "Request a new activation link below",
     `<form id="f" novalidate>
       <div class="field">
-        <label for="email">E-mailadres</label>
+        <label for="email">Email address</label>
         <input id="email" type="email" autocomplete="email" required>
       </div>
-      <button class="btn block" id="submit" type="submit">Verstuur activatiemail opnieuw</button>
+      <button class="btn block" id="submit" type="submit">Resend activation email</button>
     </form>`,
-    `<div class="auth-alt"><button class="linkbtn" onclick="renderLogin()">Terug naar inloggen</button></div>`
+    `<div class="auth-alt"><button class="linkbtn" onclick="renderLogin()">Back to login</button></div>`
   );
 
   document.getElementById("f").onsubmit = async (e) => {
     e.preventDefault();
     const btn = document.getElementById("submit");
     const email = document.getElementById("email").value.trim();
-    if (!email.includes("@")) return showAuthError("Vul een geldig e-mailadres in.");
+    if (!email.includes("@")) return showAuthError("Enter a valid email address.");
     busy(btn, true);
     const error = await resendSignupEmail(email);
-    if (error) { busy(btn, false, "Verstuur activatiemail opnieuw"); return showAuthError(errText(error)); }
+    if (error) { busy(btn, false, "Resend activation email"); return showAuthError(errText(error)); }
     app.innerHTML = authShell(
-      "Check je mail",
-      `We stuurden een nieuwe activatielink naar ${email}`,
-      `<button class="btn block" onclick="renderLogin()">Terug naar inloggen</button>`
+      "Check your email",
+      `We sent a new activation link to ${email}`,
+      `<button class="btn block" onclick="renderLogin()">Back to login</button>`
     );
   };
 }
@@ -2387,15 +1646,15 @@ function renderSignupLinkError() {
 // indeling in divisies.
 function renderOnboarding() {
   app.innerHTML = authShell(
-    "Jouw spelersgegevens",
-    "Nodig voor de organisator om je in te delen",
+    "Your player details",
+    "Needed by the organizer to place you",
     `<form id="f" novalidate>
       <div class="field">
-        <label for="ob-first">Voornaam</label>
+        <label for="ob-first">First name</label>
         <input id="ob-first" required autocomplete="given-name">
       </div>
       <div class="field">
-        <label for="ob-last">Achternaam</label>
+        <label for="ob-last">Last name</label>
         <input id="ob-last" required autocomplete="family-name">
       </div>
       <div class="field">
@@ -2410,15 +1669,15 @@ function renderOnboarding() {
         <input id="ob-nick" required>
       </div>
       <div class="field">
-        <label for="ob-avg">Gemiddelde (3 darts)</label>
+        <label for="ob-avg">Average (3 darts)</label>
         <input id="ob-avg" type="number" step="0.01" min="0" max="180" placeholder="Bijv. 53.08" required>
         <div class="muted" style="font-size:12.5px;margin-top:6px">
           Enkel zichtbaar voor de beheerder, gebruikt voor de initiële indeling.
         </div>
       </div>
-      <button class="btn block" id="submit" type="submit">Opslaan en verder</button>
+      <button class="btn block" id="submit" type="submit">Save en verder</button>
     </form>`,
-    `<div class="auth-alt"><button class="linkbtn" onclick="signOut()">Uitloggen</button></div>`
+    `<div class="auth-alt"><button class="linkbtn" onclick="signOut()">Log out</button></div>`
   );
 
   document.getElementById("f").onsubmit = async (e) => {
@@ -2430,10 +1689,10 @@ function renderOnboarding() {
     const nickname = document.getElementById("ob-nick").value.trim();
     const average = document.getElementById("ob-avg").value;
 
-    if (!firstName || !lastName) return showAuthError("Vul je voor- en achternaam in.");
-    if (!nickname) return showAuthError("Vul je nickname in.");
+    if (!firstName || !lastName) return showAuthError("Enter your first and last name.");
+    if (!nickname) return showAuthError("Enter your nickname.");
     if (average === "" || isNaN(Number(average)) || Number(average) < 0) {
-      return showAuthError("Vul een geldig gemiddelde in.");
+      return showAuthError("Enter a valid average.");
     }
 
     busy(btn, true);
@@ -2448,7 +1707,7 @@ function renderOnboarding() {
       state.onboarding = await db.myOnboarding(state.profile.id);
       router();
     } catch (err) {
-      busy(btn, false, "Opslaan en verder");
+      busy(btn, false, "Save en verder");
       showAuthError(errText(err));
     }
   };
@@ -2461,10 +1720,10 @@ function renderOnboarding() {
 const NAV = [
   { route: "", label: "Home", ico: "home" },
   { route: "leagues", label: "Leagues", ico: "league" },
-  { route: "toernooien", label: "Toernooien", ico: "tournament" },
-  { route: "wedstrijden", label: "Wedstrijden", ico: "darts" },
-  { route: "statistieken", label: "Statistieken", ico: "chart" },
-  { route: "profiel", label: "Profiel", ico: "user" },
+  { route: "toernooien", label: "Tournaments", ico: "tournament" },
+  { route: "wedstrijden", label: "Matches", ico: "darts" },
+  { route: "statistieken", label: "Statistics", ico: "chart" },
+  { route: "profiel", label: "Profile", ico: "user" },
 ];
 
 function go(route) {
@@ -2492,7 +1751,7 @@ function renderShell() {
   const orgLink = isOrg ? `
     <div style="margin-top:auto;padding-top:12px;border-top:1px solid var(--line)">
       <button class="navlink ${cur.startsWith("beheer") ? "active" : ""}" onclick="go('beheer')">
-        ${icon.shield}<span>Beheer</span>
+        ${icon.shield}<span>Admin</span>
       </button>
     </div>` : "";
 
@@ -2501,20 +1760,19 @@ function renderShell() {
       ${icon[n.ico]}<span>${esc(n.label)}</span>
     </button>`).join("") + (isOrg ? `
     <button class="${cur.startsWith("beheer") ? "active" : ""}" onclick="go('beheer')">
-      ${icon.shield}<span>Beheer</span>
+      ${icon.shield}<span>Admin</span>
     </button>` : "");
 
   app.innerHTML = `
     <div class="shell">
-      <nav class="sidebar" aria-label="Hoofdmenu">
+      <nav class="sidebar" aria-label="Main menu">
         <div class="brand"><img class="brand-mark" src="https://qspfphnailbelqmmzjbk.supabase.co/storage/v1/object/public/app-assets/favicon.png" alt=""><span class="brand-name">Dart League</span></div>
         ${links}
         ${orgLink}
-        <div style="margin-top:${isOrg ? "12px" : "auto"};padding-top:12px;${isOrg ? "" : "border-top:1px solid var(--line)"}">${langSwitcher()}</div>
       </nav>
       <main class="main"><div class="page" id="view">${loadingView()}</div></main>
     </div>
-    <nav class="bottomnav" aria-label="Hoofdmenu">${tabs}</nav>`;
+    <nav class="bottomnav" aria-label="Main menu">${tabs}</nav>`;
 }
 
 function setView(html) {
@@ -2563,16 +1821,16 @@ async function router() {
     }
     if (route.startsWith("beheer/prijs/")) {
       if (state.profile?.role !== "organizer") {
-        return setView(emptyView("Alleen voor organisatoren", "Vraag de organisator om toegang."));
+        return setView(emptyView("Organizers only", "Ask the organizer for access."));
       }
       return await viewManagePrizeDetail(route.split("/")[2]);
     }
     const handler = ROUTES[route];
     if (!handler) {
-      return setView(emptyView("Deze pagina bestaat niet", "Gebruik het menu om verder te gaan."));
+      return setView(emptyView("This page doesn't exist", "Use the menu to continue."));
     }
     if (route.startsWith("beheer") && state.profile?.role !== "organizer") {
-      return setView(emptyView("Alleen voor organisatoren", "Vraag de organisator om toegang."));
+      return setView(emptyView("Organizers only", "Ask the organizer for access."));
     }
     await handler();
   } catch (error) {
@@ -2590,12 +1848,12 @@ function openNotification(id, route) {
   if (route) go(route); else router();
 }
 
-// "Mijn league & divisie"-kaart op Home: welke league/divisie, positie,
+// "My league & division"-kaart op Home: welke league/divisie, positie,
 // aantal spelers en gespeelde wedstrijden - de speler moet in één oogopslag
 // zien waar hij speelt. myRow is de eigen rij uit standingsForLeague().
 function myLeagueOverviewCard(membership, myRow, position, divisionTotal) {
   if (!membership) {
-    return `<div class="card">${emptyView("Nog niet ingedeeld", "Zodra de organisator je indeelt in een league, zie je hier je overzicht.", "league")}</div>`;
+    return `<div class="card">${emptyView("Not placed yet", "Once the admin places you in a league, you'll see your overview here.", "league")}</div>`;
   }
   return `
     <button class="card clickable" onclick="go('mijn-divisie')">
@@ -2603,12 +1861,12 @@ function myLeagueOverviewCard(membership, myRow, position, divisionTotal) {
         <div class="row-ico">${icon.league}</div>
         <div class="row-main">
           <div class="row-title">${esc(membership.league.name)}</div>
-          ${!membership.division ? `<div class="row-sub">Nog niet ingedeeld</div>` : ""}
+          ${!membership.division ? `<div class="row-sub">Not placed yet</div>` : ""}
         </div>
       </div>
       ${myRow ? `
         <div class="muted" style="font-size:13px">
-          Positie ${position} van ${divisionTotal} &middot; ${myRow.played} gespeeld${myRow.points != null ? ` &middot; ${myRow.points} pt` : ""}
+          Position ${position} of ${divisionTotal} &middot; ${myRow.played} played${myRow.points != null ? ` &middot; ${myRow.points} pt` : ""}
         </div>` : ""}
     </button>`;
 }
@@ -2618,10 +1876,10 @@ function myLeagueOverviewCard(membership, myRow, position, divisionTotal) {
 // Home, die niet speler-centrisch waren en al bereikbaar zijn via het menu.
 function quickActionsGrid() {
   const tiles = [
-    { label: "Toernooien", route: "toernooien", ico: "tournament" },
-    { label: "Wedstrijden", route: "wedstrijden", ico: "darts" },
-    { label: "Statistieken", route: "statistieken", ico: "chart" },
-    { label: "Mijn divisie", route: "mijn-divisie", ico: "league" },
+    { label: "Tournaments", route: "toernooien", ico: "tournament" },
+    { label: "Matches", route: "wedstrijden", ico: "darts" },
+    { label: "Statistics", route: "statistieken", ico: "chart" },
+    { label: "My division", route: "mijn-divisie", ico: "league" },
   ];
   return `
     <div class="grid">
@@ -2657,8 +1915,8 @@ async function viewHome() {
   }
 
   setView(`
-    <h1>Welkom terug, ${esc(firstName)}</h1>
-    <p class="sub">Dit is jouw darts-overzicht.</p>
+    <h1>Welcome back, ${esc(firstName)}</h1>
+    <p class="sub">This is your darts overview.</p>
 
     ${prizeNotification ? `
       <button class="card clickable" style="border-color:#F5B94266;background:#F5B94214;margin-bottom:16px"
@@ -2667,7 +1925,7 @@ async function viewHome() {
           <div class="row-ico" style="background:#F5B94222;color:#F5B942">${icon.trophy}</div>
           <div class="row-main">
             <div class="row-title">${esc(prizeNotification.title)}</div>
-            <div class="row-sub">Bekijk je prijs &rarr;</div>
+            <div class="row-sub">View your prize &rarr;</div>
           </div>
         </div>
       </button>` : ""}
@@ -2686,39 +1944,39 @@ async function viewHome() {
 
     <div class="home-top-grid">
       <div>
-        ${sectionHead("Eerstvolgende wedstrijd", "Alle wedstrijden", "wedstrijden")}
+        ${sectionHead("Next match", "All matches", "wedstrijden")}
         ${next ? `
           ${matchCard(next)}
-          <button class="btn ghost sm" style="margin-top:-4px" onclick="go('mijn-divisie/${esc(next.id)}')">Wedstrijd bekijken</button>
-        ` : emptyView("Niets ingepland", "Zodra de organisator een wedstrijd voor je inplant, staat hij hier.", "darts")}
+          <button class="btn ghost sm" style="margin-top:-4px" onclick="go('mijn-divisie/${esc(next.id)}')">View match</button>
+        ` : emptyView("Nothing scheduled", "Once the admin schedules a match for you, it'll show up here.", "darts")}
       </div>
       <div>
-        ${sectionHead("Mijn league & divisie")}
+        ${sectionHead("My league & division")}
         ${myLeagueOverviewCard(membership, myRow, position, divisionTotal)}
       </div>
     </div>
 
     ${myRow ? `
-      ${sectionHead("League-overzicht")}
+      ${sectionHead("League overview")}
       <div class="grid">
-        ${statCard({ label: "Positie", value: `${position}/${divisionTotal}`, ico: "league" })}
-        ${statCard({ label: "Gespeeld", value: myRow.played, ico: "darts" })}
-        ${statCard({ label: "Gemiddelde", value: Number(myRow.displayAverage ?? 0).toFixed(1), ico: "trend" })}
-        ${statCard({ label: "Punten", value: myRow.points, ico: "trophy", color: "#2ECC71" })}
+        ${statCard({ label: "Position", value: `${position}/${divisionTotal}`, ico: "league" })}
+        ${statCard({ label: "Played", value: myRow.played, ico: "darts" })}
+        ${statCard({ label: "Average", value: Number(myRow.displayAverage ?? 0).toFixed(1), ico: "trend" })}
+        ${statCard({ label: "Points", value: myRow.points, ico: "trophy", color: "#2ECC71" })}
       </div>
     ` : ""}
 
-    ${sectionHead("Snelle acties")}
+    ${sectionHead("Quick actions")}
     ${quickActionsGrid()}
   `);
 }
 
-// "Mijn divisie": de league/divisie waarin de ingelogde speler op dit
+// "My division": de league/divisie waarin de ingelogde speler op dit
 // moment zit (er kan er maar één zijn, zie enforce_single_active_league),
 // met alle divisies van die league als kaarten en de eigen divisie/rij
 // gemarkeerd - dezelfde weergave als op de leaguepagina, hier alvast
 // gefilterd naar "van mij".
-// "Mijn divisie": league-info, de gefocuste wedstrijd (huidige wedstrijd +
+// "My division": league-info, de gefocuste wedstrijd (huidige wedstrijd +
 // datum&tijd-kaart + onderlinge wedstrijden tegen die tegenstander), alle
 // open wedstrijden van de speler in deze league (wisselbare focus), en de
 // volledige stand. Een speler kan meerdere open wedstrijden tegelijk hebben
@@ -2729,8 +1987,8 @@ async function viewMyDivision(focusMatchId) {
   const membership = await db.myLeagueMembership();
   if (!membership) {
     return setView(`
-      <h1>Mijn divisie</h1>
-      ${emptyView("Nog niet ingedeeld", "Zodra de organisator je indeelt in een league, zie je hier je divisie.", "league")}
+      <h1>My division</h1>
+      ${emptyView("Not placed yet", "Once the admin places you in a league, you'll see your division here.", "league")}
     `);
   }
   const league = membership.league;
@@ -2764,44 +2022,44 @@ async function viewMyDivision(focusMatchId) {
   const groups = groupStandingsByDivision(standings);
 
   setView(`
-    <h1>Jouw divisie</h1>
-    <p class="sub">${esc(league.name)}${league.season ? " &middot; Seizoen: " + esc(league.season) : ""}</p>
-    <button class="linkbtn mt8" style="margin-bottom:16px" onclick="go('league/${esc(league.id)}')">Bekijk de hele league &rarr;</button>
+    <h1>Your division</h1>
+    <p class="sub">${esc(league.name)}${league.season ? " &middot; Season: " + esc(league.season) : ""}</p>
+    <button class="linkbtn mt8" style="margin-bottom:16px" onclick="go('league/${esc(league.id)}')">View the whole league &rarr;</button>
 
     ${focusMatch ? `
-      ${sectionHead("Huidige wedstrijd")}
+      ${sectionHead("Current match")}
       ${matchCard(focusMatch)}
       ${!["confirmed", "cancelled"].includes(focusMatch.status) ? `
         <button class="btn ghost sm" style="margin:-4px 0 14px" onclick="${
           focusMatch.status === "pending_confirmation"
             ? `openConfirmDialog('${esc(focusMatch.id)}')`
             : `openResultDialog('${esc(focusMatch.id)}')`
-        }">${focusMatch.status === "pending_confirmation" ? "Uitslag controleren" : "Uitslag doorgeven"}</button>` : ""}
+        }">${focusMatch.status === "pending_confirmation" ? "Check result" : "Report result"}</button>` : ""}
 
-      ${sectionHead("Datum & uur van deze wedstrijd")}
+      ${sectionHead("Date & time of this match")}
       ${scheduleCard(focusMatch, proposalHistory)}
 
       ${opponent ? `
         ${sectionHead("Chat")}
         ${chatCard(chatMessages, me.id, focusMatch.id)}
 
-        ${sectionHead("Onderlinge wedstrijden")}
+        ${sectionHead("Head-to-head matches")}
         ${headToHeadCard(headToHead, opponent, me.id)}
       ` : ""}
-    ` : emptyView("Geen open wedstrijden", "Je hebt op dit moment geen wedstrijden om te spelen.", "darts")}
+    ` : emptyView("No open matches", "You currently have no matches to play.", "darts")}
 
-    ${sectionHead("Wedstrijden deze week")}
+    ${sectionHead("Matches this week")}
     ${leagueMatches.length ? leagueMatches.map((m) => `
         ${matchCard(m)}
         ${focusMatch && m.id === focusMatch.id
-          ? `<p class="muted" style="margin:-4px 0 14px;font-size:12.5px">Dit is je huidige wedstrijd hierboven.</p>`
-          : `<button class="btn ghost sm" style="margin:-4px 0 14px" onclick="go('mijn-divisie/${esc(m.id)}')">Bekijk wedstrijd</button>`}
+          ? `<p class="muted" style="margin:-4px 0 14px;font-size:12.5px">This is your current match above.</p>`
+          : `<button class="btn ghost sm" style="margin:-4px 0 14px" onclick="go('mijn-divisie/${esc(m.id)}')">View match</button>`}
       `).join("")
-      : emptyView("Geen wedstrijden", "", "darts")}
+      : emptyView("No matches", "", "darts")}
 
-    ${sectionHead("Stand")}
+    ${sectionHead("Standings")}
     ${groups.length ? groups.map((g) => divisionStandingsCard(g, { meId: me.id, divisionCount: league.division_count })).join("")
-      : emptyView("Nog geen indeling", "", "league")}
+      : emptyView("No divisions yet", "", "league")}
   `);
   document.getElementById("chat-messages")?.scrollTo(0, 999999);
 }
@@ -2815,23 +2073,23 @@ async function viewLeagues() {
       <summary>
         <div class="row">
           <div class="row-ico">${icon.league}</div>
-          <div class="row-main"><div class="row-title" style="white-space:normal">Hoe werkt de league?</div></div>
-          <span class="muted toggle-label" style="font-size:13px;flex-shrink:0">Meer info &darr;</span>
+          <div class="row-main"><div class="row-title" style="white-space:normal">How does the league work?</div></div>
+          <span class="muted toggle-label" style="font-size:13px;flex-shrink:0">More info &darr;</span>
         </div>
       </summary>
       <div class="muted" style="font-size:13.5px;line-height:1.6;margin-top:14px">
-        <p>Een league is één groep van maximaal 12 spelers, gerangschikt op punten: 1e, 2e, 3e, enzovoort. Wil je meerdere niveaus (bv. een 1e en 2e divisie), maak daar dan aparte leagues voor aan.</p>
-        <p>De wedstrijden worden automatisch ingedeeld, één ronde per week.</p>
-        <p>De winnaar van de league ontvangt een kampioenstitel en een gepersonaliseerde prijs, beschikbaar gesteld door LWPrints. Dit kan bijvoorbeeld een bedrukt T-shirt, hoodie of polo zijn.</p>
+        <p>A league is a single group of up to 12 players, ranked by points: 1st, 2nd, 3rd, and so on. Want multiple levels (e.g. a 1st and 2nd division)? Create separate leagues for those.</p>
+        <p>Matches are scheduled automatically, one round per week.</p>
+        <p>The league winner receives a champion title and a personalized prize, provided by LWPrints. This could for example be a printed T-shirt, hoodie or polo.</p>
       </div>
     </details>
 
     ${leagues.length ? leagues.map((l) => leagueCard(l)).join("")
-      : emptyView("Nog geen leagues", "", "league")}
+      : emptyView("No leagues yet", "", "league")}
   `);
   const infoCard = document.querySelector(".info-card");
   infoCard?.addEventListener("toggle", () => {
-    infoCard.querySelector(".toggle-label").innerHTML = infoCard.open ? "Minder info &uarr;" : "Meer info &darr;";
+    infoCard.querySelector(".toggle-label").innerHTML = infoCard.open ? "Less info &uarr;" : "More info &darr;";
   });
 }
 
@@ -2839,18 +2097,18 @@ async function viewLeagues() {
 // start op 1 oktober 2026 om 19:00 uur."
 function leagueNextActionText(league) {
   if (league.status === "draft") {
-    return "Stel een startdatum en -tijd in en klik op 'Inplannen' om de league te plannen.";
+    return "Set a start date and time and click 'Schedule' to plan the league.";
   }
   if (league.status === "scheduled") {
     const d = new Date(league.start_at);
-    const datePart = d.toLocaleDateString(dateLocale(), { day: "numeric", month: "long", year: "numeric", timeZone: league.timezone });
-    const timePart = d.toLocaleTimeString(dateLocale(), { hour: "2-digit", minute: "2-digit", timeZone: league.timezone });
-    return `Deze league start op ${datePart} om ${timePart} uur.`;
+    const datePart = d.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: league.timezone });
+    const timePart = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: league.timezone });
+    return `This league starts on ${datePart} at ${timePart}.`;
   }
   if (league.status === "active") {
-    return "De league is gestart.";
+    return "The league has started.";
   }
-  return "Deze league is afgerond.";
+  return "This league has finished.";
 }
 
 async function viewLeagueDetail(id) {
@@ -2875,49 +2133,49 @@ async function viewLeagueDetail(id) {
     <div style="margin-bottom:24px">${badge(league.status)}</div>
 
     ${isOrg ? `
-      ${sectionHead("Planning")}
+      ${sectionHead("Schedule")}
       <div class="card">
         ${infoRow("Status", badge(league.status))}
-        ${infoRow("Spelers", `${members.length}/12`)}
-        ${infoRow("Tijdzone", esc(league.timezone))}
-        ${infoRow("Wedstrijden aangemaakt", matches.length)}
+        ${infoRow("Players", `${members.length}/12`)}
+        ${infoRow("Timezone", esc(league.timezone))}
+        ${infoRow("Matches created", matches.length)}
         <p class="muted" style="font-size:13px;margin:12px 0 0">${esc(leagueNextActionText(league))}</p>
       </div>
       ${canEditSchedule ? `
         <div class="card mt16">
-          <div class="field"><label for="lp-desc">Beschrijving <span class="muted" style="font-weight:400">(optioneel)</span></label>
+          <div class="field"><label for="lp-desc">Description <span class="muted" style="font-weight:400">(optional)</span></label>
             <input id="lp-desc" value="${esc(league.description || "")}" placeholder="Bijv. Najaarscompetitie 2026"></div>
-          <div class="field"><label for="lp-start">Startdatum en -tijd</label>
+          <div class="field"><label for="lp-start">Start date and time</label>
             <input id="lp-start" type="datetime-local" value="${league.start_at ? fmtDatetimeLocal(league.start_at) : ""}"></div>
-          <div class="field"><label for="lp-end">Einddatum <span class="muted" style="font-weight:400">(optioneel)</span></label>
+          <div class="field"><label for="lp-end">End date <span class="muted" style="font-weight:400">(optional)</span></label>
             <input id="lp-end" type="date" value="${league.end_at ? league.end_at.slice(0, 10) : ""}"></div>
           <div class="chips">
-            <button class="chip" onclick="saveLeagueSchedule('${esc(id)}', false)">Opslaan</button>
+            <button class="chip" onclick="saveLeagueSchedule('${esc(id)}', false)">Save</button>
             ${league.status === "draft" ? `
-              <button class="chip" onclick="saveLeagueSchedule('${esc(id)}', true)">${icon.clock} Inplannen</button>` : ""}
+              <button class="chip" onclick="saveLeagueSchedule('${esc(id)}', true)">${icon.clock} Schedule</button>` : ""}
           </div>
         </div>` : ""}
     ` : ""}
 
-    ${sectionHead("Stand")}
+    ${sectionHead("Standings")}
     ${groups.length ? groups.map((g) => divisionStandingsCard(g, { meId: state.profile.id, divisionCount: league.division_count })).join("")
-      : emptyView("Nog geen indeling", "Er zijn nog geen spelers ingedeeld in deze league.", "league")}
+      : emptyView("No divisions yet", "No players have been placed in this league yet.", "league")}
 
     ${isOrg ? `
-      ${sectionHead("Spelers")}
+      ${sectionHead("Players")}
       <div class="chips" style="margin-bottom:14px">
         ${league.status === "draft" ? `
-          <button class="chip" onclick="autoAssignDivisions('${esc(id)}')">${icon.target} Automatisch indelen</button>` : ""}
-        <button class="chip" onclick="openAssignPlayerDialog('${esc(id)}')">${icon.plus} Speler indelen</button>
+          <button class="chip" onclick="autoAssignDivisions('${esc(id)}')">${icon.target} Auto-assign</button>` : ""}
+        <button class="chip" onclick="openAssignPlayerDialog('${esc(id)}')">${icon.plus} Place player</button>
       </div>
       ${league.status === "draft" ? `
         <p class="muted" style="font-size:12.5px;margin:-6px 0 14px">
-          Automatisch indelen: rangschikt spelers op gemiddelde (max 12 spelers per league).
+          Auto-assign: ranks players by average (max 12 players per league).
         </p>` : ""}
     ` : ""}
 
     ${isOrg && league.status === "finished" ? `
-      ${sectionHead("Winnaar & prijs")}
+      ${sectionHead("Winner & prize")}
       ${winners.length ? `
         <div class="card">
           ${winners.map((w, i) => `
@@ -2929,29 +2187,29 @@ async function viewLeagueDetail(id) {
               ${w.claim ? prizeStatusBadge(w.claim.status) : ""}
             </div>`).join("")}
         </div>
-        <button class="btn ghost sm mt8" onclick="go('beheer/prijzen')">Alle prijzen beheren</button>
+        <button class="btn ghost sm mt8" onclick="go('beheer/prijzen')">Manage all prizes</button>
       ` : `
-        <button class="btn" onclick="determineDivisionWinners('${esc(id)}')">${icon.trophy} Bepaal winnaar</button>
+        <button class="btn" onclick="determineDivisionWinners('${esc(id)}')">${icon.trophy} Determine winner</button>
         <p class="muted" style="font-size:12.5px;margin:8px 0 0">
-          De winnaar krijgt automatisch een melding en kan zijn prijs claimen (beschikbaar gesteld door LWPrints).
+          The winner automatically gets notified and can claim their prize (provided by LWPrints).
         </p>
       `}
     ` : ""}
 
-    ${sectionHead("Wedstrijden")}
+    ${sectionHead("Matches")}
     ${matches.length ? matches.map(matchCard).join("")
-      : emptyView("Nog geen wedstrijden", "Er is nog niets ingepland voor deze league.", "darts")}
+      : emptyView("No matches yet", "Nothing has been scheduled for this league yet.", "darts")}
   `);
 }
 
 async function saveLeagueSchedule(leagueId, schedule) {
   const start = document.querySelector("#lp-start").value;
   if (schedule && !start) {
-    return toast("Stel eerst een startdatum en -tijd in om te kunnen plannen.");
+    return toast("Set a start date and time first before you can schedule.");
   }
   const startAt = start ? new Date(start).toISOString() : null;
   if (schedule && startAt && new Date(startAt) <= new Date()) {
-    return toast("Kies een startmoment in de toekomst.");
+    return toast("Choose a start time in the future.");
   }
   const end = document.querySelector("#lp-end").value;
   const fields = {
@@ -2962,7 +2220,7 @@ async function saveLeagueSchedule(leagueId, schedule) {
   if (schedule) fields.status = "scheduled";
   try {
     await db.updateLeagueSchedule(leagueId, fields);
-    toast(schedule ? "League ingepland." : "Gegevens opgeslagen.");
+    toast(schedule ? "League scheduled." : "Data saved.");
     router();
   } catch (e) { toast(errText(e)); }
 }
@@ -2971,8 +2229,8 @@ async function determineDivisionWinners(leagueId) {
   try {
     const winners = await db.determineDivisionWinners(leagueId);
     toast(winners.length
-      ? "Winnaar bepaald en op de hoogte gebracht."
-      : "Geen winnaar: er is nog geen wedstrijd gespeeld.");
+      ? "Winner determined and notified."
+      : "No winner: no match has been played yet.");
     router();
   } catch (e) { toast(errText(e)); }
 }
@@ -2990,9 +2248,9 @@ async function viewPrizeDetail(id) {
     await db.markPrizeNotificationsReadForClaim(claim.id).catch(() => {});
   }
 
-  const prizeBlurb = "De winnaar van de league ontvangt een gepersonaliseerd bedrukt kledingstuk, " +
-    "beschikbaar gesteld door LWPrints. Je kunt, in overleg en afhankelijk van de mogelijkheden en " +
-    "beschikbaarheid, kiezen uit een bedrukt T-shirt, een hoodie of een polo.";
+  const prizeBlurb = "The league winner receives a personalized printed garment, " +
+    "provided by LWPrints. Depending on availability, and in consultation, you can " +
+    "choose a printed T-shirt, a hoodie or a polo.";
 
   const filledIn = claim && (claim.garment || claim.size || claim.full_name);
   const locked = claim && ["confirmed", "in_production", "ready", "delivered", "cancelled"].includes(claim.status);
@@ -3004,9 +2262,9 @@ async function viewPrizeDetail(id) {
 
     <div class="card center" style="padding:28px 20px">
       <span style="width:40px;height:40px;color:var(--accent);display:inline-flex;margin:0 auto 12px">${icon.trophy}</span>
-      <h1 style="font-size:22px">${esc(w.league_name)} gewonnen!</h1>
+      <h1 style="font-size:22px">${esc(w.league_name)} won!</h1>
       ${w.season ? `<p class="sub" style="margin-bottom:4px">${esc(w.season)}</p>` : ""}
-      <p class="muted" style="font-size:13px">Bepaald op ${esc(fmtDate(w.decided_at, false))}</p>
+      <p class="muted" style="font-size:13px">Determined on ${esc(fmtDate(w.decided_at, false))}</p>
     </div>
 
     <div class="card mt16">
@@ -3014,7 +2272,7 @@ async function viewPrizeDetail(id) {
     </div>
 
     ${isMine ? `
-      <div class="section"><h2>Status van je claim</h2></div>
+      <div class="section"><h2>Status of your claim</h2></div>
       <div class="card">
         <div class="row" style="margin-bottom:${filledIn ? "14px" : "0"}">
           <div class="row-main"><div class="row-title">Huidige status</div></div>
@@ -3022,22 +2280,22 @@ async function viewPrizeDetail(id) {
         </div>
         ${filledIn ? `
           <div class="row-sub" style="line-height:1.7">
-            ${claim.garment ? `Kledingstuk: <strong style="color:var(--white)">${esc(GARMENT_LABELS[claim.garment] || claim.garment)}</strong><br>` : ""}
-            ${claim.size ? `Maat: <strong style="color:var(--white)">${esc(SIZE_LABELS[claim.size] || claim.size)}</strong><br>` : ""}
-            ${claim.color ? `Kleur: <strong style="color:var(--white)">${esc(claim.color)}</strong><br>` : ""}
+            ${claim.garment ? `Garment: <strong style="color:var(--white)">${esc(GARMENT_LABELS[claim.garment] || claim.garment)}</strong><br>` : ""}
+            ${claim.size ? `Size: <strong style="color:var(--white)">${esc(SIZE_LABELS[claim.size] || claim.size)}</strong><br>` : ""}
+            ${claim.color ? `Color: <strong style="color:var(--white)">${esc(claim.color)}</strong><br>` : ""}
           </div>` : ""}
         ${!claim || claim.status === "available" ? `
-          <button class="btn block mt16" onclick="openPrizeClaimDialog('${esc(id)}')">Prijs claimen</button>
+          <button class="btn block mt16" onclick="openPrizeClaimDialog('${esc(id)}')">Prize claimen</button>
         ` : locked ? `
           <p class="muted mt16" style="font-size:13px;margin-bottom:0">
             Je gegevens zijn bevestigd. Neem contact op met de organisator als er iets moet wijzigen.
           </p>
         ` : `
-          <button class="btn ghost block mt16" onclick="openPrizeClaimDialog('${esc(id)}')">Gegevens wijzigen</button>
+          <button class="btn ghost block mt16" onclick="openPrizeClaimDialog('${esc(id)}')">Change details</button>
         `}
       </div>
     ` : `
-      <p class="muted center mt16" style="font-size:13.5px">Gefeliciteerd aan ${esc(w.player?.display_name || "de winnaar")}!</p>
+      <p class="muted center mt16" style="font-size:13.5px">Congratulations to ${esc(w.player?.display_name || "the winner")}!</p>
     `}
   `);
 }
@@ -3051,39 +2309,39 @@ function openPrizeClaimDialog(divisionWinnerId) {
 
     db.startPrizeClaim(divisionWinnerId).catch(() => {});
 
-    openModal("Prijs claimen", `
+    openModal("Claim prize", `
       <p class="sub" style="margin-bottom:18px">
-        De uiteindelijke prijskeuze gebeurt in overleg en is afhankelijk van de mogelijkheden en
-        beschikbaarheid van LWPrints.
+        The final prize choice is made in consultation and depends on LWPrints'
+        options and availability.
       </p>
-      <div class="field"><label for="pcName">Naam</label>
+      <div class="field"><label for="pcName">Name</label>
         <input id="pcName" required value="${esc(c.full_name || me.display_name || "")}"></div>
-      <div class="field"><label for="pcEmail">E-mailadres</label>
+      <div class="field"><label for="pcEmail">Email address</label>
         <input id="pcEmail" type="email" required value="${esc(c.email || me.email || "")}"></div>
-      <div class="field"><label for="pcPhone">Telefoonnummer <span class="muted" style="font-weight:400">(optioneel)</span></label>
+      <div class="field"><label for="pcPhone">Phone number <span class="muted" style="font-weight:400">(optional)</span></label>
         <input id="pcPhone" type="tel" value="${esc(c.phone || "")}"></div>
-      <div class="field"><label for="pcGarment">Voorkeur kledingstuk</label>
+      <div class="field"><label for="pcGarment">Garment preference</label>
         <select id="pcGarment" required>
-          <option value="">Kies...</option>
+          <option value="">Choose...</option>
           ${garmentOpt("tshirt", "T-shirt")}${garmentOpt("hoodie", "Hoodie")}${garmentOpt("polo", "Polo")}
         </select></div>
-      <div class="field"><label for="pcSize">Kledingmaat</label>
+      <div class="field"><label for="pcSize">Clothing size</label>
         <select id="pcSize" required>
-          <option value="">Kies...</option>
+          <option value="">Choose...</option>
           ${["xs","s","m","l","xl","xxl","xxxl"].map(sizeOpt).join("")}
         </select></div>
-      <div class="field"><label for="pcColor">Gewenste kleur <span class="muted" style="font-weight:400">(optioneel)</span></label>
+      <div class="field"><label for="pcColor">Preferred color <span class="muted" style="font-weight:400">(optional)</span></label>
         <input id="pcColor" value="${esc(c.color || "")}"></div>
-      <div class="field"><label for="pcDesign">Gewenste bedrukking/ontwerp <span class="muted" style="font-weight:400">(optioneel)</span></label>
+      <div class="field"><label for="pcDesign">Preferred print/design <span class="muted" style="font-weight:400">(optional)</span></label>
         <textarea id="pcDesign" rows="2">${esc(c.design_notes || "")}</textarea></div>
-      <div class="field"><label for="pcComments">Opmerkingen <span class="muted" style="font-weight:400">(optioneel)</span></label>
+      <div class="field"><label for="pcComments">Comments <span class="muted" style="font-weight:400">(optional)</span></label>
         <textarea id="pcComments" rows="2">${esc(c.comments || "")}</textarea></div>
       <div class="field">
         <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer">
           <input type="checkbox" id="pcConsent" style="margin-top:3px" ${c.consent_share_with_lwprints ? "checked" : ""}>
           <span style="font-size:13.5px;color:var(--grey)">
-            Ik ga akkoord dat mijn naam, e-mailadres en (indien opgegeven) telefoonnummer worden gedeeld met
-            LWPrints, uitsluitend om mijn prijs te maken en te leveren.
+            I agree that my name, email address and (if provided) phone number will be shared with
+            LWPrints, solely to produce and deliver my prize.
           </span>
         </label>
       </div>`, async (bg) => {
@@ -3092,11 +2350,11 @@ function openPrizeClaimDialog(divisionWinnerId) {
       const garment = bg.querySelector("#pcGarment").value;
       const size = bg.querySelector("#pcSize").value;
       const consent = bg.querySelector("#pcConsent").checked;
-      if (!fullName) throw new Error("Vul je naam in.");
-      if (!email.includes("@")) throw new Error("Vul een geldig e-mailadres in.");
-      if (!garment) throw new Error("Kies een voorkeur voor je kledingstuk.");
-      if (!size) throw new Error("Kies je kledingmaat.");
-      if (!consent) throw new Error("Je moet akkoord gaan met het delen van je gegevens met LWPrints.");
+      if (!fullName) throw new Error("Enter your name.");
+      if (!email.includes("@")) throw new Error("Enter a valid email address.");
+      if (!garment) throw new Error("Choose a garment preference.");
+      if (!size) throw new Error("Choose your clothing size.");
+      if (!consent) throw new Error("You must agree to share your details with LWPrints.");
       await db.submitPrizeClaim(divisionWinnerId, {
         fullName, email,
         phone: bg.querySelector("#pcPhone").value.trim() || null,
@@ -3106,17 +2364,17 @@ function openPrizeClaimDialog(divisionWinnerId) {
         comments: bg.querySelector("#pcComments").value.trim() || null,
         consent,
       });
-      toast("Bedankt! Je aanvraag is ingediend.");
+      toast("Thanks! Your request has been submitted.");
       router();
-    }, "Aanvraag versturen");
+    }, "Submit request");
   }).catch((e) => toast(errText(e)));
 }
 
 async function viewManagePrizes() {
   const winners = await db.allPrizeClaims();
   setView(`
-    <h1>Prijzen</h1>
-    <p class="sub">Divisiewinnaars en hun prijsclaim (LWPrints)</p>
+    <h1>Prizes</h1>
+    <p class="sub">Division winners and their prize claim (LWPrints)</p>
     ${winners.length ? winners.map((w) => `
       <button class="card clickable" onclick="go('beheer/prijs/${esc(w.claim?.id)}')">
         <div class="row">
@@ -3128,14 +2386,14 @@ async function viewManagePrizes() {
           ${w.claim ? prizeStatusBadge(w.claim.status) : ""}
         </div>
       </button>
-    `).join("") : emptyView("Nog geen divisiewinnaars", "Bepaal winnaars op een afgeronde league-pagina.", "trophy")}
+    `).join("") : emptyView("No division winners yet", "Determine winners on a finished league's page.", "trophy")}
   `);
 }
 
 async function viewManagePrizeDetail(claimId) {
   const winners = await db.allPrizeClaims();
   const w = winners.find((x) => x.claim?.id === claimId);
-  if (!w) return setView(emptyView("Claim niet gevonden", "Ga terug naar Prijzen.", "warn"));
+  if (!w) return setView(emptyView("Claim not found", "Go back to Prizes.", "warn"));
   const c = w.claim;
   const history = await db.prizeClaimHistory(claimId);
 
@@ -3147,7 +2405,7 @@ async function viewManagePrizeDetail(claimId) {
 
   setView(`
     <button class="linkbtn" onclick="go('beheer/prijzen')" style="display:flex;align-items:center;gap:4px;margin-bottom:12px">
-      <span style="width:16px;height:16px;display:inline-flex">${icon.back}</span> Prijzen
+      <span style="width:16px;height:16px;display:inline-flex">${icon.back}</span> Prizes
     </button>
 
     <div class="card center">
@@ -3157,50 +2415,50 @@ async function viewManagePrizeDetail(claimId) {
       <div class="mt8">${prizeStatusBadge(c.status)}</div>
     </div>
 
-    ${sectionHead("Status wijzigen")}
+    ${sectionHead("Change status")}
     <div class="card">
-      <div class="field"><label for="pStatus">Nieuwe status</label>
+      <div class="field"><label for="pStatus">New status</label>
         <select id="pStatus">
           ${Object.keys(PRIZE_STATUS).map((s) => `<option value="${s}" ${s === c.status ? "selected" : ""}>${esc(PRIZE_STATUS[s].label)} (${s})</option>`).join("")}
         </select>
       </div>
-      <div class="field"><label for="pNote">Notitie <span class="muted" style="font-weight:400">(optioneel, komt in de historie)</span></label>
+      <div class="field"><label for="pNote">Note <span class="muted" style="font-weight:400">(optional, appears in the history)</span></label>
         <textarea id="pNote" rows="2" placeholder="Bijv. telefonisch contact gehad op ..."></textarea>
       </div>
-      <button class="btn" onclick="submitStatusChange('${esc(claimId)}')">Status opslaan</button>
+      <button class="btn" onclick="submitStatusChange('${esc(claimId)}')">Save status</button>
       ${c.status !== "delivered" ? `
-        <button class="btn ghost" style="margin-left:8px" onclick="quickMarkDelivered('${esc(claimId)}')">Markeer als uitgereikt</button>` : ""}
+        <button class="btn ghost" style="margin-left:8px" onclick="quickMarkDelivered('${esc(claimId)}')">Mark as delivered</button>` : ""}
     </div>
 
-    ${sectionHead("Ingevulde gegevens")}
+    ${sectionHead("Submitted details")}
     <div class="card">
-      ${row("Naam", c.full_name)}
-      ${row("E-mail", c.email)}
-      ${row("Telefoon", c.phone)}
-      ${row("Kledingstuk", c.garment ? GARMENT_LABELS[c.garment] : null)}
-      ${row("Maat", c.size ? SIZE_LABELS[c.size] : null)}
-      ${row("Kleur", c.color)}
-      ${row("Bedrukking/ontwerp", c.design_notes)}
-      ${row("Opmerkingen van winnaar", c.comments)}
-      ${row("Toestemming delen met LWPrints", c.consent_share_with_lwprints ? `Ja, gegeven op ${fmtDate(c.consent_given_at)}` : "Nee")}
-      ${!c.full_name && !c.garment ? `<p class="muted" style="font-size:13.5px;margin:0">Nog niets ingevuld door de winnaar.</p>` : ""}
+      ${row("Name", c.full_name)}
+      ${row("Email", c.email)}
+      ${row("Phone", c.phone)}
+      ${row("Garment", c.garment ? GARMENT_LABELS[c.garment] : null)}
+      ${row("Size", c.size ? SIZE_LABELS[c.size] : null)}
+      ${row("Color", c.color)}
+      ${row("Print/design", c.design_notes)}
+      ${row("Winner's comments", c.comments)}
+      ${row("Consent to share with LWPrints", c.consent_share_with_lwprints ? `Yes, given on ${fmtDate(c.consent_given_at)}` : "No")}
+      ${!c.full_name && !c.garment ? `<p class="muted" style="font-size:13.5px;margin:0">Nothing filled in by the winner yet.</p>` : ""}
     </div>
 
-    ${sectionHead("Beheerdersnotitie")}
+    ${sectionHead("Admin note")}
     <div class="card">
-      <textarea id="pAdminNotes" rows="3" placeholder="Interne notitie, bijv. contactpogingen">${esc(c.admin_notes || "")}</textarea>
-      <button class="btn ghost sm mt8" onclick="saveAdminNotes('${esc(claimId)}')">Opslaan</button>
+      <textarea id="pAdminNotes" rows="3" placeholder="Internal note, e.g. contact attempts">${esc(c.admin_notes || "")}</textarea>
+      <button class="btn ghost sm mt8" onclick="saveAdminNotes('${esc(claimId)}')">Save</button>
     </div>
 
-    ${sectionHead("Historie")}
+    ${sectionHead("History")}
     <div class="card">
       ${history.length ? history.map((h, i) => `
         <div class="row-sub" style="padding:6px 0;${i > 0 ? "border-top:1px solid var(--line)" : ""}">
           ${esc(fmtDate(h.created_at))} &middot; ${esc(PRIZE_STATUS[h.old_status]?.label || h.old_status || "-")} &rarr; ${esc(PRIZE_STATUS[h.new_status]?.label || h.new_status)}
-          ${h.changed_by_profile?.display_name ? ` door ${esc(h.changed_by_profile.display_name)}` : ""}
+          ${h.changed_by_profile?.display_name ? ` by ${esc(h.changed_by_profile.display_name)}` : ""}
           ${h.note ? `<div style="margin-top:2px">${esc(h.note)}</div>` : ""}
         </div>`).join("")
-        : `<p class="muted" style="font-size:13.5px;margin:0">Nog geen statuswijzigingen.</p>`}
+        : `<p class="muted" style="font-size:13.5px;margin:0">No status changes yet.</p>`}
     </div>
   `);
 }
@@ -3210,15 +2468,15 @@ async function submitStatusChange(claimId) {
   const note = document.getElementById("pNote").value.trim() || null;
   try {
     await db.updatePrizeClaimStatus(claimId, status, note);
-    toast("Status bijgewerkt");
+    toast("Status updated");
     viewManagePrizeDetail(claimId);
   } catch (e) { toast(errText(e)); }
 }
 
 async function quickMarkDelivered(claimId) {
   try {
-    await db.updatePrizeClaimStatus(claimId, "delivered", "Gemarkeerd als uitgereikt");
-    toast("Gemarkeerd als uitgereikt");
+    await db.updatePrizeClaimStatus(claimId, "delivered", "Marked as delivered");
+    toast("Marked as delivered");
     viewManagePrizeDetail(claimId);
   } catch (e) { toast(errText(e)); }
 }
@@ -3227,7 +2485,7 @@ async function saveAdminNotes(claimId) {
   const notes = document.getElementById("pAdminNotes").value;
   try {
     await db.updatePrizeClaimFields(claimId, { admin_notes: notes });
-    toast("Notitie opgeslagen");
+    toast("Note saved");
   } catch (e) { toast(errText(e)); }
 }
 
@@ -3235,7 +2493,7 @@ async function openAssignPlayerDialog(leagueId) {
   const [players, divisions, onboardingList, members] = await Promise.all([
     db.players(), db.divisionsForLeague(leagueId), db.allOnboarding(), db.leagueMembers(leagueId),
   ]);
-  if (!players.length) return toast("Er zijn nog geen spelers.");
+  if (!players.length) return toast("There are no players yet.");
   const onboardingByPlayer = Object.fromEntries(onboardingList.map((o) => [o.player_id, o]));
   const counts = {};
   for (const m of members) {
@@ -3247,21 +2505,21 @@ async function openAssignPlayerDialog(leagueId) {
     return `<option value="${esc(d.id)}" ${n >= 12 ? "disabled" : ""}>${esc(d.name)} (${n}/12)</option>`;
   }).join("");
 
-  openModal("Speler indelen", `
-    <div class="field"><label for="ap">Speler</label><select id="ap">${opts(players, "id", "display_name")}</select></div>
+  openModal("Place player", `
+    <div class="field"><label for="ap">Player</label><select id="ap">${opts(players, "id", "display_name")}</select></div>
     <div id="apInfo" class="muted" style="font-size:13px;margin:-8px 0 16px"></div>
-    <div class="field"><label for="ad">Divisie</label>
+    <div class="field"><label for="ad">Division</label>
       <select id="ad">
-        <option value="">Geen divisie</option>
+        <option value="">No division</option>
         ${divOpts}
       </select>
     </div>`, async (bg) => {
     const playerId = bg.querySelector("#ap").value;
     const divisionId = bg.querySelector("#ad").value || null;
     await db.assignPlayerToLeague(leagueId, playerId, divisionId);
-    toast("Speler ingedeeld");
+    toast("Player ingedeeld");
     router();
-  }, "Opslaan");
+  }, "Save");
 
   // Toont platform/nickname/gemiddelde van de gekozen speler, zodat de
   // organisator dit kan gebruiken bij de initiële indeling.
@@ -3270,8 +2528,8 @@ async function openAssignPlayerDialog(leagueId) {
   const showInfo = () => {
     const o = onboardingByPlayer[playerSel.value];
     infoEl.textContent = o
-      ? `${o.platform === "scolia" ? "Scolia" : "DartCounter"} · ${o.platform_nickname} · gem. ${Number(o.reported_average).toFixed(2)}`
-      : "Nog geen spelersgegevens ingevuld.";
+      ? `${o.platform === "scolia" ? "Scolia" : "DartCounter"} · ${o.platform_nickname} · avg. ${Number(o.reported_average).toFixed(2)}`
+      : "No player details entered yet.";
   };
   playerSel.onchange = showInfo;
   showInfo();
@@ -3281,9 +2539,9 @@ async function autoAssignDivisions(leagueId) {
   try {
     const placed = await db.autoAssignDivisions(leagueId);
     const lowConfidence = placed.filter((p) => p.low_confidence);
-    let msg = `${placed.length} speler(s) ingedeeld.`;
+    let msg = `${placed.length} player(s) placed.`;
     if (lowConfidence.length) {
-      msg += ` Let op: ${lowConfidence.map((p) => p.display_name).join(", ")} had(den) geen gemiddelde en telt/tellen nu als 0.`;
+      msg += ` Note: ${lowConfidence.map((p) => p.display_name).join(", ")} had no average and now count(s) as 0.`;
     }
     toast(msg);
     router();
@@ -3311,11 +2569,11 @@ async function viewTournaments() {
   }
 
   const filters = [
-    { key: "all", label: "Alle toernooien" },
-    { key: "upcoming", label: "Aankomende toernooien" },
-    { key: "registration_open", label: "Inschrijving geopend" },
-    { key: "mine", label: "Mijn toernooien" },
-    { key: "finished", label: "Afgeronde toernooien" },
+    { key: "all", label: "All tournaments" },
+    { key: "upcoming", label: "Upcoming tournaments" },
+    { key: "registration_open", label: "Registration open" },
+    { key: "mine", label: "My tournaments" },
+    { key: "finished", label: "Finished tournaments" },
   ];
 
   const matchesFilter = (t, key) => {
@@ -3338,22 +2596,22 @@ async function viewTournaments() {
           paidCount: paidCountByTournament[t.id] || 0,
           isMine: mineSet.has(t.id),
         })).join("")}</div>`
-      : emptyView("Nog geen toernooien beschikbaar", "Er zijn momenteel geen toernooien beschikbaar. Kom later terug om mee te doen aan een nieuw toernooi.", "tournament");
+      : emptyView("No tournaments available yet", "There are currently no tournaments available. Check back later to join a new tournament.", "tournament");
     document.querySelectorAll(".tournament-filter-chip").forEach((el) => {
       el.classList.toggle("active", el.dataset.key === active);
     });
   };
 
   setView(`
-    <h1>Toernooien</h1>
-    <p class="sub">Strijd tegen andere spelers en maak kans op mooie prijzen.</p>
+    <h1>Tournaments</h1>
+    <p class="sub">Compete against other players and win great prizes.</p>
 
     <div class="card" style="margin-bottom:16px">
       <div class="row">
         <div class="row-ico">${icon.trophy}</div>
         <div class="row-main">
-          <div class="row-title" style="white-space:normal">Toernooien met mogelijk prijzengeld</div>
-          <div class="row-sub" style="white-space:normal">Neem deel aan darttoernooien en strijd tegen andere spelers. Afhankelijk van het toernooi kunnen er prijzen of prijzengeld beschikbaar zijn.</div>
+          <div class="row-title" style="white-space:normal">Tournaments with possible prize money</div>
+          <div class="row-sub" style="white-space:normal">Take part in darts tournaments and compete against other players. Depending on the tournament, prizes or prize money may be available.</div>
         </div>
       </div>
     </div>
@@ -3379,9 +2637,9 @@ function tournamentMatchRow(m) {
     <div class="card">
       ${m.round_name ? `<div class="muted" style="font-size:12px;font-weight:600;margin-bottom:8px">${esc(m.round_name)}</div>` : ""}
       <div class="match-row">
-        <div class="mp ${aWin ? "winner" : ""}"><span class="mp-name">${esc(m.player_a?.display_name || "Nog onbekend")}</span></div>
+        <div class="mp ${aWin ? "winner" : ""}"><span class="mp-name">${esc(m.player_a?.display_name || "Unknown yet")}</span></div>
         <span class="vs">VS</span>
-        <div class="mp right ${bWin ? "winner" : ""}"><span class="mp-name">${esc(m.player_b?.display_name || "Nog onbekend")}</span></div>
+        <div class="mp right ${bWin ? "winner" : ""}"><span class="mp-name">${esc(m.player_b?.display_name || "Unknown yet")}</span></div>
       </div>
       ${played ? `
         <div class="match-score">
@@ -3393,7 +2651,7 @@ function tournamentMatchRow(m) {
     </div>`;
 }
 
-// Betaalblok voor de eigen inschrijving: instructies + "Ik heb betaald" bij
+// Betaalblok voor de eigen inschrijving: instructies + "I've paid" bij
 // pending, wacht-op-bevestiging bij submitted, bevestiging bij paid.
 function myPaymentBlock(t, entry) {
   if (!entry || entry.payment_status === "not_required") return "";
@@ -3401,24 +2659,24 @@ function myPaymentBlock(t, entry) {
   if (entry.payment_status === "pending") {
     return `
       <div class="card" style="margin-bottom:16px">
-        <div class="row-title" style="font-size:14px;margin-bottom:6px">Inschrijfgeld: ${esc(fee)}</div>
+        <div class="row-title" style="font-size:14px;margin-bottom:6px">Entry fee: ${esc(fee)}</div>
         ${t.payment_instructions ? `<p class="row-sub" style="white-space:pre-wrap;margin:0 0 10px">${esc(t.payment_instructions)}</p>` : ""}
-        ${t.payment_deadline_hours ? `<p class="muted" style="font-size:12.5px;margin:0 0 10px">Betaal binnen ${t.payment_deadline_hours} uur na inschrijving, anders vervalt je plek automatisch.</p>` : ""}
-        <button class="btn sm" id="submitPaymentBtn">Ik heb betaald</button>
+        ${t.payment_deadline_hours ? `<p class="muted" style="font-size:12.5px;margin:0 0 10px">Pay within ${t.payment_deadline_hours} hours of registering, or your spot will be released automatically.</p>` : ""}
+        <button class="btn sm" id="submitPaymentBtn">I've paid</button>
       </div>`;
   }
   if (entry.payment_status === "submitted") {
     return `
       <div class="card" style="margin-bottom:16px">
         <div class="row-title" style="font-size:14px">${paymentStatusBadge("submitted")}</div>
-        <p class="row-sub" style="margin:6px 0 0">Wacht op bevestiging door de organisator.${entry.payment_reference ? ` Referentie: ${esc(entry.payment_reference)}` : ""}</p>
+        <p class="row-sub" style="margin:6px 0 0">Awaiting confirmation from the admin.${entry.payment_reference ? ` Reference: ${esc(entry.payment_reference)}` : ""}</p>
       </div>`;
   }
   if (entry.payment_status === "paid") {
     return `
       <div class="card" style="margin-bottom:16px">
         <div class="row-title" style="font-size:14px">${paymentStatusBadge("paid")}</div>
-        ${entry.amount_paid != null ? `<p class="row-sub" style="margin:6px 0 0">${esc(fmtMoney(entry.amount_paid, t.prize_currency))} ontvangen.</p>` : ""}
+        ${entry.amount_paid != null ? `<p class="row-sub" style="margin:6px 0 0">${esc(fmtMoney(entry.amount_paid, t.prize_currency))} received.</p>` : ""}
       </div>`;
   }
   return "";
@@ -3432,27 +2690,27 @@ function prizeExplainerCard(t) {
 
   let potText;
   if (t.prize_pool_type === "entry_fee_based") {
-    potText = "De pot wordt berekend als inschrijfgeld × het aantal spelers dat daadwerkelijk heeft betaald. Zolang de inschrijving nog open is, is het genoemde bedrag dus een voorlopige schatting - pas zodra de inschrijving sluit staat de pot definitief vast.";
+    potText = "The pool is calculated as entry fee × the number of players who actually paid. As long as registration is still open, the amount shown is a provisional estimate - the pool is only final once registration closes.";
   } else if (t.prize_pool_type === "fixed") {
-    potText = "Dit toernooi heeft een vast prijzenbedrag. Dat bedrag staat vooraf vast, ongeacht het aantal deelnemers.";
+    potText = "This tournament has a fixed prize amount. That amount is set in advance, regardless of the number of entrants.";
   } else {
-    potText = "Het genoemde bedrag is het totale prijzengeld voor dit toernooi.";
+    potText = "The amount shown is the total prize money for this tournament.";
   }
 
   const hasDistribution = Array.isArray(t.prize_distribution) && t.prize_distribution.length > 0;
   const distText = hasDistribution
-    ? "Per eindpositie is al een deel van de pot toegewezen (zie hierboven) - als percentage van de pot of als vast bedrag."
-    : "De organisator heeft nog geen verdeling per eindpositie vastgelegd.";
+    ? "A share of the pool has already been assigned per final position (see above) - either as a percentage of the pool or as a fixed amount."
+    : "The admin hasn't set a distribution per final position yet.";
 
-  const payoutText = "Na afloop van het toernooi legt de organisator de uitbetaling per eindpositie handmatig vast, keurt deze goed en maakt het bedrag zelf over (bijvoorbeeld via Tikkie). Dit gaat niet automatisch via de app - de app houdt alleen bij wat er zou moeten gebeuren.";
+  const payoutText = "After the tournament, the admin manually records the payout per final position, approves it and transfers the amount themselves (e.g. via Tikkie). This doesn't happen automatically through the app - the app only tracks what should happen.";
 
   return `
     <details class="card info-card" style="margin-bottom:16px">
       <summary>
         <div class="row">
           <div class="row-ico">${icon.trophy}</div>
-          <div class="row-main"><div class="row-title" style="white-space:normal">Hoe werkt de prijzenpot?</div></div>
-          <span class="muted toggle-label" style="font-size:13px;flex-shrink:0">Meer info &darr;</span>
+          <div class="row-main"><div class="row-title" style="white-space:normal">How does the prize pool work?</div></div>
+          <span class="muted toggle-label" style="font-size:13px;flex-shrink:0">More info &darr;</span>
         </div>
       </summary>
       <div class="muted" style="font-size:13.5px;line-height:1.6;margin-top:14px">
@@ -3474,10 +2732,10 @@ async function viewTournamentDetail(id) {
     db.tournamentPayouts(id),
   ]);
   if (!t) {
-    return setView(emptyView("Toernooi niet gevonden", "Dit toernooi bestaat niet (meer).", "tournament"));
+    return setView(emptyView("Tournament not found", "This tournament no longer exists.", "tournament"));
   }
   if (t.status === "draft" && !isOrg) {
-    return setView(emptyView("Toernooi niet gevonden", "Dit toernooi bestaat niet (meer).", "tournament"));
+    return setView(emptyView("Tournament not found", "This tournament no longer exists.", "tournament"));
   }
 
   const activeEntries = entries.filter((e) => e.status !== "withdrawn");
@@ -3497,7 +2755,7 @@ async function viewTournamentDetail(id) {
 
   setView(`
     <button class="linkbtn" onclick="go('toernooien')" style="display:flex;align-items:center;gap:4px;margin-bottom:12px">
-      <span style="width:16px;height:16px;display:inline-flex">${icon.back}</span> Toernooien
+      <span style="width:16px;height:16px;display:inline-flex">${icon.back}</span> Tournaments
     </button>
     <h1>${esc(t.name)}</h1>
     <p class="sub">${esc([TOURNAMENT_TYPES[t.tournament_type] || t.tournament_type, t.start_at ? fmtDate(t.start_at) : null].filter(Boolean).join(" · "))}</p>
@@ -3505,12 +2763,12 @@ async function viewTournamentDetail(id) {
 
     <div class="card" style="margin-bottom:16px">
       ${infoRow("Format", esc(TOURNAMENT_TYPES[t.tournament_type] || t.tournament_type))}
-      ${platformLabel ? infoRow("Speelwijze", esc(platformLabel + (scoringLabel ? ` · ${scoringLabel}` : ""))) : ""}
-      ${infoRow("Deelnemers", `${activeEntries.length}${t.max_players ? `/${t.max_players}` : ""}`)}
-      ${t.min_players ? infoRow("Minimum aantal spelers", String(t.min_players)) : ""}
-      ${t.registration_opens_at ? infoRow("Inschrijving opent", esc(fmtDate(t.registration_opens_at))) : ""}
-      ${t.registration_closes_at ? infoRow("Inschrijving sluit", esc(fmtDate(t.registration_closes_at))) : ""}
-      ${isPaidTournament ? infoRow("Inschrijfgeld", esc(fmtMoney(t.entry_fee, t.prize_currency))) : ""}
+      ${platformLabel ? infoRow("Play mode", esc(platformLabel + (scoringLabel ? ` · ${scoringLabel}` : ""))) : ""}
+      ${infoRow("Entrants", `${activeEntries.length}${t.max_players ? `/${t.max_players}` : ""}`)}
+      ${t.min_players ? infoRow("Minimum number of players", String(t.min_players)) : ""}
+      ${t.registration_opens_at ? infoRow("Registration opens", esc(fmtDate(t.registration_opens_at))) : ""}
+      ${t.registration_closes_at ? infoRow("Registration closes", esc(fmtDate(t.registration_closes_at))) : ""}
+      ${isPaidTournament ? infoRow("Entry fee", esc(fmtMoney(t.entry_fee, t.prize_currency))) : ""}
     </div>
 
     <div class="card" style="margin-bottom:16px">${prizeLine(t, paidCount)}</div>
@@ -3521,34 +2779,34 @@ async function viewTournamentDetail(id) {
 
     ${myPayout ? `
       <div class="card" style="margin-bottom:16px">
-        <div class="row-title" style="font-size:14px">Jouw resultaat: ${esc(ordinal(myPayout.placement))} plaats</div>
-        <p class="row-sub" style="margin:6px 0 0">${esc(fmtMoney(myPayout.prize_amount, myPayout.currency))} — ${myPayout.payout_status === "paid" ? "uitbetaald" : myPayout.payout_status === "approved" ? "goedgekeurd, wordt overgemaakt" : "wacht op goedkeuring"}</p>
+        <div class="row-title" style="font-size:14px">Your result: ${esc(ordinal(myPayout.placement))} place</div>
+        <p class="row-sub" style="margin:6px 0 0">${esc(fmtMoney(myPayout.prize_amount, myPayout.currency))} — ${myPayout.payout_status === "paid" ? "paid out" : myPayout.payout_status === "approved" ? "approved, will be transferred" : "awaiting approval"}</p>
       </div>` : ""}
 
     ${(t.refund_policy || t.refund_cutoff_hours) && !isOrg ? `
       <div class="card" style="margin-bottom:16px">
-        <div class="row-title" style="font-size:14px">Annuleringsvoorwaarden</div>
+        <div class="row-title" style="font-size:14px">Cancellation terms</div>
         ${t.refund_policy ? `<p class="row-sub" style="white-space:pre-wrap;margin:6px 0 0">${esc(t.refund_policy)}</p>` : ""}
-        ${t.refund_cutoff_hours != null ? `<p class="muted" style="font-size:12.5px;margin:6px 0 0">Terugbetaling mogelijk tot ${t.refund_cutoff_hours} uur voor aanvang.</p>` : ""}
+        ${t.refund_cutoff_hours != null ? `<p class="muted" style="font-size:12.5px;margin:6px 0 0">Refund possible up to ${t.refund_cutoff_hours} hours before the start.</p>` : ""}
       </div>` : ""}
 
     ${!isOrg ? `
       <div style="margin-bottom:16px">
-        ${canRegister ? `<button class="btn block" onclick="registerForTournament('${esc(t.id)}')">${isPaidTournament ? "Inschrijven en betalen" : "Inschrijven"}</button>` : ""}
-        ${canWithdraw ? `<button class="btn ghost block" onclick="withdrawFromTournament('${esc(t.id)}')">Uitschrijven</button>` : ""}
+        ${canRegister ? `<button class="btn block" onclick="registerForTournament('${esc(t.id)}')">${isPaidTournament ? "Register and pay" : "Register"}</button>` : ""}
+        ${canWithdraw ? `<button class="btn ghost block" onclick="withdrawFromTournament('${esc(t.id)}')">Withdraw</button>` : ""}
         ${!canRegister && !canWithdraw ? `<p class="muted" style="font-size:13px;margin:0">${esc(registrationClosedReason(status))}</p>` : ""}
       </div>
     ` : `
-      <button class="btn ghost sm" style="margin-bottom:16px" onclick="openEditTournamentDialog('${esc(t.id)}')">${icon.settings} Toernooi bewerken</button>
+      <button class="btn ghost sm" style="margin-bottom:16px" onclick="openEditTournamentDialog('${esc(t.id)}')">${icon.settings} Edit tournament</button>
     `}
 
     ${t.description ? `
-      ${sectionHead("Toernooiregels")}
+      ${sectionHead("Tournament rules")}
       <div class="card" style="margin-bottom:16px"><p style="margin:0;white-space:pre-wrap">${esc(t.description)}</p></div>
     ` : ""}
 
     ${isOrg && isPaidTournament ? `
-      ${sectionHead("Betalingen")}
+      ${sectionHead("Payments")}
       ${pendingEntries.length ? `
         <div class="card" style="margin-bottom:16px">
           ${pendingEntries.map((e, i) => `
@@ -3559,11 +2817,11 @@ async function viewTournamentDetail(id) {
                 <div class="row-sub">${paymentStatusBadge(e.payment_status)}${e.payment_reference ? ` · ${esc(e.payment_reference)}` : ""}</div>
               </div>
               <div style="display:flex;gap:6px;flex-shrink:0">
-                <button class="btn ghost sm reject-payment-btn" data-entry-id="${esc(e.id)}">Afwijzen</button>
-                <button class="btn sm confirm-payment-btn" data-entry-id="${esc(e.id)}">Bevestigen</button>
+                <button class="btn ghost sm reject-payment-btn" data-entry-id="${esc(e.id)}">Reject</button>
+                <button class="btn sm confirm-payment-btn" data-entry-id="${esc(e.id)}">Confirm</button>
               </div>
             </div>`).join("")}
-        </div>` : `<div class="card" style="margin-bottom:16px">${emptyView("Geen openstaande betalingen", "", "flag")}</div>`}
+        </div>` : `<div class="card" style="margin-bottom:16px">${emptyView("No outstanding payments", "", "flag")}</div>`}
       ${paidEntries.length ? `
         <div class="card" style="margin-bottom:16px">
           ${paidEntries.map((e, i) => `
@@ -3573,12 +2831,12 @@ async function viewTournamentDetail(id) {
                 <div class="row-title">${esc(e.player?.display_name || "?")}</div>
                 <div class="row-sub">${paymentStatusBadge(e.payment_status)}${e.amount_paid != null ? ` · ${esc(fmtMoney(e.amount_paid, t.prize_currency))}` : ""}</div>
               </div>
-              <button class="btn ghost sm refund-entry-btn" data-entry-id="${esc(e.id)}">Terugbetalen</button>
+              <button class="btn ghost sm refund-entry-btn" data-entry-id="${esc(e.id)}">Refund</button>
             </div>`).join("")}
         </div>` : ""}
     ` : ""}
 
-    ${sectionHead("Deelnemers")}
+    ${sectionHead("Entrants")}
     ${activeEntries.length ? `
       <div class="card" style="margin-bottom:16px">
         ${activeEntries.map((e, i) => `
@@ -3587,10 +2845,10 @@ async function viewTournamentDetail(id) {
             <div class="row-main"><div class="row-title">${esc(e.player?.display_name || "?")}</div></div>
             ${isOrg && isPaidTournament ? paymentStatusBadge(e.payment_status) : ""}
           </div>`).join("")}
-      </div>` : `<div class="card" style="margin-bottom:16px">${emptyView("Nog geen deelnemers", "", "users")}</div>`}
+      </div>` : `<div class="card" style="margin-bottom:16px">${emptyView("No entrants yet", "", "users")}</div>`}
 
     ${isOrg ? `
-      ${sectionHead("Uitbetalingen")}
+      ${sectionHead("Payouts")}
       ${payouts.length ? `
         <div class="card" style="margin-bottom:16px">
           ${payouts.map((p, i) => `
@@ -3598,20 +2856,20 @@ async function viewTournamentDetail(id) {
               ${avatar(p.player, "sm")}
               <div class="row-main">
                 <div class="row-title">${esc(ordinal(p.placement))} — ${esc(p.player?.display_name || "?")}</div>
-                <div class="row-sub">${esc(fmtMoney(p.prize_amount, p.currency))} · ${esc(p.payout_status === "paid" ? "Betaald" : p.payout_status === "approved" ? "Goedgekeurd" : p.payout_status === "cancelled" ? "Geannuleerd" : "Wacht op goedkeuring")}</div>
+                <div class="row-sub">${esc(fmtMoney(p.prize_amount, p.currency))} · ${esc(p.payout_status === "paid" ? "Paid" : p.payout_status === "approved" ? "Approved" : p.payout_status === "cancelled" ? "Cancelled" : "Awaiting approval")}</div>
               </div>
               <div style="display:flex;gap:6px;flex-shrink:0">
-                ${p.payout_status === "pending_approval" ? `<button class="btn ghost sm approve-payout-btn" data-payout-id="${esc(p.id)}">Goedkeuren</button>` : ""}
-                ${p.payout_status === "approved" ? `<button class="btn sm mark-payout-paid-btn" data-payout-id="${esc(p.id)}">Als betaald markeren</button>` : ""}
+                ${p.payout_status === "pending_approval" ? `<button class="btn ghost sm approve-payout-btn" data-payout-id="${esc(p.id)}">Approve</button>` : ""}
+                ${p.payout_status === "approved" ? `<button class="btn sm mark-payout-paid-btn" data-payout-id="${esc(p.id)}">Mark as paid</button>` : ""}
               </div>
             </div>`).join("")}
-        </div>` : `<div class="card" style="margin-bottom:16px">${emptyView("Nog geen uitbetalingen vastgelegd", "", "trophy")}</div>`}
-      <button class="btn ghost sm" style="margin-bottom:16px" id="addPayoutBtn">${icon.plus} Uitbetaling toevoegen</button>
+        </div>` : `<div class="card" style="margin-bottom:16px">${emptyView("No payouts recorded yet", "", "trophy")}</div>`}
+      <button class="btn ghost sm" style="margin-bottom:16px" id="addPayoutBtn">${icon.plus} Add payout</button>
     ` : ""}
 
-    ${sectionHead("Wedstrijdschema")}
+    ${sectionHead("Match schedule")}
     ${matches.length ? matches.map(tournamentMatchRow).join("")
-      : `<div class="card">${emptyView("Nog geen wedstrijdschema", "Het schema verschijnt zodra het toernooi begint.", "darts")}</div>`}
+      : `<div class="card">${emptyView("No match schedule yet", "The schedule will appear once the tournament starts.", "darts")}</div>`}
   `);
 
   document.getElementById("submitPaymentBtn")?.addEventListener("click", () => openSubmitPaymentDialog(myEntry.id));
@@ -3635,7 +2893,7 @@ async function viewTournamentDetail(id) {
 
   const infoCard = document.querySelector(".info-card");
   infoCard?.addEventListener("toggle", () => {
-    infoCard.querySelector(".toggle-label").innerHTML = infoCard.open ? "Minder info &uarr;" : "Meer info &darr;";
+    infoCard.querySelector(".toggle-label").innerHTML = infoCard.open ? "Less info &uarr;" : "More info &darr;";
   });
 }
 
@@ -3647,32 +2905,32 @@ function scheduleProposalBlock(m) {
   const meId = state.profile.id;
   const p = m.schedule_proposal;
   if (!p || p.status === "accepted") {
-    return `<button class="btn ghost sm" style="margin:-4px 0 8px" onclick="openScheduleProposalDialog('${esc(m.id)}')">${icon.clock} Moment voorstellen</button>`;
+    return `<button class="btn ghost sm" style="margin:-4px 0 8px" onclick="openScheduleProposalDialog('${esc(m.id)}')">${icon.clock} Propose a time</button>`;
   }
   const when = fmtDate(p.proposed_at);
   if (p.proposed_by === meId) {
-    const label = p.status === "disputed" ? "Probleem gemeld, wacht op reactie" : `Je hebt ${when} voorgesteld, wacht op reactie`;
+    const label = p.status === "disputed" ? "Problem reported, awaiting response" : `You proposed ${when}, awaiting response`;
     return `
       <p class="muted" style="margin:-4px 0 6px;font-size:13px">${esc(label)}</p>
-      <button class="btn ghost sm" style="margin:0 0 10px" onclick="withdrawScheduleProposal('${esc(m.id)}')">Intrekken</button>`;
+      <button class="btn ghost sm" style="margin:0 0 10px" onclick="withdrawScheduleProposal('${esc(m.id)}')">Withdraw</button>`;
   }
   return `
     <p class="muted" style="margin:-4px 0 6px;font-size:13px">Voorstel: ${esc(when)}${p.note ? " — " + esc(p.note) : ""}</p>
     <div class="chips" style="margin:0 0 10px">
-      <button class="chip" onclick="respondScheduleProposal('${esc(m.id)}', 'accept')">Accepteren</button>
-      <button class="chip" onclick="openScheduleProposalDialog('${esc(m.id)}', true)">Tegenvoorstel</button>
-      <button class="chip" onclick="respondScheduleProposal('${esc(m.id)}', 'dispute')">Probleem melden</button>
+      <button class="chip" onclick="respondScheduleProposal('${esc(m.id)}', 'accept')">Accept</button>
+      <button class="chip" onclick="openScheduleProposalDialog('${esc(m.id)}', true)">Counter-proposal</button>
+      <button class="chip" onclick="respondScheduleProposal('${esc(m.id)}', 'dispute')">Report a problem</button>
     </div>`;
 }
 
 function openScheduleProposalDialog(matchId, isCounter = false) {
-  openModal(isCounter ? "Tegenvoorstel doen" : "Moment voorstellen", `
-    <div class="field"><label for="sp-when">Datum en tijd</label><input id="sp-when" type="datetime-local" required></div>
-    <div class="field"><label for="sp-note">Opmerking <span class="muted" style="font-weight:400">(optioneel)</span></label>
-      <input id="sp-note" placeholder="Bijv. reden van het voorstel"></div>`,
+  openModal(isCounter ? "Make a counter-proposal" : "Propose a time", `
+    <div class="field"><label for="sp-when">Date and time</label><input id="sp-when" type="datetime-local" required></div>
+    <div class="field"><label for="sp-note">Note <span class="muted" style="font-weight:400">(optional)</span></label>
+      <input id="sp-note" placeholder="E.g. reason for the proposal"></div>`,
     async (bg) => {
       const val = bg.querySelector("#sp-when").value;
-      if (!val) throw new Error("Kies een datum en tijd.");
+      if (!val) throw new Error("Choose a date and time.");
       const proposedAt = new Date(val).toISOString();
       const note = bg.querySelector("#sp-note").value.trim() || null;
       if (isCounter) {
@@ -3680,15 +2938,15 @@ function openScheduleProposalDialog(matchId, isCounter = false) {
       } else {
         await db.proposeMatchSchedule(matchId, proposedAt, note);
       }
-      toast("Voorstel verstuurd.");
+      toast("Proposal sent.");
       router();
-    }, isCounter ? "Tegenvoorstel versturen" : "Voorstel versturen");
+    }, isCounter ? "Send counter-proposal" : "Send proposal");
 }
 
 async function respondScheduleProposal(matchId, action) {
   try {
     await db.respondMatchSchedule(matchId, action);
-    toast(action === "accept" ? "Voorstel geaccepteerd." : "Probleem gemeld bij je tegenstander.");
+    toast(action === "accept" ? "Proposal accepted." : "Problem reported to your opponent.");
     router();
   } catch (e) { toast(errText(e)); }
 }
@@ -3696,40 +2954,40 @@ async function respondScheduleProposal(matchId, action) {
 async function withdrawScheduleProposal(matchId) {
   try {
     await db.withdrawMatchSchedule(matchId);
-    toast("Voorstel ingetrokken.");
+    toast("Proposal withdrawn.");
     router();
   } catch (e) { toast(errText(e)); }
 }
 
-// Geschiedenis van voorstellen ("Datum & uur"-kaart op Mijn divisie).
+// History van voorstellen ("Datum & uur"-kaart op My division).
 function scheduleHistoryList(history) {
   if (!history.length) return "";
   const actionLabels = {
-    proposed: "stelde voor",
-    countered: "deed een tegenvoorstel",
-    accepted: "accepteerde het voorstel",
-    disputed: "meldde een probleem",
-    withdrawn: "trok het voorstel in",
+    proposed: "proposed a time",
+    countered: "made a counter-proposal",
+    accepted: "accepted the proposal",
+    disputed: "reported a problem",
+    withdrawn: "withdrew the proposal",
   };
   return `
     <div class="mt16">
-      <div class="muted" style="font-size:12px;font-weight:600;margin-bottom:6px">Geschiedenis</div>
+      <div class="muted" style="font-size:12px;font-weight:600;margin-bottom:6px">History</div>
       ${history.map((h) => `
         <div class="muted" style="font-size:12.5px;margin-bottom:4px">
-          ${esc(h.actor?.display_name || "Iemand")} ${esc(actionLabels[h.action] || h.action)}${h.proposed_at ? " &middot; " + esc(fmtDate(h.proposed_at)) : ""}
+          ${esc(h.actor?.display_name || "Someone")} ${esc(actionLabels[h.action] || h.action)}${h.proposed_at ? " &middot; " + esc(fmtDate(h.proposed_at)) : ""}
         </div>`).join("")}
     </div>`;
 }
 
-// Volledige "Datum & uur van deze wedstrijd"-kaart voor Mijn divisie:
+// Volledige "Date & time of this match"-kaart voor My division:
 // uitleg, voorstel/accepteer/tegenvoorstel/intrekken, beschikbaarheid, en
 // de geschiedenis van alle acties.
 function scheduleCard(m, history) {
   return `
     <div class="card">
-      <h2 style="margin-bottom:8px">Datum &amp; uur van deze wedstrijd</h2>
+      <h2 style="margin-bottom:8px">Date &amp; time of this match</h2>
       <p class="muted" style="font-size:13px;margin:0 0 14px">
-        Stel samen met je tegenstander een datum en tijd voor. Het voorstel wordt naar de andere speler gestuurd. Die speler kan het accepteren of een ander voorstel doen.
+        Agree on a date and time with your opponent. The proposal is sent to the other player, who can accept it or make a different proposal.
       </p>
       ${scheduleProposalBlock(m)}
       ${matchAvailabilityLine(m, matchDisplayStatus(m))}
@@ -3737,11 +2995,11 @@ function scheduleCard(m, history) {
     </div>`;
 }
 
-// Onderlinge wedstrijden ("head-to-head") tussen de ingelogde speler en de
+// Head-to-head matches ("head-to-head") tussen de ingelogde speler en de
 // tegenstander van de gefocuste wedstrijd.
 function headToHeadCard(matches, opponent, meId) {
   if (!matches.length) {
-    return `<div class="card">${emptyView("Nog geen eerdere ontmoetingen", `Dit is de eerste keer dat je het opneemt tegen ${esc(opponent?.display_name || "deze speler")}.`, "darts")}</div>`;
+    return `<div class="card">${emptyView("No previous meetings yet", `This is the first time you're facing ${esc(opponent?.display_name || "this player")}.`, "darts")}</div>`;
   }
   return `
     <div class="card">
@@ -3759,7 +3017,7 @@ function headToHeadCard(matches, opponent, meId) {
               <div class="row-sub">${myLegs}-${oppLegs}${myAvg ? " &middot; gem. " + Number(myAvg).toFixed(1) : ""}</div>
             </div>
             <span class="badge" style="color:${color};border-color:${color}66;background:${color}22">
-              ${draw ? "Gelijk" : won ? "Gewonnen" : "Verloren"}
+              ${draw ? "Draw" : won ? "Won" : "Lost"}
             </span>
           </div>`;
       }).join("")}
@@ -3768,26 +3026,26 @@ function headToHeadCard(matches, opponent, meId) {
 
 const CHAT_EMOJIS = ["👍", "😀", "😅", "😬", "🎯", "🔥", "🎉", "😢"];
 
-// Privéchat tussen de twee spelers van de gefocuste wedstrijd (Mijn divisie).
+// Privéchat tussen de twee spelers van de gefocuste wedstrijd (My division).
 function chatCard(messages, meId, matchId) {
   return `
     <div class="card">
       <h2 style="margin-bottom:8px">Chat</h2>
-      <p class="muted" style="font-size:13px;margin:0 0 14px">Alleen jij en je tegenstander kunnen dit gesprek zien.</p>
+      <p class="muted" style="font-size:13px;margin:0 0 14px">Only you and your opponent can see this conversation.</p>
       <div class="chat-messages" id="chat-messages">
         ${messages.length ? messages.map((m) => `
           <div class="chat-msg ${m.sender_id === meId ? "me" : "them"}">
             ${esc(m.body)}
             <span class="chat-time">${esc(fmtDate(m.created_at))}</span>
           </div>`).join("")
-          : `<p class="muted" style="font-size:13px;margin:0">Nog geen berichten. Stuur de eerste!</p>`}
+          : `<p class="muted" style="font-size:13px;margin:0">No messages yet. Send the first one!</p>`}
       </div>
       <div class="chat-emojis">
         ${CHAT_EMOJIS.map((e) => `<button type="button" class="chat-emoji-btn" onclick="insertChatEmoji('${e}')">${e}</button>`).join("")}
       </div>
       <form class="chat-input-row" onsubmit="return sendMatchChatMessage(event, '${esc(matchId)}')">
-        <input id="chat-input" placeholder="Typ een bericht..." maxlength="1000" autocomplete="off">
-        <button class="btn sm" type="submit">Stuur</button>
+        <input id="chat-input" placeholder="Type a message..." maxlength="1000" autocomplete="off">
+        <button class="btn sm" type="submit">Send</button>
       </form>
     </div>`;
 }
@@ -3824,51 +3082,51 @@ async function viewMatches() {
       if (waitingForMe) {
         return `
           ${matchCard(m)}
-          <button class="btn sm" style="margin:-4px 0 14px" onclick="openConfirmDialog('${esc(m.id)}')">Uitslag controleren</button>`;
+          <button class="btn sm" style="margin:-4px 0 14px" onclick="openConfirmDialog('${esc(m.id)}')">Check result</button>`;
       }
       const opponentName = m.player_a_id === state.profile.id
         ? m.player_b?.display_name : m.player_a?.display_name;
       return `
         ${matchCard(m)}
-        <p class="muted" style="margin:-4px 0 14px;font-size:13px">Wacht op bevestiging van ${esc(opponentName || "je tegenstander")}</p>`;
+        <p class="muted" style="margin:-4px 0 14px;font-size:13px">Awaiting confirmation van ${esc(opponentName || "je tegenstander")}</p>`;
     }
     return `
       ${matchCard(m)}
       ${scheduleProposalBlock(m)}
-      <button class="btn ghost sm" style="margin:-4px 0 10px" onclick="openResultDialog('${esc(m.id)}')">Uitslag doorgeven</button>`;
+      <button class="btn ghost sm" style="margin:-4px 0 10px" onclick="openResultDialog('${esc(m.id)}')">Report result</button>`;
   };
 
   setView(`
-    <h1>Je wedstrijden</h1>
-    <p class="sub">Alles waar jij aan meedoet</p>
-    ${matches.length === 0 ? emptyView("Nog geen wedstrijden", "Zodra je bent ingedeeld, verschijnen ze hier.", "darts") : ""}
+    <h1>Your matches</h1>
+    <p class="sub">Everything you're taking part in</p>
+    ${matches.length === 0 ? emptyView("No matches yet", "Once you're placed, they'll show up here.", "darts") : ""}
     ${open.length ? `${sectionHead("Open")}${open.map(openItem).join("")}` : ""}
-    ${done.length ? `${sectionHead("Gespeeld")}${done.map(matchCard).join("")}` : ""}
+    ${done.length ? `${sectionHead("Played")}${done.map(matchCard).join("")}` : ""}
   `);
 }
 
 async function viewStats() {
   const s = state.profile?.stats;
   if (!s) {
-    return setView(`<h1>Statistieken</h1>
-      ${emptyView("Nog geen cijfers", "Speel je eerste wedstrijd om hier iets te zien.", "chart")}`);
+    return setView(`<h1>Statistics</h1>
+      ${emptyView("No numbers yet", "Play your first match to see something here.", "chart")}`);
   }
   const winPct = s.matches_played > 0 ? Math.round((s.matches_won / s.matches_played) * 100) : 0;
   setView(`
-    <h1>Statistieken</h1>
-    <p class="sub">Je cijfers over alle bevestigde wedstrijden</p>
+    <h1>Statistics</h1>
+    <p class="sub">Your numbers across all confirmed matches</p>
     <div class="grid">
-      ${statCard({ label: "Gespeeld", value: s.matches_played, ico: "darts" })}
-      ${statCard({ label: "Gewonnen", value: s.matches_won, ico: "trophy", color: "#2ECC71" })}
-      ${statCard({ label: "Verloren", value: s.matches_lost, ico: "flag", color: "#E74C3C" })}
-      ${statCard({ label: "Winratio", value: winPct + "%", ico: "trend" })}
-      ${statCard({ label: "Gemiddelde", value: Number(s.average_score).toFixed(1), ico: "trend" })}
+      ${statCard({ label: "Played", value: s.matches_played, ico: "darts" })}
+      ${statCard({ label: "Won", value: s.matches_won, ico: "trophy", color: "#2ECC71" })}
+      ${statCard({ label: "Lost", value: s.matches_lost, ico: "flag", color: "#E74C3C" })}
+      ${statCard({ label: "Win ratio", value: winPct + "%", ico: "trend" })}
+      ${statCard({ label: "Average", value: Number(s.average_score).toFixed(1), ico: "trend" })}
       ${statCard({ label: "Checkout", value: Math.round(s.checkout_percentage) + "%", ico: "target" })}
       ${statCard({ label: "Hoogste finish", value: s.highest_checkout, ico: "flag" })}
       ${statCard({ label: "180's", value: s.count_180, ico: "star", color: "#F5B942" })}
     </div>
     <p class="muted mt24" style="font-size:13px">
-      Deze cijfers worden bijgewerkt zodra wedstrijden bevestigd zijn.
+      These numbers are updated as soon as matches are confirmed.
     </p>
   `);
 }
@@ -3878,15 +3136,15 @@ async function viewProfile() {
   const s = p.stats;
   const membership = await db.myLeagueMembership();
   setView(`
-    <h1>Profiel</h1>
-    <p class="sub">Je gegevens en je rol</p>
+    <h1>Profile</h1>
+    <p class="sub">Your details and your role</p>
 
     <div class="card center">
       <div style="display:inline-block;position:relative">
         ${avatar(p, "lg")}
         <button class="btn sm" id="avatarBtn"
           style="position:absolute;bottom:-4px;right:-4px;border-radius:50%;padding:8px;width:34px;height:34px"
-          aria-label="Foto wijzigen">
+          aria-label="Change photo">
           <span style="width:16px;height:16px;display:block">${icon.camera}</span>
         </button>
         <input type="file" id="avatarInput" accept="image/*" class="sr">
@@ -3894,49 +3152,49 @@ async function viewProfile() {
       <div class="mt16" style="font-size:20px;font-weight:700">${esc(p.display_name)}</div>
       <div class="muted" style="font-size:14px">${esc(p.email)}</div>
       <div class="mt8">${p.role === "organizer"
-        ? `<span class="badge" style="color:#F47B20;border-color:#F47B2066;background:#F47B2022">Organisator</span>`
-        : `<span class="badge" style="color:#D9DEE8;border-color:#22346099;background:#22346055">Speler</span>`}</div>
-      <button class="btn ghost sm mt16" onclick="openNameDialog()">Naam wijzigen</button>
+        ? `<span class="badge" style="color:#F47B20;border-color:#F47B2066;background:#F47B2022">Admin</span>`
+        : `<span class="badge" style="color:#D9DEE8;border-color:#22346099;background:#22346055">Player</span>`}</div>
+      <button class="btn ghost sm mt16" onclick="openNameDialog()">Change name</button>
     </div>
 
-    ${sectionHead("Kort overzicht")}
+    ${sectionHead("Quick overview")}
     <div class="grid">
-      ${statCard({ label: "Gespeeld", value: s?.matches_played ?? 0, ico: "darts" })}
-      ${statCard({ label: "Gewonnen", value: s?.matches_won ?? 0, ico: "trophy", color: "#2ECC71" })}
-      ${statCard({ label: "Gemiddelde", value: Number(s?.average_score ?? 0).toFixed(1), ico: "trend" })}
+      ${statCard({ label: "Played", value: s?.matches_played ?? 0, ico: "darts" })}
+      ${statCard({ label: "Won", value: s?.matches_won ?? 0, ico: "trophy", color: "#2ECC71" })}
+      ${statCard({ label: "Average", value: Number(s?.average_score ?? 0).toFixed(1), ico: "trend" })}
       ${statCard({ label: "180's", value: s?.count_180 ?? 0, ico: "star", color: "#F5B942" })}
     </div>
 
-    ${sectionHead("Meldingen")}
+    ${sectionHead("Notifications")}
     <div class="card">
-      <div class="row-sub">Pushmeldingen op dit toestel</div>
-      <p class="muted" style="font-size:12.5px;margin:8px 0 12px">Ontvang een melding zodra er een wedstrijd voor je is ingepland of een speelmoment wordt voorgesteld - ook als de app niet open staat. Op iPhone: zet de site eerst via Safari op je beginscherm (deel-icoon &rarr; Zet op beginscherm) voordat je dit inschakelt.</p>
-      <button class="btn ghost sm" id="enablePushBtn">Inschakelen op dit toestel</button>
+      <div class="row-sub">Push notifications on this device</div>
+      <p class="muted" style="font-size:12.5px;margin:8px 0 12px">Get notified as soon as a match is scheduled for you or a time is proposed - even when the app isn't open. On iPhone: first add the site to your home screen via Safari (share icon &rarr; Add to Home Screen) before enabling this.</p>
+      <button class="btn ghost sm" id="enablePushBtn">Enable on this device</button>
     </div>
 
-    ${sectionHead("League-indeling")}
+    ${sectionHead("League placement")}
     <div class="card">
       ${membership ? `
         ${infoRow("League", esc(membership.league.name))}
-        ${!membership.division ? `<p class="muted" style="font-size:13px;margin:-2px 0 0">Nog niet ingedeeld door de organisator.</p>` : ""}
-        <button class="btn ghost sm mt16" onclick="go('mijn-divisie')">Bekijk mijn divisie</button>
-      ` : `<p class="muted" style="font-size:13.5px;margin:0">Nog niet ingedeeld in een league.</p>`}
+        ${!membership.division ? `<p class="muted" style="font-size:13px;margin:-2px 0 0">Not placed by the admin yet.</p>` : ""}
+        <button class="btn ghost sm mt16" onclick="go('mijn-divisie')">View my division</button>
+      ` : `<p class="muted" style="font-size:13.5px;margin:0">Not placed in a league yet.</p>`}
     </div>
 
-    ${sectionHead("Spelersgegevens")}
+    ${sectionHead("Player details")}
     <div class="card">
-      <div class="row-sub">Naam</div>
+      <div class="row-sub">Name</div>
       <div class="row-title mt8">${esc(state.onboarding.first_name)} ${esc(state.onboarding.last_name)}</div>
       <div class="row-sub mt16">Platform</div>
       <div class="row-title mt8">${state.onboarding.platform === "scolia" ? "Scolia" : "DartCounter"} &middot; ${esc(state.onboarding.platform_nickname)}</div>
-      <div class="row-sub mt16">Gemiddelde (3 darts)</div>
+      <div class="row-sub mt16">Average (3 darts)</div>
       <div class="row-title mt8">${Number(state.onboarding.reported_average).toFixed(2)}</div>
-      <p class="muted" style="font-size:12.5px;margin:12px 0 0">Enkel zichtbaar voor de beheerder.</p>
-      <button class="btn ghost sm mt16" onclick="openOnboardingEditDialog()">Gegevens wijzigen</button>
+      <p class="muted" style="font-size:12.5px;margin:12px 0 0">Only visible to the admin.</p>
+      <button class="btn ghost sm mt16" onclick="openOnboardingEditDialog()">Change details</button>
     </div>
 
     <button class="btn ghost block mt24" onclick="signOut()">
-      <span style="width:18px;height:18px;display:block">${icon.logout}</span> Uitloggen
+      <span style="width:18px;height:18px;display:block">${icon.logout}</span> Log out
     </button>
   `);
 
@@ -3947,14 +3205,14 @@ async function viewProfile() {
   input.onchange = async () => {
     const file = input.files?.[0];
     if (!file) return;
-    if (file.size > 5 * 1024 * 1024) return toast("Kies een foto kleiner dan 5 MB.");
+    if (file.size > 5 * 1024 * 1024) return toast("Choose a photo smaller than 5 MB.");
     try {
-      toast("Foto uploaden...");
+      toast("Uploading photo...");
       const url = await db.uploadAvatar(p.id, file);
       await db.updateProfile(p.id, { avatar_url: url });
       state.profile = await db.myProfile(p.id);
       router();
-      toast("Foto gewijzigd");
+      toast("Photo changed");
     } catch (e) {
       toast(errText(e));
     }
@@ -3972,41 +3230,41 @@ async function viewOrganizer() {
     </button>`;
 
   setView(`
-    <h1>Beheer</h1>
-    <p class="sub">Het overzicht van je organisatie</p>
+    <h1>Admin</h1>
+    <p class="sub">The overview of your organization</p>
 
     <div class="grid">
-      ${statCard({ label: "Spelers", value: c.players, ico: "users" })}
-      ${statCard({ label: "Actieve leagues", value: c.leagues, ico: "league" })}
-      ${statCard({ label: "Actieve toernooien", value: c.tournaments, ico: "tournament" })}
-      ${statCard({ label: "Open wedstrijden", value: c.open, ico: "darts", color: "#F5B942" })}
+      ${statCard({ label: "Players", value: c.players, ico: "users" })}
+      ${statCard({ label: "Active leagues", value: c.leagues, ico: "league" })}
+      ${statCard({ label: "Active tournaments", value: c.tournaments, ico: "tournament" })}
+      ${statCard({ label: "Open matches", value: c.open, ico: "darts", color: "#F5B942" })}
     </div>
 
-    ${sectionHead("Snel aanmaken")}
+    ${sectionHead("Quick create")}
     <div class="chips">
       <button class="chip" onclick="openLeagueDialog()">${icon.plus} League</button>
-      <button class="chip" onclick="openTournamentDialog()">${icon.plus} Toernooi</button>
-      <button class="chip" onclick="openMatchDialog()">${icon.plus} Wedstrijd</button>
+      <button class="chip" onclick="openTournamentDialog()">${icon.plus} Tournament</button>
+      <button class="chip" onclick="openMatchDialog()">${icon.plus} Match</button>
     </div>
 
-    ${sectionHead("Beheren")}
-    ${tile("Spelers", "beheer/spelers", "users")}
+    ${sectionHead("Manage")}
+    ${tile("Players", "beheer/spelers", "users")}
     ${tile("Leagues", "beheer/leagues", "league")}
-    ${tile("Toernooien", "beheer/toernooien", "tournament")}
-    ${tile("Wedstrijden", "beheer/wedstrijden", "darts")}
-    ${tile("Prijzen", "beheer/prijzen", "trophy")}
-    ${tile("Instellingen", "beheer/instellingen", "settings")}
+    ${tile("Tournaments", "beheer/toernooien", "tournament")}
+    ${tile("Matches", "beheer/wedstrijden", "darts")}
+    ${tile("Prizes", "beheer/prijzen", "trophy")}
+    ${tile("Settings", "beheer/instellingen", "settings")}
 
-    ${sectionHead("Laatste uitslagen")}
-    ${results.length ? results.map(matchCard).join("") : emptyView("Nog geen uitslagen", "", "darts")}
+    ${sectionHead("Latest results")}
+    ${results.length ? results.map(matchCard).join("") : emptyView("No results yet", "", "darts")}
   `);
 }
 
 async function viewManagePlayers() {
   setView(`
-    <h1>Spelers</h1>
-    <p class="sub">Iedereen die een account heeft</p>
-    <div class="field"><input id="q" type="search" placeholder="Zoek op naam"></div>
+    <h1>Players</h1>
+    <p class="sub">Everyone who has an account</p>
+    <div class="field"><input id="q" type="search" placeholder="Search by name"></div>
     <div id="list">${loadingView()}</div>
   `);
 
@@ -4022,17 +3280,17 @@ async function viewManagePlayers() {
             <div class="row-main">
               <div class="row-title">${esc(p.display_name)}</div>
               <div class="row-sub">${p.stats
-                ? `Gem. ${Number(p.stats.average_score).toFixed(1)} · ${p.stats.matches_won}W ${p.stats.matches_lost}V`
+                ? `Avg ${Number(p.stats.average_score).toFixed(1)} · ${p.stats.matches_won}W ${p.stats.matches_lost}L`
                 : esc(p.email)}</div>
             </div>
             ${p.id === state.profile.id
-              ? `<span class="muted" style="font-size:12.5px">jij</span>`
+              ? `<span class="muted" style="font-size:12.5px">you</span>`
               : `<button class="btn ghost sm" onclick="toggleRole('${esc(p.id)}','${p.role === "organizer" ? "player" : "organizer"}')">
-                  ${p.role === "organizer" ? "Rol weghalen" : "Maak organisator"}
+                  ${p.role === "organizer" ? "Remove role" : "Make admin"}
                  </button>`}
           </div>
         </div>`).join("")
-        : emptyView("Geen spelers gevonden", "Pas je zoekterm aan.", "users");
+        : emptyView("No players found", "Adjust your search term.", "users");
     } catch (e) { list.innerHTML = errorView(e); }
   };
 
@@ -4048,7 +3306,7 @@ async function viewManagePlayers() {
 async function toggleRole(playerId, role) {
   try {
     await db.setRole(playerId, role);
-    toast(role === "organizer" ? "Speler is nu organisator" : "Rol weggehaald");
+    toast(role === "organizer" ? "Player is now admin" : "Role removed");
     viewManagePlayers();
   } catch (e) { toast(errText(e)); }
 }
@@ -4057,24 +3315,24 @@ async function viewManageLeagues() {
   const leagues = await db.leagues();
   setView(`
     <h1>Leagues</h1>
-    <p class="sub">Aanmaken en van status wisselen</p>
-    <button class="btn mt8" onclick="openLeagueDialog()">${icon.plus} Nieuwe league</button>
+    <p class="sub">Create and switch status</p>
+    <button class="btn mt8" onclick="openLeagueDialog()">${icon.plus} New league</button>
     <div class="mt24">
       ${leagues.length ? leagues.map((l) => `
         ${leagueCard(l, true)}
         <div class="chips" style="margin:-4px 0 8px">
           ${["draft", "active", "finished"].filter((s) => s !== l.status).map((s) => `
             <button class="chip" onclick="changeLeagueStatus('${esc(l.id)}','${s}')">
-              Zet op ${esc(STATUS[s].label.toLowerCase())}
+              Set to ${esc(STATUS[s].label.toLowerCase())}
             </button>`).join("")}
         </div>
         ${l.status === "draft" ? `
           <div style="margin:0 0 20px">
             <button class="btn ghost sm" style="color:#E74C3C;border-color:#E74C3C66" onclick="confirmDeleteLeague('${esc(l.id)}','${esc(l.name)}')">
-              Verwijderen
+              Delete
             </button>
           </div>` : `<div style="margin-bottom:14px"></div>`}`).join("")
-        : emptyView("Nog geen leagues", "Maak je eerste league aan.", "league")}
+        : emptyView("No leagues yet", "Create your first league.", "league")}
     </div>
   `);
 }
@@ -4082,20 +3340,20 @@ async function viewManageLeagues() {
 async function changeLeagueStatus(id, status) {
   try {
     await db.setLeagueStatus(id, status);
-    toast("Status aangepast");
+    toast("Status updated");
     viewManageLeagues();
   } catch (e) { toast(errText(e)); }
 }
 
 function confirmDeleteLeague(id, name) {
-  openModal("Concept-league verwijderen", `
+  openModal("Delete draft league", `
     <p style="margin:0 0 4px">Weet je zeker dat je <strong style="color:var(--white)">${esc(name)}</strong> wilt verwijderen?</p>
-    <p class="muted" style="font-size:13px;margin:0">Deze actie kan niet ongedaan worden gemaakt.</p>`,
+    <p class="muted" style="font-size:13px;margin:0">This action cannot be undone.</p>`,
     async () => {
       await db.deleteLeague(id);
-      toast("League verwijderd");
+      toast("League deleted");
       viewManageLeagues();
-    }, "Verwijderen", true);
+    }, "Delete", true);
 }
 
 async function viewManageTournaments() {
@@ -4111,15 +3369,15 @@ async function viewManageTournaments() {
     }
   }
   setView(`
-    <h1>Toernooien</h1>
-    <p class="sub">Aanmaken en inzien</p>
-    <button class="btn mt8" onclick="openTournamentDialog()">${icon.plus} Nieuw toernooi</button>
+    <h1>Tournaments</h1>
+    <p class="sub">Create and view</p>
+    <button class="btn mt8" onclick="openTournamentDialog()">${icon.plus} New tournament</button>
     <div class="tournament-grid mt24">
       ${list.length ? list.map((t) => tournamentCard(t, {
           entryCount: countByTournament[t.id] || 0,
           paidCount: paidCountByTournament[t.id] || 0,
         })).join("")
-        : emptyView("Nog geen toernooien", "Maak je eerste toernooi aan.", "tournament")}
+        : emptyView("Nog geen toernooien", "Create your first tournament.", "tournament")}
     </div>
   `);
 }
@@ -4128,41 +3386,41 @@ async function viewManageMatches() {
   const matches = await db.allMatches();
   const pending = matches.filter((m) => m.status === "pending_confirmation");
   setView(`
-    <h1>Wedstrijden</h1>
-    <p class="sub">Inplannen en uitslagen bevestigen</p>
-    <button class="btn mt8" onclick="openMatchDialog()">${icon.plus} Nieuwe wedstrijd</button>
+    <h1>Matches</h1>
+    <p class="sub">Schedule and confirm results</p>
+    <button class="btn mt8" onclick="openMatchDialog()">${icon.plus} New match</button>
 
-    ${pending.length ? `${sectionHead("Wacht op bevestiging")}
+    ${pending.length ? `${sectionHead("Awaiting confirmation")}
       <p class="muted" style="font-size:13px;margin:-4px 0 14px">
-        Spelers bevestigen dit normaal gesproken zelf bij elkaar. Grijp hier alleen in als dat vastloopt.
+        Players normally confirm this between themselves. Only step in here if that gets stuck.
       </p>
       ${pending.map((m) => `
         ${matchCard(m)}
-        <button class="btn sm" style="margin:-4px 0 14px" onclick="openConfirmDialog('${esc(m.id)}')">Uitslag controleren</button>
+        <button class="btn sm" style="margin:-4px 0 14px" onclick="openConfirmDialog('${esc(m.id)}')">Check result</button>
       `).join("")}` : ""}
 
-    ${sectionHead("Alle wedstrijden")}
+    ${sectionHead("All matches")}
     ${matches.length ? matches.map((m) => matchCard(m)).join("")
-      : emptyView("Nog geen wedstrijden", "Plan je eerste wedstrijd in.", "darts")}
+      : emptyView("No matches yet", "Schedule your first match.", "darts")}
   `);
 }
 
 async function viewSettings() {
   setView(`
-    <h1>Instellingen</h1>
-    <p class="sub">Voorkeuren voor je organisatie</p>
+    <h1>Settings</h1>
+    <p class="sub">Preferences for your organization</p>
     <div class="card">
       <div class="row">
         <div class="row-ico">${icon.settings}</div>
         <div class="row-main">
-          <div class="row-title">Nog niets in te stellen</div>
-          <div class="row-sub">Standaard speltype, aantal legs en notificaties komen hier.</div>
+          <div class="row-title">Nothing to configure yet</div>
+          <div class="row-sub">Default game type, number of legs and notifications will go here.</div>
         </div>
       </div>
     </div>
     <div class="card">
       <div class="row-title">Je database</div>
-      <div class="row-sub mt8">Spelers toevoegen doe je door ze te laten registreren op deze site.
+      <div class="row-sub mt8">Players toevoegen doe je by ze te laten registreren op deze site.
         Daarna kun je ze hier een rol geven.</div>
     </div>
   `);
@@ -4172,7 +3430,7 @@ async function viewSettings() {
    Dialogen
    ------------------------------------------------------------------------- */
 
-function openModal(title, bodyHtml, onSubmit, submitLabel = "Opslaan", danger = false) {
+function openModal(title, bodyHtml, onSubmit, submitLabel = "Save", danger = false) {
   const bg = document.createElement("div");
   bg.className = "modal-bg";
   bg.innerHTML = `
@@ -4181,7 +3439,7 @@ function openModal(title, bodyHtml, onSubmit, submitLabel = "Opslaan", danger = 
       <div id="modalError"></div>
       <form id="modalForm">${bodyHtml}
         <div class="modal-actions">
-          <button type="button" class="btn ghost" id="cancel">Annuleren</button>
+          <button type="button" class="btn ghost" id="cancel">Cancel</button>
           <button type="submit" class="btn${danger ? " danger" : ""}" id="ok">${esc(submitLabel)}</button>
         </div>
       </form>
@@ -4211,25 +3469,25 @@ function openModal(title, bodyHtml, onSubmit, submitLabel = "Opslaan", danger = 
 }
 
 function openNameDialog() {
-  openModal("Naam wijzigen", `
+  openModal("Change name", `
     <div class="field">
-      <label for="dn">Naam</label>
+      <label for="dn">Name</label>
       <input id="dn" value="${esc(state.profile.display_name)}" required>
     </div>`, async (bg) => {
     const name = bg.querySelector("#dn").value.trim();
-    if (!name) throw new Error("Vul een naam in.");
+    if (!name) throw new Error("Enter a name.");
     await db.updateProfile(state.profile.id, { display_name: name });
     state.profile = await db.myProfile(state.profile.id);
-    toast("Naam gewijzigd");
+    toast("Name changed");
     router();
   });
 }
 
 function openOnboardingEditDialog() {
   const o = state.onboarding;
-  openModal("Spelersgegevens wijzigen", `
-    <div class="field"><label for="eob-first">Voornaam</label><input id="eob-first" value="${esc(o.first_name)}" required></div>
-    <div class="field"><label for="eob-last">Achternaam</label><input id="eob-last" value="${esc(o.last_name)}" required></div>
+  openModal("Change player details", `
+    <div class="field"><label for="eob-first">First name</label><input id="eob-first" value="${esc(o.first_name)}" required></div>
+    <div class="field"><label for="eob-last">Last name</label><input id="eob-last" value="${esc(o.last_name)}" required></div>
     <div class="field"><label for="eob-platform">Platform</label>
       <select id="eob-platform">
         <option value="scolia" ${o.platform === "scolia" ? "selected" : ""}>Scolia</option>
@@ -4238,17 +3496,17 @@ function openOnboardingEditDialog() {
     </div>
     <div class="field"><label for="eob-nick">Nickname (Scolia / DartCounter)</label>
       <input id="eob-nick" value="${esc(o.platform_nickname)}" required></div>
-    <div class="field"><label for="eob-avg">Gemiddelde (3 darts)</label>
+    <div class="field"><label for="eob-avg">Average (3 darts)</label>
       <input id="eob-avg" type="number" step="0.01" min="0" max="180" value="${esc(o.reported_average)}" required></div>`,
     async (bg) => {
       const firstName = bg.querySelector("#eob-first").value.trim();
       const lastName = bg.querySelector("#eob-last").value.trim();
       const nickname = bg.querySelector("#eob-nick").value.trim();
       const average = bg.querySelector("#eob-avg").value;
-      if (!firstName || !lastName) throw new Error("Vul je voor- en achternaam in.");
-      if (!nickname) throw new Error("Vul je nickname in.");
+      if (!firstName || !lastName) throw new Error("Enter your first and last name.");
+      if (!nickname) throw new Error("Enter your nickname.");
       if (average === "" || isNaN(Number(average)) || Number(average) < 0) {
-        throw new Error("Vul een geldig gemiddelde in.");
+        throw new Error("Enter a valid average.");
       }
       await db.saveOnboarding(state.profile.id, {
         first_name: firstName,
@@ -4258,7 +3516,7 @@ function openOnboardingEditDialog() {
         reported_average: Number(average),
       });
       state.onboarding = await db.myOnboarding(state.profile.id);
-      toast("Spelersgegevens opgeslagen");
+      toast("Player details saved");
       router();
     });
 }
@@ -4266,14 +3524,14 @@ function openOnboardingEditDialog() {
 // Een league is altijd één divisie (max 12 spelers); meerdere niveaus maak
 // je als aparte leagues (bv. "1e divisie", "2e divisie").
 function openLeagueDialog() {
-  openModal("Nieuwe league", `
-    <div class="field"><label for="ln">Naam</label><input id="ln" required placeholder="Bijv. 1e divisie"></div>
-    <div class="field"><label for="ls">Seizoen</label><input id="ls" placeholder="Bijv. 2026"></div>
-    <div class="field"><label for="lg">Speltype</label>
+  openModal("New league", `
+    <div class="field"><label for="ln">Name</label><input id="ln" required placeholder="E.g. 1st division"></div>
+    <div class="field"><label for="ls">Season</label><input id="ls" placeholder="E.g. 2026"></div>
+    <div class="field"><label for="lg">Game type</label>
       <select id="lg"><option value="501">501</option><option value="301">301</option></select>
     </div>`, async (bg) => {
     const name = bg.querySelector("#ln").value.trim();
-    if (!name) throw new Error("Vul een naam in.");
+    if (!name) throw new Error("Enter a name.");
     const league = await db.createLeague({
       name,
       season: bg.querySelector("#ls").value.trim() || null,
@@ -4282,28 +3540,28 @@ function openLeagueDialog() {
       status: "draft",
       created_by: state.profile.id,
     });
-    toast("League aangemaakt. Voeg spelers toe en deel ze in.");
+    toast("League created. Add players and assign them.");
     go("league/" + league.id);
-  }, "League aanmaken");
+  }, "Create league");
 }
 
 // Zonder `existing` = nieuw toernooi (concept, organisator publiceert later
-// door de status te wijzigen); met `existing` = bewerken van dat toernooi.
+// by de status te wijzigen); met `existing` = bewerken van dat toernooi.
 function openTournamentDialog(existing) {
   const t = existing || {};
   const isEdit = !!existing;
 
-  openModal(isEdit ? "Toernooi bewerken" : "Nieuw toernooi", `
-    <div class="field"><label for="tn">Naam</label><input id="tn" required value="${esc(t.name || "")}" placeholder="Bijv. Clubkampioenschap"></div>
+  openModal(isEdit ? "Edit tournament" : "New tournament", `
+    <div class="field"><label for="tn">Name</label><input id="tn" required value="${esc(t.name || "")}" placeholder="E.g. Club championship"></div>
     <div class="field-pair">
-      <div><div class="field-pair-label">Opzet</div>
+      <div><div class="field-pair-label">Format</div>
         <select id="tt">
-          <option value="knockout" ${!t.tournament_type || t.tournament_type === "knockout" ? "selected" : ""}>Knock-out</option>
-          <option value="groups" ${t.tournament_type === "groups" ? "selected" : ""}>Poules</option>
-          <option value="groups_and_knockout" ${t.tournament_type === "groups_and_knockout" ? "selected" : ""}>Poules + knock-out</option>
+          <option value="knockout" ${!t.tournament_type || t.tournament_type === "knockout" ? "selected" : ""}>Knockout</option>
+          <option value="groups" ${t.tournament_type === "groups" ? "selected" : ""}>Groups</option>
+          <option value="groups_and_knockout" ${t.tournament_type === "groups_and_knockout" ? "selected" : ""}>Groups + knockout</option>
         </select>
       </div>
-      <div><div class="field-pair-label">Speltype</div>
+      <div><div class="field-pair-label">Game type</div>
         <select id="tg">
           <option value="501" ${t.game_type !== "301" ? "selected" : ""}>501</option>
           <option value="301" ${t.game_type === "301" ? "selected" : ""}>301</option>
@@ -4311,14 +3569,14 @@ function openTournamentDialog(existing) {
       </div>
     </div>
     <div class="field-pair">
-      <div><div class="field-pair-label">Speelwijze</div>
+      <div><div class="field-pair-label">Play mode</div>
         <select id="tp">
-          <option value="">Onbekend</option>
+          <option value="">Unknown</option>
           <option value="online" ${t.platform === "online" ? "selected" : ""}>Online</option>
           <option value="offline" ${t.platform === "offline" ? "selected" : ""}>Offline</option>
         </select>
       </div>
-      <div><div class="field-pair-label">Scoresysteem</div>
+      <div><div class="field-pair-label">Scoring system</div>
         <select id="tsp">
           <option value="">-</option>
           <option value="scolia" ${t.scoring_platform === "scolia" ? "selected" : ""}>Scolia</option>
@@ -4326,78 +3584,78 @@ function openTournamentDialog(existing) {
         </select>
       </div>
     </div>
-    <div class="field"><label for="td">Startdatum en -tijd</label><input id="td" type="datetime-local" value="${t.start_at ? fmtDatetimeLocal(t.start_at) : ""}"></div>
+    <div class="field"><label for="td">Start date and time</label><input id="td" type="datetime-local" value="${t.start_at ? fmtDatetimeLocal(t.start_at) : ""}"></div>
     <div class="field-pair">
-      <div><div class="field-pair-label">Inschrijving opent</div><input id="tro" type="datetime-local" value="${t.registration_opens_at ? fmtDatetimeLocal(t.registration_opens_at) : ""}"></div>
-      <div><div class="field-pair-label">Inschrijving sluit</div><input id="trc" type="datetime-local" value="${t.registration_closes_at ? fmtDatetimeLocal(t.registration_closes_at) : ""}"></div>
+      <div><div class="field-pair-label">Registration opens</div><input id="tro" type="datetime-local" value="${t.registration_opens_at ? fmtDatetimeLocal(t.registration_opens_at) : ""}"></div>
+      <div><div class="field-pair-label">Registration closes</div><input id="trc" type="datetime-local" value="${t.registration_closes_at ? fmtDatetimeLocal(t.registration_closes_at) : ""}"></div>
     </div>
-    <div class="field"><label for="tmax">Maximum aantal spelers <span class="muted" style="font-weight:400">(optioneel)</span></label><input id="tmax" type="number" min="2" value="${t.max_players || ""}"></div>
+    <div class="field"><label for="tmax">Maximum number of players <span class="muted" style="font-weight:400">(optional)</span></label><input id="tmax" type="number" min="2" value="${t.max_players || ""}"></div>
     <div class="field"><label for="tstatus">Status</label>
       <select id="tstatus">
-        <option value="draft" ${!t.status || t.status === "draft" ? "selected" : ""}>Concept (nog niet zichtbaar voor spelers)</option>
-        <option value="active" ${t.status === "active" ? "selected" : ""}>Actief</option>
-        <option value="finished" ${t.status === "finished" ? "selected" : ""}>Afgerond</option>
+        <option value="draft" ${!t.status || t.status === "draft" ? "selected" : ""}>Draft (not visible to players yet)</option>
+        <option value="active" ${t.status === "active" ? "selected" : ""}>Active</option>
+        <option value="finished" ${t.status === "finished" ? "selected" : ""}>Finished</option>
       </select>
     </div>
     <div class="field-pair">
-      <div><div class="field-pair-label">Inschrijfgeld (€) <span class="muted" style="font-weight:400">(optioneel)</span></div>
+      <div><div class="field-pair-label">Entry fee (€) <span class="muted" style="font-weight:400">(optional)</span></div>
         <input id="tfee" type="number" min="0" step="0.01" value="${t.entry_fee ?? ""}" onchange="togglePaidFields(this.value)"></div>
-      <div><div class="field-pair-label">Minimum aantal spelers <span class="muted" style="font-weight:400">(optioneel)</span></div>
+      <div><div class="field-pair-label">Minimum number of players <span class="muted" style="font-weight:400">(optional)</span></div>
         <input id="tmin" type="number" min="1" value="${t.min_players ?? ""}"></div>
     </div>
     <div id="paidFields" style="display:${Number(t.entry_fee) > 0 ? "block" : "none"}">
-      <div class="field"><label for="tpdh">Betaaldeadline <span class="muted" style="font-weight:400">(uren na inschrijving, optioneel)</span></label><input id="tpdh" type="number" min="1" value="${t.payment_deadline_hours ?? ""}"></div>
-      <div class="field"><label for="tpinstr">Betaalinstructies <span class="muted" style="font-weight:400">(bijv. Tikkie-link/telefoonnummer)</span></label><textarea id="tpinstr" rows="2" placeholder="Bijv. Stuur € 10 via Tikkie naar 06-12345678">${esc(t.payment_instructions || "")}</textarea></div>
-      <div class="field"><label for="trefpolicy">Annuleringsvoorwaarden <span class="muted" style="font-weight:400">(optioneel)</span></label><textarea id="trefpolicy" rows="2" placeholder="Bijv. Volledige terugbetaling tot 24 uur voor aanvang">${esc(t.refund_policy || "")}</textarea></div>
-      <div class="field"><label for="trefcutoff">Terugbetaling mogelijk tot <span class="muted" style="font-weight:400">(uren voor aanvang, optioneel)</span></label><input id="trefcutoff" type="number" min="0" value="${t.refund_cutoff_hours ?? ""}"></div>
+      <div class="field"><label for="tpdh">Payment deadline <span class="muted" style="font-weight:400">(hours after registering, optional)</span></label><input id="tpdh" type="number" min="1" value="${t.payment_deadline_hours ?? ""}"></div>
+      <div class="field"><label for="tpinstr">Payment instructions <span class="muted" style="font-weight:400">(e.g. Tikkie link/phone number)</span></label><textarea id="tpinstr" rows="2" placeholder="E.g. Send €10 via Tikkie to 06-12345678">${esc(t.payment_instructions || "")}</textarea></div>
+      <div class="field"><label for="trefpolicy">Cancellation terms <span class="muted" style="font-weight:400">(optional)</span></label><textarea id="trefpolicy" rows="2" placeholder="E.g. Full refund up to 24 hours before the start">${esc(t.refund_policy || "")}</textarea></div>
+      <div class="field"><label for="trefcutoff">Refund possible up to <span class="muted" style="font-weight:400">(hours before the start, optional)</span></label><input id="trefcutoff" type="number" min="0" value="${t.refund_cutoff_hours ?? ""}"></div>
     </div>
-    <div class="field"><label for="tprize">Prijs</label>
+    <div class="field"><label for="tprize">Prize</label>
       <select id="tprize" onchange="togglePrizeFields(this.value)">
-        <option value="none" ${!t.prize_type || t.prize_type === "none" ? "selected" : ""}>Geen prijs</option>
-        <option value="money" ${t.prize_type === "money" ? "selected" : ""}>Prijzengeld</option>
-        <option value="physical" ${t.prize_type === "physical" ? "selected" : ""}>Fysieke prijs</option>
-        <option value="unknown" ${t.prize_type === "unknown" ? "selected" : ""}>Nog niet bekend</option>
+        <option value="none" ${!t.prize_type || t.prize_type === "none" ? "selected" : ""}>No prize</option>
+        <option value="money" ${t.prize_type === "money" ? "selected" : ""}>Prize money</option>
+        <option value="physical" ${t.prize_type === "physical" ? "selected" : ""}>Physical prize</option>
+        <option value="unknown" ${t.prize_type === "unknown" ? "selected" : ""}>Not known yet</option>
       </select>
     </div>
     <div id="prizeMoneyFields" style="display:${t.prize_type === "money" ? "block" : "none"}">
-      <div class="field"><label for="tpooltype">Prijzenpot</label>
+      <div class="field"><label for="tpooltype">Prize pool</label>
         <select id="tpooltype" onchange="togglePoolType(this.value)">
-          <option value="" ${!t.prize_pool_type ? "selected" : ""}>Vast bedrag, geen verdeling</option>
-          <option value="fixed" ${t.prize_pool_type === "fixed" ? "selected" : ""}>Vast bedrag met verdeling</option>
-          <option value="entry_fee_based" ${t.prize_pool_type === "entry_fee_based" ? "selected" : ""}>Berekend uit inschrijfgeld x betaalde deelnemers</option>
+          <option value="" ${!t.prize_pool_type ? "selected" : ""}>Fixed amount, no distribution</option>
+          <option value="fixed" ${t.prize_pool_type === "fixed" ? "selected" : ""}>Fixed amount with distribution</option>
+          <option value="entry_fee_based" ${t.prize_pool_type === "entry_fee_based" ? "selected" : ""}>Calculated from entry fee × paid entrants</option>
         </select>
       </div>
       <div id="tamountField" class="field" style="display:${t.prize_pool_type === "entry_fee_based" ? "none" : "block"}">
-        <label for="tamount">Bedrag (€) <span class="muted" style="font-weight:400">(optioneel)</span></label>
+        <label for="tamount">Amount (€) <span class="muted" style="font-weight:400">(optional)</span></label>
         <input id="tamount" type="number" min="0" step="0.01" value="${t.prize_amount ?? ""}">
       </div>
       <div id="distField" style="display:${t.prize_pool_type ? "block" : "none"}">
-        <div class="field-pair-label" style="margin-bottom:6px">Prijsverdeling per plaatsing <span class="muted" style="font-weight:400">(optioneel)</span></div>
+        <div class="field-pair-label" style="margin-bottom:6px">Prize distribution per placement <span class="muted" style="font-weight:400">(optional)</span></div>
         <div id="distRows">${renderDistRowsHtml(t.prize_distribution)}</div>
-        <button type="button" class="btn ghost sm" onclick="addPrizeDistRow()">${icon.plus} Plaats toevoegen</button>
+        <button type="button" class="btn ghost sm" onclick="addPrizeDistRow()">${icon.plus} Add placement</button>
       </div>
     </div>
     <div id="prizePhysicalFields" style="display:${t.prize_type === "physical" ? "block" : "none"}">
-      <div class="field"><label for="tpdesc">Omschrijving</label><input id="tpdesc" value="${esc(t.prize_description || "")}" placeholder="Bijv. Gepersonaliseerd dartshirt"></div>
+      <div class="field"><label for="tpdesc">Description</label><input id="tpdesc" value="${esc(t.prize_description || "")}" placeholder="E.g. Personalized darts shirt"></div>
     </div>
-    <div class="field"><label for="tdesc">Toernooiregels <span class="muted" style="font-weight:400">(optioneel)</span></label><textarea id="tdesc" rows="3" placeholder="Regels of extra info voor deelnemers">${esc(t.description || "")}</textarea></div>`,
+    <div class="field"><label for="tdesc">Tournament rules <span class="muted" style="font-weight:400">(optional)</span></label><textarea id="tdesc" rows="3" placeholder="Rules or extra info for entrants">${esc(t.description || "")}</textarea></div>`,
     async (bg) => {
       const name = bg.querySelector("#tn").value.trim();
-      if (!name) throw new Error("Vul een naam in.");
+      if (!name) throw new Error("Enter a name.");
       const d = bg.querySelector("#td").value;
       const ro = bg.querySelector("#tro").value;
       const rc = bg.querySelector("#trc").value;
       if (ro && rc && new Date(ro) >= new Date(rc)) {
-        throw new Error("Inschrijving moet sluiten na het openen.");
+        throw new Error("Registration must close after it opens.");
       }
       const maxPlayers = bg.querySelector("#tmax").value;
       const minPlayers = bg.querySelector("#tmin").value;
       if (maxPlayers && minPlayers && Number(minPlayers) > Number(maxPlayers)) {
-        throw new Error("Minimum aantal spelers kan niet hoger zijn dan het maximum.");
+        throw new Error("Minimum number of players cannot be higher than the maximum.");
       }
       const entryFeeRaw = bg.querySelector("#tfee").value;
       const entryFee = entryFeeRaw !== "" ? Number(entryFeeRaw) : null;
-      if (entryFee != null && entryFee < 0) throw new Error("Inschrijfgeld mag niet negatief zijn.");
+      if (entryFee != null && entryFee < 0) throw new Error("Entry fee cannot be negative.");
       const isPaid = entryFee != null && entryFee > 0;
 
       const prizeType = bg.querySelector("#tprize").value;
@@ -4412,13 +3670,13 @@ function openTournamentDialog(existing) {
 
       if (distRows.length) {
         const pctSum = distRows.filter((r) => r.type === "percentage").reduce((s, r) => s + r.value, 0);
-        if (pctSum > 100) throw new Error("De percentages in de prijsverdeling mogen samen niet meer dan 100% zijn.");
+        if (pctSum > 100) throw new Error("The percentages in the prize distribution cannot add up to more than 100%.");
         if (poolType === "entry_fee_based" && distRows.some((r) => r.type === "amount")) {
-          throw new Error("Bij een pot op basis van inschrijfgeld zijn alleen percentages toegestaan - het totaalbedrag staat pas na afloop vast.");
+          throw new Error("For a pool based on entry fees, only percentages are allowed - the total amount is only final once the tournament ends.");
         }
         if (poolType === "fixed" && prizeAmount != null) {
           const amtSum = distRows.filter((r) => r.type === "amount").reduce((s, r) => s + r.value, 0);
-          if (amtSum > prizeAmount) throw new Error("De vaste bedragen in de prijsverdeling zijn hoger dan de totale pot.");
+          if (amtSum > prizeAmount) throw new Error("The fixed amounts in the prize distribution exceed the total pool.");
         }
       }
 
@@ -4449,7 +3707,7 @@ function openTournamentDialog(existing) {
       };
       if (isEdit) {
         await db.updateTournament(t.id, fields);
-        toast("Toernooi bijgewerkt");
+        toast("Tournament updated");
         router();
       } else {
         const created = await db.createTournament({
@@ -4457,10 +3715,10 @@ function openTournamentDialog(existing) {
           match_format: "best_of_legs",
           created_by: state.profile.id,
         });
-        toast("Toernooi aangemaakt");
+        toast("Tournament created");
         go("toernooien/" + created.id);
       }
-    }, isEdit ? "Wijzigingen opslaan" : "Toernooi aanmaken");
+    }, isEdit ? "Save changes" : "Create tournament");
 }
 
 function togglePrizeFields(prizeType) {
@@ -4487,11 +3745,11 @@ function distRowHtml(type, value) {
     <div class="dist-row" style="display:flex;gap:8px;align-items:flex-end;margin-bottom:8px">
       <div style="flex:1"><div class="field-pair-label">Type</div>
         <select class="dist-type">
-          <option value="percentage" ${type !== "amount" ? "selected" : ""}>% van de pot</option>
-          <option value="amount" ${type === "amount" ? "selected" : ""}>Vast bedrag (€)</option>
+          <option value="percentage" ${type !== "amount" ? "selected" : ""}>% of the pool</option>
+          <option value="amount" ${type === "amount" ? "selected" : ""}>Fixed amount (€)</option>
         </select>
       </div>
-      <div style="flex:1"><div class="field-pair-label">Waarde</div>
+      <div style="flex:1"><div class="field-pair-label">Value</div>
         <input class="dist-value" type="number" min="0" step="0.01" value="${value ?? ""}">
       </div>
       <button type="button" class="btn ghost sm" onclick="this.closest('.dist-row').remove()">✕</button>
@@ -4510,7 +3768,7 @@ function addPrizeDistRow() {
 async function openEditTournamentDialog(id) {
   try {
     const t = await db.tournament(id);
-    if (!t) return toast("Toernooi niet gevonden.");
+    if (!t) return toast("Tournament not found.");
     openTournamentDialog(t);
   } catch (e) { toast(errText(e)); }
 }
@@ -4518,7 +3776,7 @@ async function openEditTournamentDialog(id) {
 async function registerForTournament(id) {
   try {
     await db.registerForTournament(id);
-    toast("Je bent ingeschreven!");
+    toast("You're registered!");
     router();
   } catch (e) { toast(errText(e)); }
 }
@@ -4526,120 +3784,120 @@ async function registerForTournament(id) {
 async function withdrawFromTournament(id) {
   try {
     await db.withdrawFromTournament(id);
-    toast("Je bent uitgeschreven.");
+    toast("You've withdrawn.");
     router();
   } catch (e) { toast(errText(e)); }
 }
 
 function openSubmitPaymentDialog(entryId) {
-  openModal("Betaling melden", `
-    <p class="muted" style="font-size:13px;margin:0 0 12px">Meld dit pas nadat je het bedrag daadwerkelijk via Tikkie hebt overgemaakt. De organisator controleert dit voordat je inschrijving definitief wordt.</p>
-    <div class="field"><label for="spr">Referentie <span class="muted" style="font-weight:400">(optioneel, bijv. Tikkie-omschrijving)</span></label><input id="spr" placeholder="Bijv. TIKKIE-123"></div>`,
+  openModal("Report payment", `
+    <p class="muted" style="font-size:13px;margin:0 0 12px">Only report this after you've actually transferred the amount via Tikkie. The admin will check this before your registration becomes final.</p>
+    <div class="field"><label for="spr">Reference <span class="muted" style="font-weight:400">(optional, e.g. Tikkie description)</span></label><input id="spr" placeholder="E.g. TIKKIE-123"></div>`,
     async (bg) => {
       const ref = bg.querySelector("#spr").value.trim() || null;
       await db.submitTournamentPayment(entryId, ref);
-      toast("Betaling gemeld. De organisator controleert dit.");
+      toast("Payment reported. The admin will check this.");
       router();
-    }, "Ik heb betaald");
+    }, "I've paid");
 }
 
 function openConfirmPaymentDialog(entryId, defaultAmount, currency) {
-  openModal("Betaling bevestigen", `
-    <p class="muted" style="font-size:13px;margin:0 0 12px">Bevestig pas nadat je het bedrag daadwerkelijk in je eigen Tikkie-overzicht ziet staan.</p>
-    <div class="field"><label for="cpa">Ontvangen bedrag (${esc(currency || "EUR")})</label><input id="cpa" type="number" min="0" step="0.01" value="${defaultAmount ?? ""}" required></div>`,
+  openModal("Confirm payment", `
+    <p class="muted" style="font-size:13px;margin:0 0 12px">Only confirm after you actually see the amount in your own Tikkie overview.</p>
+    <div class="field"><label for="cpa">Amount received (${esc(currency || "EUR")})</label><input id="cpa" type="number" min="0" step="0.01" value="${defaultAmount ?? ""}" required></div>`,
     async (bg) => {
       const amount = Number(bg.querySelector("#cpa").value);
-      if (bg.querySelector("#cpa").value === "" || isNaN(amount) || amount < 0) throw new Error("Vul een geldig bedrag in.");
+      if (bg.querySelector("#cpa").value === "" || isNaN(amount) || amount < 0) throw new Error("Enter a valid amount.");
       await db.confirmTournamentPayment(entryId, amount);
-      toast("Betaling bevestigd.");
+      toast("Payment confirmed.");
       router();
-    }, "Bevestigen");
+    }, "Confirm");
 }
 
 function openRejectPaymentDialog(entryId) {
-  openModal("Betaling afwijzen", `
-    <div class="field"><label for="rpr">Reden <span class="muted" style="font-weight:400">(optioneel, wordt getoond aan de speler)</span></label><input id="rpr" placeholder="Bijv. bedrag niet ontvangen"></div>`,
+  openModal("Reject payment", `
+    <div class="field"><label for="rpr">Reason <span class="muted" style="font-weight:400">(optional, shown to the player)</span></label><input id="rpr" placeholder="E.g. amount not received"></div>`,
     async (bg) => {
       const reason = bg.querySelector("#rpr").value.trim() || null;
       await db.rejectTournamentPayment(entryId, reason);
-      toast("Betaling afgewezen. De plek is vrijgegeven.");
+      toast("Payment rejected. The spot has been released.");
       router();
-    }, "Afwijzen", true);
+    }, "Reject", true);
 }
 
 function openRefundConfirm(entry, currency) {
   if (!entry) return;
   const name = entry.player?.display_name || "deze speler";
   const amount = entry.amount_paid ?? 0;
-  openModal("Terugbetaling registreren", `
-    <p style="margin:0 0 4px">Bevestig dat je <strong style="color:var(--white)">${esc(fmtMoney(amount, currency))}</strong> hebt teruggestort aan <strong style="color:var(--white)">${esc(name)}</strong> via Tikkie.</p>
-    <p class="muted" style="font-size:13px;margin:0">Dit registreert alleen dat de terugbetaling is gedaan - de app maakt zelf geen geld over.</p>`,
+  openModal("Register refund", `
+    <p style="margin:0 0 4px">Confirm that you <strong style="color:var(--white)">${esc(fmtMoney(amount, currency))}</strong> have refunded <strong style="color:var(--white)">${esc(name)}</strong> via Tikkie.</p>
+    <p class="muted" style="font-size:13px;margin:0">This only records that the refund was made - the app doesn't transfer money itself.</p>`,
     async () => {
       await db.refundTournamentEntry(entry.id);
-      toast("Terugbetaling geregistreerd.");
+      toast("Refund registered.");
       router();
-    }, "Terugbetaling registreren");
+    }, "Register refund");
 }
 
 function openSetPayoutDialog(tournamentId, entries) {
   const opts = entries.map((e) => `<option value="${esc(e.player_id)}">${esc(e.player?.display_name || "?")}</option>`).join("");
-  openModal("Uitbetaling toevoegen", `
-    <div class="field"><label for="poPlace">Plaatsing</label><input id="poPlace" type="number" min="1" value="1" required></div>
-    <div class="field"><label for="poPlayer">Speler</label><select id="poPlayer">${opts}</select></div>
-    <div class="field"><label for="poAmount">Bedrag (€)</label><input id="poAmount" type="number" min="0" step="0.01" required></div>`,
+  openModal("Add payout", `
+    <div class="field"><label for="poPlace">Placement</label><input id="poPlace" type="number" min="1" value="1" required></div>
+    <div class="field"><label for="poPlayer">Player</label><select id="poPlayer">${opts}</select></div>
+    <div class="field"><label for="poAmount">Amount (€)</label><input id="poAmount" type="number" min="0" step="0.01" required></div>`,
     async (bg) => {
       const placement = Number(bg.querySelector("#poPlace").value);
       const playerId = bg.querySelector("#poPlayer").value;
       const amount = Number(bg.querySelector("#poAmount").value);
-      if (!placement || placement < 1) throw new Error("Vul een geldige plaatsing in.");
-      if (!playerId) throw new Error("Kies een speler.");
-      if (bg.querySelector("#poAmount").value === "" || isNaN(amount) || amount < 0) throw new Error("Vul een geldig bedrag in.");
+      if (!placement || placement < 1) throw new Error("Enter a valid placement.");
+      if (!playerId) throw new Error("Choose a player.");
+      if (bg.querySelector("#poAmount").value === "" || isNaN(amount) || amount < 0) throw new Error("Enter a valid amount.");
       await db.setTournamentPayout(tournamentId, playerId, placement, amount, "EUR");
-      toast("Uitbetaling vastgelegd.");
+      toast("Payout recorded.");
       router();
-    }, "Opslaan");
+    }, "Save");
 }
 
 async function approvePayoutAction(payoutId) {
   try {
     await db.approveTournamentPayout(payoutId);
-    toast("Uitbetaling goedgekeurd.");
+    toast("Payout approved.");
     router();
   } catch (e) { toast(errText(e)); }
 }
 
 function openMarkPayoutPaidDialog(payoutId) {
   openModal("Uitbetaling registreren", `
-    <p class="muted" style="font-size:13px;margin:0 0 12px">Registreer dit pas nadat je het bedrag daadwerkelijk via Tikkie hebt overgemaakt.</p>
-    <div class="field"><label for="mpr">Referentie <span class="muted" style="font-weight:400">(optioneel)</span></label><input id="mpr" placeholder="Bijv. Tikkie-omschrijving"></div>`,
+    <p class="muted" style="font-size:13px;margin:0 0 12px">Only record this after you've actually transferred the amount via Tikkie.</p>
+    <div class="field"><label for="mpr">Reference <span class="muted" style="font-weight:400">(optional)</span></label><input id="mpr" placeholder="E.g. Tikkie description"></div>`,
     async (bg) => {
       const ref = bg.querySelector("#mpr").value.trim() || null;
       await db.markTournamentPayoutPaid(payoutId, ref);
-      toast("Uitbetaling geregistreerd als betaald.");
+      toast("Payout recorded as paid.");
       router();
-    }, "Als betaald markeren");
+    }, "Mark as paid");
 }
 
 async function openMatchDialog() {
   const [leagues, players] = await Promise.all([db.leagues(), db.players()]);
-  if (!leagues.length) return toast("Maak eerst een league aan.");
-  if (players.length < 2) return toast("Je hebt minstens twee spelers nodig.");
+  if (!leagues.length) return toast("Create a league first.");
+  if (players.length < 2) return toast("You need at least two players.");
 
   const opts = (list, val, lab) => list.map((x) => `<option value="${esc(x[val])}">${esc(x[lab])}</option>`).join("");
 
-  openModal("Nieuwe wedstrijd", `
+  openModal("New match", `
     <div class="field"><label for="ml">League</label><select id="ml">${opts(leagues, "id", "name")}</select></div>
-    <div class="field"><label for="mdiv">Divisie <span class="muted" style="font-weight:400">(optioneel)</span></label>
-      <select id="mdiv"><option value="">Geen divisie</option></select>
+    <div class="field"><label for="mdiv">Division <span class="muted" style="font-weight:400">(optional)</span></label>
+      <select id="mdiv"><option value="">No division</option></select>
       <div id="mdivInfo" class="muted" style="font-size:12.5px;margin-top:6px"></div>
     </div>
-    <div class="field"><label for="ma">Speler A</label><select id="ma">${opts(players, "id", "display_name")}</select></div>
-    <div class="field"><label for="mb">Speler B</label><select id="mb">${opts(players, "id", "display_name")}</select></div>
-    <div class="field"><label for="md">Wanneer</label><input id="md" type="datetime-local"></div>`,
+    <div class="field"><label for="ma">Player A</label><select id="ma">${opts(players, "id", "display_name")}</select></div>
+    <div class="field"><label for="mb">Player B</label><select id="mb">${opts(players, "id", "display_name")}</select></div>
+    <div class="field"><label for="md">When</label><input id="md" type="datetime-local"></div>`,
     async (bg) => {
       const a = bg.querySelector("#ma").value;
       const b = bg.querySelector("#mb").value;
-      if (a === b) throw new Error("Kies twee verschillende spelers.");
+      if (a === b) throw new Error("Choose two different players.");
       const d = bg.querySelector("#md").value;
       await db.createMatch({
         league_id: bg.querySelector("#ml").value,
@@ -4649,11 +3907,11 @@ async function openMatchDialog() {
         scheduled_at: d ? new Date(d).toISOString() : null,
         status: "scheduled",
       });
-      toast("Wedstrijd ingepland");
+      toast("Match scheduled");
       router();
-    }, "Wedstrijd inplannen");
+    }, "Schedule match");
 
-  // Speler B standaard op de tweede speler zetten
+  // Player B standaard op de tweede speler zetten
   const sel = document.querySelector("#mb");
   if (sel && players[1]) sel.value = players[1].id;
 
@@ -4668,15 +3926,15 @@ async function openMatchDialog() {
     if (!divSel.value) return (divInfo.textContent = "");
     const n = members.filter((mem) => mem.division_id === divSel.value).length;
     divInfo.textContent = n < 4
-      ? `Deze divisie heeft nog maar ${n} speler(s); minimaal 4 nodig om te starten.`
-      : `${n} spelers in deze divisie.`;
+      ? `This division only has ${n} player(s) so far; at least 4 are needed to start.`
+      : `${n} players in this division.`;
   };
   const loadDivisions = async () => {
     const [divisions, mem] = await Promise.all([
       db.divisionsForLeague(leagueSel.value), db.leagueMembers(leagueSel.value),
     ]);
     members = mem;
-    divSel.innerHTML = `<option value="">Geen divisie</option>${opts(divisions, "id", "name")}`;
+    divSel.innerHTML = `<option value="">No division</option>${opts(divisions, "id", "name")}`;
     showDivInfo();
   };
   leagueSel.onchange = loadDivisions;
@@ -4687,31 +3945,31 @@ async function openMatchDialog() {
 async function openResultDialog(matchId) {
   const m = await db.matchById(matchId);
   const a = m.player_a, b = m.player_b;
-  const aName = a?.display_name || "Speler A";
-  const bName = b?.display_name || "Speler B";
+  const aName = a?.display_name || "Player A";
+  const bName = b?.display_name || "Player B";
   const legsPerMatch = m.league?.legs_per_match || 10;
   const legsToWin = Math.floor(legsPerMatch / 2) + 1;
   const drawLegs = legsPerMatch / 2;
   const canDraw = Number.isInteger(drawLegs);
 
-  openModal("Uitslag doorgeven", `
+  openModal("Report result", `
     <p class="sub" style="margin-bottom:18px">
-      Zodra een speler ${legsToWin} legs wint is de wedstrijd beslist - jullie hoeven dan niet alle ${legsPerMatch} legs te spelen.
-      ${canDraw ? `Bij ${drawLegs}-${drawLegs} is het gelijkspel.` : ""}
-      Je tegenstander moet de uitslag bevestigen voor het meetelt.
+      Once a player wins ${legsToWin} legs the match is decided - you don't have to play all ${legsPerMatch} legs.
+      ${canDraw ? `At ${drawLegs}-${drawLegs} it's a draw.` : ""}
+      Your opponent needs to confirm the result before it counts.
     </p>
 
     <div class="field">
-      <label>Wie heeft gewonnen?</label>
-      <div class="chips" role="radiogroup" aria-label="Winnaar">
+      <label>Who won?</label>
+      <div class="chips" role="radiogroup" aria-label="Winner">
         <label class="chip"><input type="radio" name="winner" value="${esc(a.id)}" class="sr">${esc(aName)}</label>
-        <label class="chip"><input type="radio" name="winner" value="draw" class="sr">Gelijkspel</label>
+        <label class="chip"><input type="radio" name="winner" value="draw" class="sr">Draw</label>
         <label class="chip"><input type="radio" name="winner" value="${esc(b.id)}" class="sr">${esc(bName)}</label>
       </div>
     </div>
 
     <div class="field">
-      <label>Gewonnen legs <span class="muted" style="font-weight:400">(max ${legsToWin} per speler)</span></label>
+      <label>Won legs <span class="muted" style="font-weight:400">(max ${legsToWin} per player)</span></label>
       <div class="field-pair">
         <div><div class="field-pair-label">${esc(aName)}</div><input id="ra" type="number" min="0" max="${legsToWin}" value="0" required></div>
         <div><div class="field-pair-label">${esc(bName)}</div><input id="rb" type="number" min="0" max="${legsToWin}" value="0" required></div>
@@ -4719,7 +3977,7 @@ async function openResultDialog(matchId) {
     </div>
 
     <div class="field">
-      <label>Gemiddelde</label>
+      <label>Average</label>
       <div class="field-pair">
         <input id="avga" type="number" step="0.1" min="0" max="180" placeholder="${esc(aName)}" required>
         <input id="avgb" type="number" step="0.1" min="0" max="180" placeholder="${esc(bName)}" required>
@@ -4742,7 +4000,7 @@ async function openResultDialog(matchId) {
       </div>
     </div>
 
-    <div class="row-title" style="font-size:14px;margin:4px 0 12px">Meer statistieken</div>
+    <div class="row-title" style="font-size:14px;margin:4px 0 12px">More statistics</div>
     <div class="field">
       <label>Scoring</label>
       <div class="field-pair">
@@ -4751,35 +4009,35 @@ async function openResultDialog(matchId) {
       </div>
     </div>
     <div class="field">
-      <label>Eerste 9 gem.</label>
+      <label>First 9 avg.</label>
       <div class="field-pair">
         <input id="f9a" type="number" step="0.1" min="0" max="180" placeholder="${esc(aName)}" required>
         <input id="f9b" type="number" step="0.1" min="0" max="180" placeholder="${esc(bName)}" required>
       </div>
     </div>
     <div class="field">
-      <label>Checkouts geraakt</label>
+      <label>Checkouts hit</label>
       <div class="field-pair">
         <input id="cha" type="number" min="0" placeholder="${esc(aName)}" required>
         <input id="chb" type="number" min="0" placeholder="${esc(bName)}" required>
       </div>
     </div>
     <div class="field">
-      <label>Checkout pogingen</label>
+      <label>Checkout attempts</label>
       <div class="field-pair">
         <input id="caa" type="number" min="0" placeholder="${esc(aName)}" required>
         <input id="cab" type="number" min="0" placeholder="${esc(bName)}" required>
       </div>
     </div>
     <div class="field">
-      <label>Worpen</label>
+      <label>Darts thrown</label>
       <div class="field-pair">
         <input id="dta" type="number" min="0" placeholder="${esc(aName)}" required>
         <input id="dtb" type="number" min="0" placeholder="${esc(bName)}" required>
       </div>
     </div>
     <div class="field">
-      <label>Beste leg <span class="muted" style="font-weight:400">(darts)</span></label>
+      <label>Best leg <span class="muted" style="font-weight:400">(darts)</span></label>
       <div class="field-pair">
         <input id="bla" type="number" min="0" placeholder="${esc(aName)}" required>
         <input id="blb" type="number" min="0" placeholder="${esc(bName)}" required>
@@ -4814,19 +4072,19 @@ async function openResultDialog(matchId) {
       </div>
     </div>`, async (bg) => {
     const winner = bg.querySelector("input[name=winner]:checked")?.value;
-    if (!winner) throw new Error("Kies wie er gewonnen heeft, of gelijkspel.");
+    if (!winner) throw new Error("Choose who won, or a draw.");
     const aLegs = parseInt(bg.querySelector("#ra").value, 10);
     const bLegs = parseInt(bg.querySelector("#rb").value, 10);
-    if (isNaN(aLegs) || isNaN(bLegs)) throw new Error("Vul beide legscores in.");
-    if (aLegs + bLegs > legsPerMatch) throw new Error(`Samen mogen de legs niet meer dan ${legsPerMatch} zijn.`);
+    if (isNaN(aLegs) || isNaN(bLegs)) throw new Error("Enter both leg scores.");
+    if (aLegs + bLegs > legsPerMatch) throw new Error(`The legs together can't exceed ${legsPerMatch}.`);
     if (aLegs === bLegs) {
-      if (aLegs !== drawLegs) throw new Error(canDraw ? `Een gelijkspel kan alleen bij ${drawLegs}-${drawLegs}.` : `Bij ${legsPerMatch} legs is een gelijkspel niet mogelijk.`);
-      if (winner !== "draw") throw new Error("Bij gelijke legs is het een gelijkspel.");
+      if (aLegs !== drawLegs) throw new Error(canDraw ? `A draw is only possible at ${drawLegs}-${drawLegs}.` : `A draw isn't possible with ${legsPerMatch} legs.`);
+      if (winner !== "draw") throw new Error("Equal legs means it's a draw.");
     } else {
-      if (Math.max(aLegs, bLegs) !== legsToWin) throw new Error(`Zodra een speler ${legsToWin} legs wint is de wedstrijd beslist.`);
-      if (winner === "draw") throw new Error("De legs zijn niet gelijk, dus kies wie er gewonnen heeft.");
+      if (Math.max(aLegs, bLegs) !== legsToWin) throw new Error(`Once a player wins ${legsToWin} legs the match is decided.`);
+      if (winner === "draw") throw new Error("The legs aren't equal, so choose who won.");
       if ((aLegs > bLegs && winner !== a.id) || (bLegs > aLegs && winner !== b.id)) {
-        throw new Error("De gekozen winnaar komt niet overeen met de legscore.");
+        throw new Error("The chosen winner doesn't match the leg score.");
       }
     }
     const num = (sel) => {
@@ -4838,7 +4096,7 @@ async function openResultDialog(matchId) {
       "#dta", "#dtb", "#bla", "#blb", "#s60a", "#s60b", "#s80a", "#s80b",
       "#s100a", "#s100b", "#s140a", "#s140b"];
     if (requiredIds.some((sel) => num(sel) === null)) {
-      throw new Error("Vul alle statistieken in voor beide spelers (Gemiddelde, 180's, Hoogste finish, Scoring, Eerste 9 gem., Checkouts, Worpen, Beste leg, 60+/80+/100+/140+).");
+      throw new Error("Fill in all statistics for both players (Average, 180s, Highest checkout, Scoring, First 9 avg., Checkouts, Darts thrown, Best leg, 60+/80+/100+/140+).");
     }
     await db.reportResult(matchId, {
       winnerId: winner === "draw" ? null : winner,
@@ -4861,12 +4119,12 @@ async function openResultDialog(matchId) {
         score_100_plus: num("#s100b"), score_140_plus: num("#s140b"),
       },
     });
-    toast("Doorgegeven. Je tegenstander bevestigt de uitslag.");
+    toast("Submitted. Your opponent will confirm the result.");
     router();
-  }, "Uitslag versturen");
+  }, "Submit result");
 }
 
-// Toont de door de tegenstander (of jou) ingevulde uitslag ter controle,
+// Toont de by de tegenstander (of jou) ingevulde uitslag ter controle,
 // met knoppen om te bevestigen of af te keuren.
 async function openConfirmDialog(matchId) {
   const m = await db.matchById(matchId);
@@ -4891,27 +4149,27 @@ async function openConfirmDialog(matchId) {
   bg.className = "modal-bg";
   bg.innerHTML = `
     <div class="modal" role="dialog" aria-modal="true">
-      <h2>Uitslag controleren</h2>
+      <h2>Check result</h2>
       <p class="sub" style="margin-bottom:16px">
-        ${esc(reporterName || "Je tegenstander")} gaf deze uitslag door voor
-        ${esc(a?.display_name)} &ndash; ${esc(b?.display_name)}. Klopt dit?
+        ${esc(reporterName || "Your opponent")} submitted this result for
+        ${esc(a?.display_name)} &ndash; ${esc(b?.display_name)}. Is this correct?
       </p>
       <div class="card" style="margin-bottom:20px">
         <div style="display:flex;align-items:center;justify-content:center;gap:8px;font-weight:700;margin-bottom:10px">
-          ${isDraw ? "Gelijkspel" : `
+          ${isDraw ? "Draw" : `
             <span style="width:18px;height:18px;color:var(--accent)">${icon.trophy}</span>
-            ${esc(winnerName || "?")} wint
+            ${esc(winnerName || "?")} wins
           `}
         </div>
         ${row("Legs", m.player_a_legs, m.player_b_legs)}
-        ${row("Gemiddelde", m.player_a_average, m.player_b_average)}
+        ${row("Average", m.player_a_average, m.player_b_average)}
         ${rowIf("Scoring", m.player_a_scoring_average, m.player_b_scoring_average)}
-        ${rowIf("Eerste 9 gem.", m.player_a_first9_average, m.player_b_first9_average)}
+        ${rowIf("First 9 avg.", m.player_a_first9_average, m.player_b_first9_average)}
         ${rowIf("Checkout %", checkoutPct(m.player_a_checkouts_hit, m.player_a_checkout_attempts), checkoutPct(m.player_b_checkouts_hit, m.player_b_checkout_attempts))}
         ${rowIf("Checkouts", checkoutFraction(m.player_a_checkouts_hit, m.player_a_checkout_attempts), checkoutFraction(m.player_b_checkouts_hit, m.player_b_checkout_attempts))}
         ${row("Hoogste finish", m.player_a_highest_checkout, m.player_b_highest_checkout)}
-        ${rowIf("Worpen", m.player_a_darts_thrown, m.player_b_darts_thrown)}
-        ${rowIf("Beste leg", m.player_a_best_leg_darts, m.player_b_best_leg_darts)}
+        ${rowIf("Darts thrown", m.player_a_darts_thrown, m.player_b_darts_thrown)}
+        ${rowIf("Best leg", m.player_a_best_leg_darts, m.player_b_best_leg_darts)}
         ${rowIf("60+", m.player_a_score_60_plus, m.player_b_score_60_plus)}
         ${rowIf("80+", m.player_a_score_80_plus, m.player_b_score_80_plus)}
         ${rowIf("100+", m.player_a_score_100_plus, m.player_b_score_100_plus)}
@@ -4920,8 +4178,8 @@ async function openConfirmDialog(matchId) {
       </div>
       <div id="confirmError"></div>
       <div class="modal-actions" style="justify-content:space-between">
-        <button type="button" class="btn ghost" id="rejectBtn">Afkeuren</button>
-        <button type="button" class="btn" id="approveBtn">Bevestigen</button>
+        <button type="button" class="btn ghost" id="rejectBtn">Reject</button>
+        <button type="button" class="btn" id="approveBtn">Confirm</button>
       </div>
     </div>`;
   document.body.appendChild(bg);
@@ -4941,11 +4199,11 @@ async function openConfirmDialog(matchId) {
     busy(btn, true);
     try {
       await db.confirmMatch(matchId);
-      toast("Uitslag bevestigd");
+      toast("Result confirmed");
       close();
       router();
     } catch (e) {
-      busy(btn, false, "Bevestigen");
+      busy(btn, false, "Confirm");
       showError(e);
     }
   };
@@ -4954,11 +4212,11 @@ async function openConfirmDialog(matchId) {
     busy(btn, true);
     try {
       await db.rejectMatch(matchId);
-      toast("Uitslag afgekeurd. Kan opnieuw worden ingevuld.");
+      toast("Result rejected. It can be submitted again.");
       close();
       router();
     } catch (e) {
-      busy(btn, false, "Afkeuren");
+      busy(btn, false, "Reject");
       showError(e);
     }
   };
@@ -4974,13 +4232,13 @@ async function signOut() {
 
 function configMissing() {
   app.innerHTML = authShell(
-    "Nog even instellen",
-    "De app weet nog niet met welke database hij moet praten",
+    "Just a moment of setup",
+    "The app doesn't know yet which database to talk to",
     `<div class="card" style="text-align:left">
-      <p style="margin-top:0">Open <code>js/config.js</code> en vul je Supabase-gegevens in:</p>
+      <p style="margin-top:0">Open <code>js/config.js</code> and fill in your Supabase details:</p>
       <p class="muted" style="font-size:13.5px;margin-bottom:0">
-        Je vindt ze in je Supabase-project onder Project Settings &rarr; API.
-        Kopieer de Project URL en de anon public key.
+        You'll find them in your Supabase project under Project Settings &rarr; API.
+        Copy the Project URL and the anon public key.
       </p>
     </div>`
   );
@@ -4996,18 +4254,17 @@ async function boot() {
         db.myProfile(state.session.user.id),
         db.myOnboarding(state.session.user.id),
       ]);
-      adoptProfileLocale();
     } catch (e) {
       // Meestal: de SQL-migratie is nog niet gedraaid, dus er is geen
       // profielrij voor deze gebruiker.
       console.error(e);
       app.innerHTML = authShell(
-        "Je profiel ontbreekt",
-        "Er is geen profielrij voor dit account",
+        "Your profile is missing",
+        "There's no profile row for this account",
         `<div class="card" style="text-align:left">
-          <p style="margin-top:0">Draai de SQL-migratie in Supabase (SQL Editor) en log opnieuw in.</p>
+          <p style="margin-top:0">Run the SQL migration in Supabase (SQL Editor) and log in again.</p>
         </div>
-        <button class="btn block mt16" onclick="signOut()">Uitloggen</button>`
+        <button class="btn block mt16" onclick="signOut()">Log out</button>`
       );
       return;
     }
@@ -5021,7 +4278,7 @@ async function boot() {
 // nog met onze eigen "#/geactiveerd"-route ervoor. In plaats van te gokken
 // naar de precieze vorm: hash én query samenvoegen en alles zonder "="
 // (zoals onze eigen routenaam) weggooien, dan simpel als een key/value-set
-// lezen. Werkt hierdoor ook onaangetast door voor normale routes (#/leagues
+// lezen. Werkt hierdoor ook onaangetast by voor normale routes (#/leagues
 // e.d. bevatten geen "=").
 function parseAuthRedirectParams() {
   const raw = (location.hash.slice(1) + "&" + location.search.slice(1))
@@ -5065,19 +4322,19 @@ function urlBase64ToUint8Array(base64String) {
   return outputArray;
 }
 
-// Pushmeldingen op dit toestel inschakelen: registreert de service worker,
+// Push notifications on this device inschakelen: registreert de service worker,
 // vraagt toestemming, en slaat het abonnement op zodat send-push-
 // notifications er meldingen naartoe kan sturen. Vereist een expliciete
 // gebruikersactie (knop) - browsers staan geen stille aanvraag toe.
 async function enablePushNotifications() {
   if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
-    return toast("Pushmeldingen worden niet ondersteund op dit toestel of in deze browser.");
+    return toast("Push notifications aren't supported on this device or in this browser.");
   }
   try {
     const reg = await navigator.serviceWorker.register("/sw.js");
     const permission = await Notification.requestPermission();
     if (permission !== "granted") {
-      return toast("Toestemming voor meldingen geweigerd.");
+      return toast("Notification permission denied.");
     }
     let sub = await reg.pushManager.getSubscription();
     if (!sub) {
@@ -5092,7 +4349,7 @@ async function enablePushNotifications() {
       p256dh: json.keys.p256dh,
       auth: json.keys.auth,
     });
-    toast("Pushmeldingen ingeschakeld op dit toestel.");
+    toast("Push notifications enabled on this device.");
   } catch (e) {
     toast(errText(e));
   }
@@ -5142,7 +4399,6 @@ function init() {
         db.myProfile(session.user.id).catch(() => null),
         db.myOnboarding(session.user.id).catch(() => null),
       ]);
-      adoptProfileLocale();
       if (awaitingSignupConfirmation) {
         awaitingSignupConfirmation = false;
         // De gebruiker moet zelf inloggen (zie de gewenste flow); niet

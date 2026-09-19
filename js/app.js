@@ -451,7 +451,7 @@ function paymentStatusBadge(status) {
 }
 
 function tournamentCard(t, opts = {}) {
-  const { entryCount = 0, isMine = false, paidCount = 0 } = opts;
+  const { entryCount = 0, isMine = false, paidCount = 0, canDelete = false } = opts;
   const meta = [
     TOURNAMENT_TYPES[t.tournament_type] || t.tournament_type,
     `${t.game_type} · ${tournamentMatchFormatLabel(t)}`,
@@ -477,6 +477,10 @@ function tournamentCard(t, opts = {}) {
       ${t.entry_fee > 0 ? `<div class="muted" style="font-size:13px;margin-bottom:8px">Entry fee: ${esc(fmtMoney(t.entry_fee, t.prize_currency))}</div>` : ""}
       <div style="margin-bottom:14px">${prizeLine(t, paidCount)}</div>
       <button class="btn ghost sm block" onclick="go('toernooien/${esc(t.id)}')">View tournament</button>
+      ${canDelete && t.status === "draft" ? `
+        <button class="btn ghost sm block" style="margin-top:8px;color:#E74C3C;border-color:#E74C3C66" onclick="confirmDeleteTournament('${esc(t.id)}','${esc(t.name)}')">
+          Delete
+        </button>` : ""}
     </div>`;
 }
 
@@ -1032,6 +1036,14 @@ const db = {
 
   async updateTournament(id, fields) {
     const { error } = await sb.from("tournaments").update(fields).eq("id", id);
+    if (error) throw error;
+  },
+
+  // Alleen draft-toernooien mogen verwijderd worden - protect_tournament_
+  // deletion bewaakt dat serverside. Gekoppelde inschrijvingen, wedstrijden
+  // en uitbetalingen verdwijnen automatisch mee (cascade).
+  async deleteTournament(id) {
+    const { error } = await sb.from("tournaments").delete().eq("id", id);
     if (error) throw error;
   },
 
@@ -3376,12 +3388,23 @@ async function changeLeagueStatus(id, status) {
 
 function confirmDeleteLeague(id, name) {
   openModal("Delete draft league", `
-    <p style="margin:0 0 4px">Weet je zeker dat je <strong style="color:var(--white)">${esc(name)}</strong> wilt verwijderen?</p>
+    <p style="margin:0 0 4px">Are you sure you want to delete ${esc(name)}?</p>
     <p class="muted" style="font-size:13px;margin:0">This action cannot be undone.</p>`,
     async () => {
       await db.deleteLeague(id);
       toast("League deleted");
       viewManageLeagues();
+    }, "Delete", true);
+}
+
+function confirmDeleteTournament(id, name) {
+  openModal("Delete draft tournament", `
+    <p style="margin:0 0 4px">Are you sure you want to delete ${esc(name)}?</p>
+    <p class="muted" style="font-size:13px;margin:0">This action cannot be undone.</p>`,
+    async () => {
+      await db.deleteTournament(id);
+      toast("Tournament deleted");
+      viewManageTournaments();
     }, "Delete", true);
 }
 
@@ -3405,6 +3428,7 @@ async function viewManageTournaments() {
       ${list.length ? list.map((t) => tournamentCard(t, {
           entryCount: countByTournament[t.id] || 0,
           paidCount: paidCountByTournament[t.id] || 0,
+          canDelete: true,
         })).join("")
         : emptyView("No tournaments yet", "Create your first tournament.", "tournament")}
     </div>
@@ -3448,9 +3472,9 @@ async function viewSettings() {
       </div>
     </div>
     <div class="card">
-      <div class="row-title">Je database</div>
-      <div class="row-sub mt8">Players toevoegen doe je by ze te laten registreren op deze site.
-        Daarna kun je ze hier een rol geven.</div>
+      <div class="row-title">Your database</div>
+      <div class="row-sub mt8">Add players by having them register on this site.
+        You can then assign them a role here.</div>
     </div>
   `);
 }

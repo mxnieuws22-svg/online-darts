@@ -3992,6 +3992,21 @@ comment on column public.tournaments.sets_per_match is 'Used when match_format =
 comment on column public.tournaments.legs_per_set is 'Used when match_format = best_of_sets: number of legs each set is played over.';
 
 
+-- ============================================================================
+-- 25. Track whether the organizer has sent a player their Tikkie payment
+--     request yet. Purely an organizer-facing to-do check - it does not
+--     change the payment_deadline_hours calculation, which still counts
+--     from the registration's created_at (confirmed with the app owner:
+--     the deadline should start immediately on registration, not on
+--     however-late the Tikkie actually gets sent).
+-- ============================================================================
+
+alter table public.tournament_entries
+  add column if not exists tikkie_sent_at timestamptz;
+
+comment on column public.tournament_entries.tikkie_sent_at is 'Set by the organizer once they have sent this player a Tikkie payment request. Purely informational (a to-do check for the organizer) - does not affect the payment deadline, which still counts from created_at.';
+
+
 -- ----------------------------------------------------------------------------
 -- TODO's voor een volgende migratie
 -- ----------------------------------------------------------------------------

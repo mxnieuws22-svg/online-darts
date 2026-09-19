@@ -1035,6 +1035,13 @@ const db = {
     if (error) throw error;
   },
 
+  async markTournamentEntryTikkieSent(entryId) {
+    const { error } = await sb.from("tournament_entries")
+      .update({ tikkie_sent_at: new Date().toISOString() })
+      .eq("id", entryId);
+    if (error) throw error;
+  },
+
   // Alle (niet-ingetrokken + ingetrokken) inschrijvingen voor een set
   // toernooien in één keer - voor aantallen/"My tournaments" op de
   // overzichtspagina, zonder N+1 query's.
@@ -2822,9 +2829,10 @@ async function viewTournamentDetail(id) {
               ${avatar(e.player, "sm")}
               <div class="row-main">
                 <div class="row-title">${esc(e.player?.display_name || "?")}</div>
-                <div class="row-sub">${paymentStatusBadge(e.payment_status)}${e.payment_reference ? ` · ${esc(e.payment_reference)}` : ""}</div>
+                <div class="row-sub">${paymentStatusBadge(e.payment_status)}${e.payment_reference ? ` · ${esc(e.payment_reference)}` : ""}${e.tikkie_sent_at ? ` · Tikkie sent` : ""}</div>
               </div>
               <div style="display:flex;gap:6px;flex-shrink:0">
+                ${e.payment_status === "pending" && !e.tikkie_sent_at ? `<button class="btn ghost sm mark-tikkie-sent-btn" data-entry-id="${esc(e.id)}">Mark Tikkie sent</button>` : ""}
                 <button class="btn ghost sm reject-payment-btn" data-entry-id="${esc(e.id)}">Reject</button>
                 <button class="btn sm confirm-payment-btn" data-entry-id="${esc(e.id)}">Confirm</button>
               </div>
@@ -2881,6 +2889,15 @@ async function viewTournamentDetail(id) {
   `);
 
   document.getElementById("submitPaymentBtn")?.addEventListener("click", () => openSubmitPaymentDialog(myEntry.id));
+  document.querySelectorAll(".mark-tikkie-sent-btn").forEach((el) => {
+    el.onclick = async () => {
+      try {
+        await db.markTournamentEntryTikkieSent(el.dataset.entryId);
+        toast("Marked as Tikkie sent");
+        router();
+      } catch (e) { toast(errText(e)); }
+    };
+  });
   document.querySelectorAll(".confirm-payment-btn").forEach((el) => {
     el.onclick = () => openConfirmPaymentDialog(el.dataset.entryId, t.entry_fee, t.prize_currency);
   });

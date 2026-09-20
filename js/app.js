@@ -708,6 +708,23 @@ const db = {
     return data;
   },
 
+  // Voor het spelersoverzicht: in welke (nog niet afgeronde) league elke
+  // speler zit, zodat de organisator in één oogopslag ziet wie nog
+  // ingedeeld moet worden. Losse queries (geen PostgREST-embed) - client-
+  // side samengevoegd, zoals ook bij db.players() met onboarding gebeurt.
+  async allActiveLeagueMemberships() {
+    const [{ data: leagues, error: leaguesError }, { data: memberships, error: membersError }] = await Promise.all([
+      sb.from("leagues").select("id, name").neq("status", "finished"),
+      sb.from("league_players").select("player_id, league_id"),
+    ]);
+    if (leaguesError) throw leaguesError;
+    if (membersError) throw membersError;
+    const nameByLeague = new Map((leagues || []).map((l) => [l.id, l.name]));
+    return (memberships || [])
+      .filter((m) => nameByLeague.has(m.league_id))
+      .map((m) => ({ player_id: m.player_id, league_name: nameByLeague.get(m.league_id) }));
+  },
+
   async createLeague(fields) {
     const { data, error } = await sb.from("leagues").insert(fields).select().single();
     if (error) throw error;
@@ -3392,15 +3409,27 @@ async function viewManagePlayers() {
   setView(`
     <h1>Players</h1>
     <p class="sub">Everyone who has an account</p>
+    <div id="placedSummary" class="muted" style="font-size:13px;margin:-8px 0 12px"></div>
     <div class="field"><input id="q" type="search" placeholder="Search by name"></div>
     <div id="list">${loadingView()}</div>
   `);
 
   const list = document.getElementById("list");
+  const summary = document.getElementById("placedSummary");
   const draw = async (search) => {
     list.innerHTML = loadingView();
     try {
-      const players = await db.players(search);
+      const [players, memberships] = await Promise.all([db.players(search), db.allActiveLeagueMemberships()]);
+      const leaguesByPlayer = {};
+      for (const m of memberships) {
+        (leaguesByPlayer[m.player_id] ||= []).push(m.league_name);
+      }
+      if (!search?.trim()) {
+        const placedCount = players.filter((p) => leaguesByPlayer[p.id]?.length).length;
+        summary.textContent = `${placedCount} of ${players.length} players placed in a league`;
+      } else {
+        summary.textContent = "";
+      }
       list.innerHTML = players.length ? players.map((p) => {
         const fullName = p.onboarding ? `${p.onboarding.first_name} ${p.onboarding.last_name}`.trim() : null;
         const platformLabel = p.onboarding?.platform === "scolia" ? "Scolia"
@@ -3410,12 +3439,16 @@ async function viewManagePlayers() {
         if (platformLabel) parts.push(platformLabel + (p.onboarding.platform_nickname ? ` (${p.onboarding.platform_nickname})` : ""));
         if (p.stats?.average_sample_count > 0) parts.push(`Avg ${Number(p.stats.average_score).toFixed(1)} · ${p.stats.matches_won}W ${p.stats.matches_lost}L`);
         else if (p.onboarding?.reported_average != null) parts.push(`Reported avg ${Number(p.onboarding.reported_average).toFixed(1)}`);
+        const placedIn = leaguesByPlayer[p.id];
+        const placementBadge = placedIn?.length
+          ? `<span class="badge" style="color:#2ECC71;border-color:#2ECC7166;background:#2ECC7122">${esc(placedIn.join(", "))}</span>`
+          : `<span class="badge" style="color:#E67E22;border-color:#E67E2266;background:#E67E2222">Not placed</span>`;
         return `
         <div class="card">
           <div class="row">
             ${avatar(p)}
             <div class="row-main">
-              <div class="row-title">${esc(p.display_name)}</div>
+              <div class="row-title">${esc(p.display_name)} ${placementBadge}</div>
               <div class="row-sub"><a href="mailto:${esc(p.email)}">${esc(p.email)}</a>${parts.length ? ` · ${esc(parts.join(" · "))}` : ""}</div>
             </div>
             ${p.id === state.profile.id

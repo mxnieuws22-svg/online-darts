@@ -3394,20 +3394,21 @@ async function viewManagePlayers() {
     try {
       const players = await db.players(search);
       list.innerHTML = players.length ? players.map((p) => {
+        const fullName = p.onboarding ? `${p.onboarding.first_name} ${p.onboarding.last_name}`.trim() : null;
         const platformLabel = p.onboarding?.platform === "scolia" ? "Scolia"
           : p.onboarding?.platform === "dartcounter" ? "DartCounter" : null;
         const parts = [];
+        if (fullName && fullName.toLowerCase() !== p.display_name.trim().toLowerCase()) parts.push(fullName);
         if (platformLabel) parts.push(platformLabel + (p.onboarding.platform_nickname ? ` (${p.onboarding.platform_nickname})` : ""));
         if (p.stats) parts.push(`Avg ${Number(p.stats.average_score).toFixed(1)} · ${p.stats.matches_won}W ${p.stats.matches_lost}L`);
         else if (p.onboarding?.reported_average != null) parts.push(`Reported avg ${Number(p.onboarding.reported_average).toFixed(1)}`);
-        if (!parts.length) parts.push(p.email);
         return `
         <div class="card">
           <div class="row">
             ${avatar(p)}
             <div class="row-main">
               <div class="row-title">${esc(p.display_name)}</div>
-              <div class="row-sub">${esc(parts.join(" · "))}</div>
+              <div class="row-sub"><a href="mailto:${esc(p.email)}">${esc(p.email)}</a>${parts.length ? ` · ${esc(parts.join(" · "))}` : ""}</div>
             </div>
             ${p.id === state.profile.id
               ? `<span class="muted" style="font-size:12.5px">you</span>`

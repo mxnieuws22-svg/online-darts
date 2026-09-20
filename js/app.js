@@ -637,14 +637,18 @@ const db = {
   },
 
   async players(search) {
-    let q = sb.from("profiles").select("*, player_statistics(*), player_onboarding(*)");
+    let q = sb.from("profiles").select("*, player_statistics(*)");
     if (search?.trim()) q = q.ilike("display_name", `%${search.trim()}%`);
-    const { data, error } = await q.order("display_name");
+    const [{ data, error }, onboarding] = await Promise.all([
+      q.order("display_name"),
+      db.allOnboarding(),
+    ]);
     if (error) throw error;
+    const onboardingByPlayer = new Map(onboarding.map((o) => [o.player_id, o]));
     return (data || []).map((p) => ({
       ...p,
       stats: Array.isArray(p.player_statistics) ? p.player_statistics[0] : p.player_statistics,
-      onboarding: Array.isArray(p.player_onboarding) ? p.player_onboarding[0] : p.player_onboarding,
+      onboarding: onboardingByPlayer.get(p.id) || null,
     }));
   },
 

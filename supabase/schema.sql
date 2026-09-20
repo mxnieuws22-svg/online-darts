@@ -4673,6 +4673,48 @@ alter table public.leagues
 comment on column public.leagues.scoring_platform is 'Which scoring platform this league is played on (optional).';
 
 
+-- ============================================================================
+-- 33. Include the player's platform and reported average directly in the
+--     onboarding-completion notification (section 30) - the organizer asked
+--     to see it in the email itself, not just after opening the app.
+-- ============================================================================
+
+create or replace function public.notify_organizers_of_onboarding()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_name text;
+  v_platform text;
+  v_detail text;
+begin
+  select display_name into v_name from public.profiles where id = new.player_id;
+
+  v_platform := case new.platform
+    when 'scolia' then 'Scolia'
+    when 'dartcounter' then 'DartCounter'
+    else new.platform
+  end;
+
+  v_detail := coalesce(v_name, 'A player') || ' filled in their onboarding profile and can now be placed in a league.'
+    || E'\n\nPlatform: ' || v_platform
+    || coalesce(' (' || new.platform_nickname || ')', '')
+    || E'\nReported average: ' || to_char(new.reported_average, 'FM990.00');
+
+  insert into public.notifications (player_id, type, title, body)
+  select p.id, 'player_onboarding_completed',
+    'New player: ' || coalesce(v_name, 'Someone'),
+    v_detail
+  from public.profiles p
+  where p.role = 'organizer';
+
+  return new;
+end;
+$$;
+
+
 -- ----------------------------------------------------------------------------
 -- TODO's voor een volgende migratie
 -- ----------------------------------------------------------------------------

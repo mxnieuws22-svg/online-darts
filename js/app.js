@@ -3400,7 +3400,7 @@ async function viewManagePlayers() {
         const parts = [];
         if (fullName && fullName.toLowerCase() !== p.display_name.trim().toLowerCase()) parts.push(fullName);
         if (platformLabel) parts.push(platformLabel + (p.onboarding.platform_nickname ? ` (${p.onboarding.platform_nickname})` : ""));
-        if (p.stats) parts.push(`Avg ${Number(p.stats.average_score).toFixed(1)} · ${p.stats.matches_won}W ${p.stats.matches_lost}L`);
+        if (p.stats?.average_sample_count > 0) parts.push(`Avg ${Number(p.stats.average_score).toFixed(1)} · ${p.stats.matches_won}W ${p.stats.matches_lost}L`);
         else if (p.onboarding?.reported_average != null) parts.push(`Reported avg ${Number(p.onboarding.reported_average).toFixed(1)}`);
         return `
         <div class="card">

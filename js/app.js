@@ -736,6 +736,14 @@ const db = {
     if (error) throw error;
   },
 
+  // Naam/seizoen/speltype/scoring-platform aanpassen - mag altijd, ongeacht
+  // status (protect_league_schedule_fields bewaakt alleen start_at/timezone/
+  // division_count zodra de league actief is).
+  async updateLeagueDetails(id, fields) {
+    const { error } = await sb.from("leagues").update(fields).eq("id", id);
+    if (error) throw error;
+  },
+
   // Activeert de league als (en alleen als) het startmoment al voorbij is -
   // opportunistisch aangeroepen vanuit de UI zodat je niet op de cron-tik
   // (max. 1 minuut) hoeft te wachten.
@@ -3468,12 +3476,13 @@ async function viewManageLeagues() {
               Set to ${esc(STATUS[s].label.toLowerCase())}
             </button>`).join("")}
         </div>
-        ${l.status === "draft" ? `
-          <div style="margin:0 0 20px">
+        <div style="display:flex;gap:6px;margin:0 0 20px">
+          <button class="btn ghost sm" onclick="openEditLeagueDialog('${esc(l.id)}')">Edit</button>
+          ${l.status === "draft" ? `
             <button class="btn ghost sm" style="color:#E74C3C;border-color:#E74C3C66" onclick="confirmDeleteLeague('${esc(l.id)}','${esc(l.name)}')">
               Delete
-            </button>
-          </div>` : `<div style="margin-bottom:14px"></div>`}`).join("")
+            </button>` : ""}
+        </div>`).join("")
         : emptyView("No leagues yet", "Create your first league.", "league")}
     </div>
   `);
@@ -3677,34 +3686,57 @@ function openOnboardingEditDialog() {
 
 // Een league is altijd één divisie (max 12 spelers); meerdere niveaus maak
 // je als aparte leagues (bv. "1e divisie", "2e divisie").
-function openLeagueDialog() {
-  openModal("New league", `
-    <div class="field"><label for="ln">Name</label><input id="ln" required placeholder="E.g. 1st division"></div>
-    <div class="field"><label for="ls">Season</label><input id="ls" placeholder="E.g. 2026"></div>
+function openLeagueDialog(existing) {
+  const l = existing || {};
+  const isEdit = !!existing;
+
+  openModal(isEdit ? "Edit league" : "New league", `
+    <div class="field"><label for="ln">Name</label><input id="ln" required value="${esc(l.name || "")}" placeholder="E.g. 1st division"></div>
+    <div class="field"><label for="ls">Season</label><input id="ls" value="${esc(l.season || "")}" placeholder="E.g. 2026"></div>
     <div class="field"><label for="lg">Game type</label>
-      <select id="lg"><option value="501">501</option><option value="301">301</option></select>
+      <select id="lg">
+        <option value="501" ${!l.game_type || l.game_type === "501" ? "selected" : ""}>501</option>
+        <option value="301" ${l.game_type === "301" ? "selected" : ""}>301</option>
+      </select>
     </div>
     <div class="field"><label for="lsp">Scoring platform <span class="muted" style="font-weight:400">(optional)</span></label>
       <select id="lsp">
-        <option value="">Unknown</option>
-        <option value="scolia">Scolia</option>
-        <option value="dartcounter">DartCounter</option>
+        <option value="" ${!l.scoring_platform ? "selected" : ""}>Unknown</option>
+        <option value="scolia" ${l.scoring_platform === "scolia" ? "selected" : ""}>Scolia</option>
+        <option value="dartcounter" ${l.scoring_platform === "dartcounter" ? "selected" : ""}>DartCounter</option>
       </select>
     </div>`, async (bg) => {
     const name = bg.querySelector("#ln").value.trim();
     if (!name) throw new Error("Enter a name.");
-    const league = await db.createLeague({
+    const fields = {
       name,
       season: bg.querySelector("#ls").value.trim() || null,
       game_type: bg.querySelector("#lg").value,
       scoring_platform: bg.querySelector("#lsp").value || null,
-      match_format: "best_of_legs",
-      status: "draft",
-      created_by: state.profile.id,
-    });
-    toast("League created. Add players and assign them.");
-    go("league/" + league.id);
-  }, "Create league");
+    };
+    if (isEdit) {
+      await db.updateLeagueDetails(l.id, fields);
+      toast("League updated");
+      viewManageLeagues();
+    } else {
+      const league = await db.createLeague({
+        ...fields,
+        match_format: "best_of_legs",
+        status: "draft",
+        created_by: state.profile.id,
+      });
+      toast("League created. Add players and assign them.");
+      go("league/" + league.id);
+    }
+  }, isEdit ? "Save" : "Create league");
+}
+
+async function openEditLeagueDialog(id) {
+  try {
+    const l = await db.league(id);
+    if (!l) return toast("League not found.");
+    openLeagueDialog(l);
+  } catch (e) { toast(errText(e)); }
 }
 
 // Zonder `existing` = nieuw toernooi (concept, organisator publiceert later

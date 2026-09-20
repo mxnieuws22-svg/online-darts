@@ -2122,6 +2122,7 @@ async function viewLeagues() {
       </summary>
       <div class="muted" style="font-size:13.5px;line-height:1.6;margin-top:14px">
         <p>A league is a single group of up to 12 players, ranked by points: 1st, 2nd, 3rd, and so on. Want multiple levels (e.g. a 1st and 2nd division)? Create separate leagues for those.</p>
+        <p>You can link two leagues together (in a league's page, under "Promotion & relegation"): once a league is finished, positions 1-2 move up to the linked league and positions 11-12 move down.</p>
         <p>Matches are scheduled automatically, one round per week.</p>
         <p>The league winner receives a champion title and a personalized prize, provided by LWPrints. This could for example be a printed T-shirt, hoodie or polo.</p>
       </div>

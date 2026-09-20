@@ -4357,6 +4357,227 @@ create trigger on_tournaments_protect_deletion
   execute function public.protect_tournament_deletion();
 
 
+-- ============================================================================
+-- 29. Promotion/relegation between leagues (each league still has exactly
+--     one division - "higher"/"lower" now means a different, linked league
+--     rather than a division within the same league, see the comment above
+--     the dropped promotion/relegation functions in section 8). The
+--     organizer links two leagues; positions 1-2 in the finished league
+--     promote to the linked higher league, positions 11-12 relegate to the
+--     linked lower league.
+-- ============================================================================
+
+alter table public.leagues
+  add column if not exists promotes_to_league_id uuid references public.leagues (id) on delete set null,
+  add column if not exists relegates_to_league_id uuid references public.leagues (id) on delete set null;
+
+alter table public.leagues drop constraint if exists leagues_promotes_to_not_self_check;
+alter table public.leagues add constraint leagues_promotes_to_not_self_check
+  check (promotes_to_league_id is null or promotes_to_league_id <> id);
+
+alter table public.leagues drop constraint if exists leagues_relegates_to_not_self_check;
+alter table public.leagues add constraint leagues_relegates_to_not_self_check
+  check (relegates_to_league_id is null or relegates_to_league_id <> id);
+
+comment on column public.leagues.promotes_to_league_id is 'League that positions 1-2 move up to once this league finishes (optional).';
+comment on column public.leagues.relegates_to_league_id is 'League that positions 11-12 move down to once this league finishes (optional).';
+
+-- Leftover Dutch division label from before the English conversion - the
+-- name is only ever shown to players in the standings header, so it needs
+-- to be in English like everything else.
+update public.league_divisions set name = '1st division' where name = '1e divisie';
+
+create or replace function public.auto_assign_divisions(p_league_id uuid)
+returns table(
+  player_id uuid,
+  display_name text,
+  division_name text,
+  effective_average numeric,
+  low_confidence boolean
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_status text;
+  v_total int;
+  v_league_name text;
+  v_season text;
+  v_div_id uuid;
+  rec record;
+begin
+  if auth.uid() is null then
+    raise exception 'You must be logged in.';
+  end if;
+  if not public.is_organizer() then
+    raise exception 'Only the organizer can auto-assign.';
+  end if;
+
+  select status, name, season into v_status, v_league_name, v_season
+    from public.leagues where id = p_league_id;
+  if v_status is null then
+    raise exception 'League not found.';
+  end if;
+  if v_status <> 'draft' then
+    raise exception 'Auto-assigning is only possible while the league is not active yet.';
+  end if;
+
+  select count(*) into v_total from public.league_players where league_id = p_league_id;
+  if v_total = 0 then
+    raise exception 'There are no players in this league yet.';
+  end if;
+  if v_total > 12 then
+    raise exception 'Too many players for this league (% players, max 12).', v_total;
+  end if;
+
+  insert into public.league_divisions (league_id, name, rank)
+  values (p_league_id, '1st division', 1)
+  on conflict (league_id, rank) do nothing
+  returning id into v_div_id;
+
+  if v_div_id is null then
+    select id into v_div_id from public.league_divisions
+      where league_id = p_league_id and rank = 1;
+  end if;
+
+  for rec in
+    select
+      lp.player_id as p_id,
+      p.display_name as p_name,
+      lp.division_id as old_division_id,
+      coalesce(
+        case when ps.average_sample_count >= 5 then ps.average_score end,
+        po.reported_average,
+        0
+      ) as eff_avg,
+      (po.player_id is null) as no_onboarding
+    from public.league_players lp
+    join public.profiles p on p.id = lp.player_id
+    left join public.player_statistics ps on ps.player_id = lp.player_id
+    left join public.player_onboarding po on po.player_id = lp.player_id
+    where lp.league_id = p_league_id
+    order by
+      coalesce(case when ps.average_sample_count >= 5 then ps.average_score end, po.reported_average, 0) desc,
+      po.reported_average desc nulls last,
+      p.display_name
+  loop
+    update public.league_players lp
+      set division_id = v_div_id
+      where lp.league_id = p_league_id and lp.player_id = rec.p_id;
+
+    if rec.old_division_id is distinct from v_div_id then
+      insert into public.league_division_history
+        (player_id, league_id, league_name, season, division_id, division_name, division_rank, reason)
+      values
+        (rec.p_id, p_league_id, v_league_name, v_season, v_div_id, '1st division', 1, 'initial');
+
+      insert into public.notifications (player_id, type, title, body, league_id)
+      select rec.p_id, 'division_assigned', nt.title, nt.body, p_league_id
+      from public.notif_text('division_assigned', jsonb_build_object('league_name', v_league_name)) nt;
+    end if;
+
+    player_id := rec.p_id;
+    display_name := rec.p_name;
+    division_name := '1st division';
+    effective_average := rec.eff_avg;
+    low_confidence := rec.no_onboarding;
+    return next;
+  end loop;
+end;
+$$;
+
+-- Applies promotion (positions 1-2) and relegation (positions 11-12) once a
+-- league is finished, by adding the players to the linked leagues'
+-- league_players. Only moves players who are not members of the target
+-- league yet, so re-running after already applying is harmless (no
+-- duplicate history rows, and the result only lists what actually changed
+-- this time).
+create or replace function public.apply_promotion_relegation(p_league_id uuid)
+returns table(
+  moved_player_id uuid,
+  moved_display_name text,
+  direction text,
+  target_league_id uuid,
+  target_league_name text
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_league record;
+  rec record;
+begin
+  if auth.uid() is null then
+    raise exception 'You must be logged in.';
+  end if;
+  if not public.is_organizer() then
+    raise exception 'Only the organizer can apply promotion/relegation.';
+  end if;
+
+  select * into v_league from public.leagues where id = p_league_id;
+  if v_league is null then
+    raise exception 'League not found.';
+  end if;
+  if v_league.status <> 'finished' then
+    raise exception 'Promotion/relegation can only be applied once the league is finished.';
+  end if;
+  if v_league.promotes_to_league_id is null and v_league.relegates_to_league_id is null then
+    raise exception 'This league has no promotion or relegation league configured.';
+  end if;
+
+  for rec in
+    select s.player_id as pid, s.display_name as pname, s.position_in_division as pos
+    from public.league_standings(p_league_id) s
+    where s.position_in_division in (1, 2, 11, 12)
+  loop
+    if rec.pos in (1, 2) and v_league.promotes_to_league_id is not null
+       and not exists (
+         select 1 from public.league_players
+         where league_id = v_league.promotes_to_league_id and player_id = rec.pid
+       ) then
+      insert into public.league_players (league_id, player_id)
+      values (v_league.promotes_to_league_id, rec.pid);
+
+      insert into public.league_division_history
+        (player_id, league_id, league_name, season, division_name, division_rank, reason)
+      select rec.pid, tl.id, tl.name, tl.season, '1st division', rec.pos, 'promotion'
+      from public.leagues tl where tl.id = v_league.promotes_to_league_id;
+
+      moved_player_id := rec.pid;
+      moved_display_name := rec.pname;
+      direction := 'promoted';
+      select id, name into target_league_id, target_league_name
+        from public.leagues where id = v_league.promotes_to_league_id;
+      return next;
+    elsif rec.pos in (11, 12) and v_league.relegates_to_league_id is not null
+       and not exists (
+         select 1 from public.league_players
+         where league_id = v_league.relegates_to_league_id and player_id = rec.pid
+       ) then
+      insert into public.league_players (league_id, player_id)
+      values (v_league.relegates_to_league_id, rec.pid);
+
+      insert into public.league_division_history
+        (player_id, league_id, league_name, season, division_name, division_rank, reason)
+      select rec.pid, tl.id, tl.name, tl.season, '1st division', rec.pos, 'relegation'
+      from public.leagues tl where tl.id = v_league.relegates_to_league_id;
+
+      moved_player_id := rec.pid;
+      moved_display_name := rec.pname;
+      direction := 'relegated';
+      select id, name into target_league_id, target_league_name
+        from public.leagues where id = v_league.relegates_to_league_id;
+      return next;
+    end if;
+  end loop;
+end;
+$$;
+
+grant execute on function public.apply_promotion_relegation(uuid) to authenticated;
+
+
 -- ----------------------------------------------------------------------------
 -- TODO's voor een volgende migratie
 -- ----------------------------------------------------------------------------

@@ -505,10 +505,10 @@ function groupStandingsByDivision(rows) {
 
 // Toont een divisie als kaart: naam, aantal spelers, en de ranglijst met
 // punten, W-D-L, legsaldo en gemiddelde. `opts.meId` markeert de kaart en de
-// rij van de ingelogde speler ("Your division"). `opts.divisionCount` bepaalt
-// - samen met group.rank - of promotie/degradatie-pijltjes getoond worden;
-// dit is altijd een voorspelling op basis van de huidige (mogelijk nog
-// lopende) tussenstand, niet een definitief resultaat.
+// rij van de ingelogde speler ("Your division"). `opts.promotesTo`/
+// `opts.relegatesTo` bepalen of positie 1-2/11-12 gemarkeerd worden als
+// promotie/degradatie; dit is altijd een voorspelling op basis van de
+// huidige (mogelijk nog lopende) tussenstand, niet een definitief resultaat.
 // Kleine stip-reeks voor de "vorm" van een speler: laatste (max 5) bevestigde
 // resultaten, oudste eerst.
 function formDots(form, compact = false) {
@@ -525,12 +525,11 @@ function formDots(form, compact = false) {
 // scrollbaar op smalle schermen. Promotie-/degradatiezone en de eigen rij
 // krijgen een subtiele achtergrondkleur; de koploper krijgt een kroontje.
 function divisionStandingsCard(group, opts = {}) {
-  const { meId, divisionCount } = opts;
+  const { meId, promotesTo, relegatesTo } = opts;
   const isUnassigned = group.id === "none";
   const isMyDivision = !isUnassigned && meId && group.rows.some((r) => r.player?.id === meId);
-  const moveCount = Math.min(2, Math.floor(group.rows.length / 2));
-  const canPromote = !isUnassigned && group.rank > 1;
-  const canRelegate = !isUnassigned && divisionCount && group.rank < divisionCount;
+  const canPromote = !isUnassigned && promotesTo;
+  const canRelegate = !isUnassigned && relegatesTo;
 
   return `
     <div class="card" style="${isMyDivision ? "border-color:#F47B20" : ""}">
@@ -555,8 +554,8 @@ function divisionStandingsCard(group, opts = {}) {
           <tbody>
             ${group.rows.map((r, i) => {
               const isMe = r.player?.id === meId;
-              const promoting = canPromote && i < moveCount;
-              const relegating = canRelegate && i >= group.rows.length - moveCount;
+              const promoting = canPromote && (i === 0 || i === 1);
+              const relegating = canRelegate && (i === 10 || i === 11);
               const saldo = (r.legsFor ?? 0) - (r.legsAgainst ?? 0);
               const rowClass = [isMe && "me", promoting && "promo", relegating && "relegate"].filter(Boolean).join(" ");
               return `
@@ -828,6 +827,24 @@ const db = {
       .order("division_rank");
     if (error) throw error;
     return (data || []).map((w) => ({ ...w, claim: Array.isArray(w.claim) ? w.claim[0] : w.claim }));
+  },
+
+  // Welke league promotie-/degradatiespelers (positie 1-2 / 11-12) naartoe
+  // gaan zodra deze league is afgerond - los te zetten van elkaar.
+  async setLeaguePromotionLinks(id, { promotesToLeagueId, relegatesToLeagueId }) {
+    const { error } = await sb.from("leagues")
+      .update({ promotes_to_league_id: promotesToLeagueId, relegates_to_league_id: relegatesToLeagueId })
+      .eq("id", id);
+    if (error) throw error;
+  },
+
+  // Idempotent: verplaatst positie 1-2 naar promotes_to_league_id en 11-12
+  // naar relegates_to_league_id (alleen spelers die daar nog geen lid van
+  // zijn), en geeft terug wie er deze keer daadwerkelijk verplaatst is.
+  async applyPromotionRelegation(leagueId) {
+    const { data, error } = await sb.rpc("apply_promotion_relegation", { p_league_id: leagueId });
+    if (error) throw error;
+    return data || [];
   },
 
   async prizeByDivisionWinner(id) {
@@ -2084,7 +2101,7 @@ async function viewMyDivision(focusMatchId) {
       : emptyView("No matches", "", "darts")}
 
     ${sectionHead("Standings")}
-    ${groups.length ? groups.map((g) => divisionStandingsCard(g, { meId: me.id, divisionCount: league.division_count })).join("")
+    ${groups.length ? groups.map((g) => divisionStandingsCard(g, { meId: me.id, promotesTo: !!league.promotes_to_league_id, relegatesTo: !!league.relegates_to_league_id })).join("")
       : emptyView("No divisions yet", "", "league")}
   `);
   document.getElementById("chat-messages")?.scrollTo(0, 999999);
@@ -2143,12 +2160,16 @@ async function viewLeagueDetail(id) {
   if (league.status === "scheduled" && await db.activateLeagueIfDue(id).catch(() => false)) {
     league = await db.league(id);
   }
-  const [matches, standings, members] = await Promise.all([
+  const [matches, standings, members, otherLeagues] = await Promise.all([
     db.matchesForLeague(id), db.standingsForLeague(id), db.leagueMembers(id),
+    isOrg ? db.leagues() : Promise.resolve([]),
   ]);
   const winners = (isOrg && league.status === "finished") ? await db.divisionWinnersForLeague(id) : [];
   const groups = groupStandingsByDivision(standings);
   const canEditSchedule = isOrg && (league.status === "draft" || league.status === "scheduled");
+  const linkableLeagues = otherLeagues.filter((l) => l.id !== id);
+  const leagueOptions = (selectedId) => `<option value="">None</option>${linkableLeagues.map((l) =>
+    `<option value="${esc(l.id)}" ${l.id === selectedId ? "selected" : ""}>${esc(l.name)}${l.season ? ` (${esc(l.season)})` : ""}</option>`).join("")}`;
 
   setView(`
     <button class="linkbtn" onclick="go('leagues')" style="display:flex;align-items:center;gap:4px;margin-bottom:12px">
@@ -2181,10 +2202,22 @@ async function viewLeagueDetail(id) {
               <button class="chip" onclick="saveLeagueSchedule('${esc(id)}', true)">${icon.clock} Schedule</button>` : ""}
           </div>
         </div>` : ""}
+
+      ${sectionHead("Promotion & relegation")}
+      <p class="muted" style="font-size:12.5px;margin:-6px 0 10px">
+        Link this league to another one: positions 1-2 move up to the promotion league, positions 11-12 move down to the relegation league, once this league is finished.
+      </p>
+      <div class="card">
+        <div class="field"><label for="lp-promote">Promotes to (positions 1-2)</label>
+          <select id="lp-promote">${leagueOptions(league.promotes_to_league_id)}</select></div>
+        <div class="field"><label for="lp-relegate">Relegates to (positions 11-12)</label>
+          <select id="lp-relegate">${leagueOptions(league.relegates_to_league_id)}</select></div>
+        <button class="chip" onclick="saveLeaguePromotionLinks('${esc(id)}')">Save</button>
+      </div>
     ` : ""}
 
     ${sectionHead("Standings")}
-    ${groups.length ? groups.map((g) => divisionStandingsCard(g, { meId: state.profile.id, divisionCount: league.division_count })).join("")
+    ${groups.length ? groups.map((g) => divisionStandingsCard(g, { meId: state.profile.id, promotesTo: !!league.promotes_to_league_id, relegatesTo: !!league.relegates_to_league_id })).join("")
       : emptyView("No divisions yet", "No players have been placed in this league yet.", "league")}
 
     ${isOrg ? `
@@ -2222,6 +2255,14 @@ async function viewLeagueDetail(id) {
       `}
     ` : ""}
 
+    ${isOrg && league.status === "finished" && (league.promotes_to_league_id || league.relegates_to_league_id) ? `
+      ${sectionHead("Promotion & relegation")}
+      <button class="btn" onclick="applyPromotionRelegationAction('${esc(id)}')">${icon.target} Apply promotion/relegation</button>
+      <p class="muted" style="font-size:12.5px;margin:8px 0 0">
+        Moves positions 1-2 and 11-12 to their linked leagues. Safe to run more than once - players already moved are skipped.
+      </p>
+    ` : ""}
+
     ${sectionHead("Matches")}
     ${matches.length ? matches.map(matchCard).join("")
       : emptyView("No matches yet", "Nothing has been scheduled for this league yet.", "darts")}
@@ -2257,6 +2298,26 @@ async function determineDivisionWinners(leagueId) {
     toast(winners.length
       ? "Winner determined and notified."
       : "No winner: no match has been played yet.");
+    router();
+  } catch (e) { toast(errText(e)); }
+}
+
+async function saveLeaguePromotionLinks(leagueId) {
+  const promotesToLeagueId = document.querySelector("#lp-promote").value || null;
+  const relegatesToLeagueId = document.querySelector("#lp-relegate").value || null;
+  try {
+    await db.setLeaguePromotionLinks(leagueId, { promotesToLeagueId, relegatesToLeagueId });
+    toast("Promotion/relegation links saved.");
+    router();
+  } catch (e) { toast(errText(e)); }
+}
+
+async function applyPromotionRelegationAction(leagueId) {
+  try {
+    const moved = await db.applyPromotionRelegation(leagueId);
+    toast(moved.length
+      ? `${moved.length} player(s) moved.`
+      : "Nothing to move - already applied, or no one at those positions.");
     router();
   } catch (e) { toast(errText(e)); }
 }

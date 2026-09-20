@@ -652,6 +652,15 @@ const db = {
     if (error) throw error;
   },
 
+  // Verwijdert het hele account (auth.users, cascade naar profiel,
+  // league-/toernooi-inschrijvingen, statistieken, meldingen, enz.).
+  // Spelers met echte wedstrijdgeschiedenis of die een league/toernooi
+  // hebben aangemaakt worden serverside geweigerd (delete_player).
+  async deletePlayer(playerId) {
+    const { error } = await sb.rpc("delete_player", { p_player_id: playerId });
+    if (error) throw error;
+  },
+
   // Eenmalig ingevulde spelersgegevens (voor initiële divisie-indeling).
   // Alleen de speler zelf en de organisator mogen dit lezen.
   async myOnboarding(playerId) {
@@ -3388,9 +3397,12 @@ async function viewManagePlayers() {
             </div>
             ${p.id === state.profile.id
               ? `<span class="muted" style="font-size:12.5px">you</span>`
-              : `<button class="btn ghost sm" onclick="toggleRole('${esc(p.id)}','${p.role === "organizer" ? "player" : "organizer"}')">
-                  ${p.role === "organizer" ? "Remove role" : "Make admin"}
-                 </button>`}
+              : `<div style="display:flex;gap:6px;flex-shrink:0">
+                  <button class="btn ghost sm" onclick="toggleRole('${esc(p.id)}','${p.role === "organizer" ? "player" : "organizer"}')">
+                    ${p.role === "organizer" ? "Remove role" : "Make admin"}
+                  </button>
+                  <button class="btn ghost sm" style="color:#E74C3C;border-color:#E74C3C66" onclick="confirmDeletePlayer('${esc(p.id)}','${esc(p.display_name)}')">Delete</button>
+                 </div>`}
           </div>
         </div>`).join("")
         : emptyView("No players found", "Adjust your search term.", "users");
@@ -3412,6 +3424,17 @@ async function toggleRole(playerId, role) {
     toast(role === "organizer" ? "Player is now admin" : "Role removed");
     viewManagePlayers();
   } catch (e) { toast(errText(e)); }
+}
+
+function confirmDeletePlayer(id, name) {
+  openModal("Delete player", `
+    <p style="margin:0 0 4px">Are you sure you want to delete ${esc(name)}?</p>
+    <p class="muted" style="font-size:13px;margin:0">This action cannot be undone. Players with match history, or who created a league or tournament, can't be deleted.</p>`,
+    async () => {
+      await db.deletePlayer(id);
+      toast("Player deleted");
+      viewManagePlayers();
+    }, "Delete", true);
 }
 
 async function viewManageLeagues() {

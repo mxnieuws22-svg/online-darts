@@ -4661,6 +4661,18 @@ $$;
 grant execute on function public.delete_player(uuid) to authenticated;
 
 
+-- ============================================================================
+-- 32. Optional scoring platform (Scolia / DartCounter) for a league, mirroring
+--     tournaments.scoring_platform but without the online/offline gate (a
+--     league has no location concept).
+-- ============================================================================
+
+alter table public.leagues
+  add column if not exists scoring_platform text check (scoring_platform is null or scoring_platform in ('scolia', 'dartcounter'));
+
+comment on column public.leagues.scoring_platform is 'Which scoring platform this league is played on (optional).';
+
+
 -- ----------------------------------------------------------------------------
 -- TODO's voor een volgende migratie
 -- ----------------------------------------------------------------------------

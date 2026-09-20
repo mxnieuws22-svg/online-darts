@@ -637,13 +637,14 @@ const db = {
   },
 
   async players(search) {
-    let q = sb.from("profiles").select("*, player_statistics(*)");
+    let q = sb.from("profiles").select("*, player_statistics(*), player_onboarding(*)");
     if (search?.trim()) q = q.ilike("display_name", `%${search.trim()}%`);
     const { data, error } = await q.order("display_name");
     if (error) throw error;
     return (data || []).map((p) => ({
       ...p,
       stats: Array.isArray(p.player_statistics) ? p.player_statistics[0] : p.player_statistics,
+      onboarding: Array.isArray(p.player_onboarding) ? p.player_onboarding[0] : p.player_onboarding,
     }));
   },
 
@@ -3385,15 +3386,21 @@ async function viewManagePlayers() {
     list.innerHTML = loadingView();
     try {
       const players = await db.players(search);
-      list.innerHTML = players.length ? players.map((p) => `
+      list.innerHTML = players.length ? players.map((p) => {
+        const platformLabel = p.onboarding?.platform === "scolia" ? "Scolia"
+          : p.onboarding?.platform === "dartcounter" ? "DartCounter" : null;
+        const parts = [];
+        if (platformLabel) parts.push(platformLabel + (p.onboarding.platform_nickname ? ` (${p.onboarding.platform_nickname})` : ""));
+        if (p.stats) parts.push(`Avg ${Number(p.stats.average_score).toFixed(1)} · ${p.stats.matches_won}W ${p.stats.matches_lost}L`);
+        else if (p.onboarding?.reported_average != null) parts.push(`Reported avg ${Number(p.onboarding.reported_average).toFixed(1)}`);
+        if (!parts.length) parts.push(p.email);
+        return `
         <div class="card">
           <div class="row">
             ${avatar(p)}
             <div class="row-main">
               <div class="row-title">${esc(p.display_name)}</div>
-              <div class="row-sub">${p.stats
-                ? `Avg ${Number(p.stats.average_score).toFixed(1)} · ${p.stats.matches_won}W ${p.stats.matches_lost}L`
-                : esc(p.email)}</div>
+              <div class="row-sub">${esc(parts.join(" · "))}</div>
             </div>
             ${p.id === state.profile.id
               ? `<span class="muted" style="font-size:12.5px">you</span>`
@@ -3404,7 +3411,8 @@ async function viewManagePlayers() {
                   <button class="btn ghost sm" style="color:#E74C3C;border-color:#E74C3C66" onclick="confirmDeletePlayer('${esc(p.id)}','${esc(p.display_name)}')">Delete</button>
                  </div>`}
           </div>
-        </div>`).join("")
+        </div>`;
+      }).join("")
         : emptyView("No players found", "Adjust your search term.", "users");
     } catch (e) { list.innerHTML = errorView(e); }
   };

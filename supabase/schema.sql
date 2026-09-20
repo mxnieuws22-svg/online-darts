@@ -4578,6 +4578,89 @@ $$;
 grant execute on function public.apply_promotion_relegation(uuid) to authenticated;
 
 
+-- ============================================================================
+-- 30. Notify every organizer (in-app popup + email, via the existing
+--     notifications table and send-pending-emails cron, see section 20/21
+--     and supabase/functions/send-pending-emails) as soon as a player fills
+--     in their onboarding profile for the first time, so the organizer
+--     knows there's someone new to place in a league. Fires only on the
+--     initial insert (saveOnboarding upserts on player_id), not on later
+--     edits.
+-- ============================================================================
+
+create or replace function public.notify_organizers_of_onboarding()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_name text;
+begin
+  select display_name into v_name from public.profiles where id = new.player_id;
+
+  insert into public.notifications (player_id, type, title, body)
+  select p.id, 'player_onboarding_completed',
+    'New player: ' || coalesce(v_name, 'Someone'),
+    coalesce(v_name, 'A player') || ' filled in their onboarding profile and can now be placed in a league.'
+  from public.profiles p
+  where p.role = 'organizer';
+
+  return new;
+end;
+$$;
+
+drop trigger if exists on_player_onboarding_insert on public.player_onboarding;
+create trigger on_player_onboarding_insert
+  after insert on public.player_onboarding
+  for each row
+  execute function public.notify_organizers_of_onboarding();
+
+
+-- ============================================================================
+-- 31. Let the organizer delete a player account entirely (auth.users, which
+--     cascades to profiles and from there to their league/tournament
+--     entries, onboarding data, statistics, notifications, chat messages,
+--     etc. - see the "on delete cascade" foreign keys throughout this
+--     file). Players who have real league match history
+--     (league_matches/matches), created a league/tournament, or won a
+--     division are protected by "on delete restrict" foreign keys already
+--     in this schema (see e.g. section 3/6/12) - this just turns that
+--     low-level foreign-key error into a clear message.
+-- ============================================================================
+
+create or replace function public.delete_player(p_player_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'You must be logged in.';
+  end if;
+  if not public.is_organizer() then
+    raise exception 'Only the organizer can delete a player.';
+  end if;
+  if p_player_id = auth.uid() then
+    raise exception 'You cannot delete your own account here.';
+  end if;
+  if not exists (select 1 from public.profiles where id = p_player_id) then
+    raise exception 'Player not found.';
+  end if;
+
+  begin
+    delete from auth.users where id = p_player_id;
+  exception
+    when foreign_key_violation then
+      raise exception 'This player cannot be deleted: they have match history, created a league or tournament, or won a division.';
+  end;
+end;
+$$;
+
+grant execute on function public.delete_player(uuid) to authenticated;
+
+
 -- ----------------------------------------------------------------------------
 -- TODO's voor een volgende migratie
 -- ----------------------------------------------------------------------------

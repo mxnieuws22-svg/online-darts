@@ -281,9 +281,11 @@ function matchCard(m) {
 }
 
 function leagueCard(l, clickable = true) {
+  const scoringLabel = l.scoring_platform === "scolia" ? "Scolia" : l.scoring_platform === "dartcounter" ? "DartCounter" : null;
   const meta = [
     l.season,
     `${l.game_type} · best of ${l.legs_per_match}`,
+    scoringLabel,
   ].filter(Boolean).join(" · ");
   const inner = `
       <div class="row">
@@ -2200,6 +2202,7 @@ async function viewLeagueDetail(id) {
         ${infoRow("Status", badge(league.status))}
         ${infoRow("Players", `${members.length}/12`)}
         ${infoRow("Timezone", esc(league.timezone))}
+        ${league.scoring_platform ? infoRow("Scoring platform", league.scoring_platform === "scolia" ? "Scolia" : "DartCounter") : ""}
         ${infoRow("Matches created", matches.length)}
         <p class="muted" style="font-size:13px;margin:12px 0 0">${esc(leagueNextActionText(league))}</p>
       </div>
@@ -3679,6 +3682,13 @@ function openLeagueDialog() {
     <div class="field"><label for="ls">Season</label><input id="ls" placeholder="E.g. 2026"></div>
     <div class="field"><label for="lg">Game type</label>
       <select id="lg"><option value="501">501</option><option value="301">301</option></select>
+    </div>
+    <div class="field"><label for="lsp">Scoring platform <span class="muted" style="font-weight:400">(optional)</span></label>
+      <select id="lsp">
+        <option value="">Unknown</option>
+        <option value="scolia">Scolia</option>
+        <option value="dartcounter">DartCounter</option>
+      </select>
     </div>`, async (bg) => {
     const name = bg.querySelector("#ln").value.trim();
     if (!name) throw new Error("Enter a name.");
@@ -3686,6 +3696,7 @@ function openLeagueDialog() {
       name,
       season: bg.querySelector("#ls").value.trim() || null,
       game_type: bg.querySelector("#lg").value,
+      scoring_platform: bg.querySelector("#lsp").value || null,
       match_format: "best_of_legs",
       status: "draft",
       created_by: state.profile.id,

@@ -5124,7 +5124,7 @@ $$;
 
 revoke all on function public.notif_text(text, jsonb) from public, anon, authenticated;
 
--- Cron-doel: herinnert spelers eenmalig per wedstrijd zodra die al 5 dagen
+-- Cron-doel: herinnert spelers eenmalig per wedstrijd zodra die al 7 dagen
 -- beschikbaar is (available_at) maar nog niet bevestigd/geannuleerd is.
 -- Nooit direct aanroepbaar door gebruikers.
 create or replace function public.remind_stale_unplayed_matches()
@@ -5140,7 +5140,7 @@ begin
     join public.leagues l on l.id = m.league_id
     where m.status not in ('confirmed', 'cancelled')
       and m.available_at is not null
-      and m.available_at <= now() - interval '5 days'
+      and m.available_at <= now() - interval '7 days'
       and m.stale_reminder_sent_at is null
   )
   insert into public.notifications (player_id, type, title, body, league_match_id)
@@ -5156,7 +5156,7 @@ begin
     set stale_reminder_sent_at = now()
     where m.status not in ('confirmed', 'cancelled')
       and m.available_at is not null
-      and m.available_at <= now() - interval '5 days'
+      and m.available_at <= now() - interval '7 days'
       and m.stale_reminder_sent_at is null;
 end;
 $$;

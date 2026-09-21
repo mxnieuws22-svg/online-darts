@@ -1021,6 +1021,23 @@ const db = {
     if (error) throw error;
   },
 
+  // Groepschat: zichtbaar/schrijfbaar voor iedereen met een account (alle
+  // spelers en de organisator), geen privéscope zoals de wedstrijdchat.
+  async groupChatMessages() {
+    const { data, error } = await sb
+      .from("group_chat_messages")
+      .select("*, sender:sender_id(display_name, avatar_url)")
+      .order("created_at", { ascending: true })
+      .limit(200);
+    if (error) throw error;
+    return data || [];
+  },
+
+  async sendGroupChatMessage(body) {
+    const { error } = await sb.rpc("send_group_chat_message", { p_body: body });
+    if (error) throw error;
+  },
+
   async markPrizeNotificationsReadForClaim(claimId) {
     const { error } = await sb.from("prize_notifications")
       .update({ read_at: new Date().toISOString() })
@@ -1816,6 +1833,7 @@ const NAV = [
   { route: "leagues", label: "Leagues", ico: "league" },
   { route: "toernooien", label: "Tournaments", ico: "tournament" },
   { route: "wedstrijden", label: "Matches", ico: "darts" },
+  { route: "chat", label: "Chat", ico: "chat" },
   { route: "statistieken", label: "Statistics", ico: "chart" },
   { route: "profiel", label: "Profile", ico: "user" },
 ];
@@ -1880,6 +1898,7 @@ const ROUTES = {
   "leagues": viewLeagues,
   "toernooien": viewTournaments,
   "wedstrijden": viewMatches,
+  "chat": viewGroupChat,
   "statistieken": viewStats,
   "profiel": viewProfile,
   "beheer": viewOrganizer,
@@ -3222,6 +3241,59 @@ async function sendMatchChatMessage(event, matchId) {
     input.value = "";
     await router();
     document.getElementById("chat-messages")?.scrollTo(0, 999999);
+  } catch (e) { toast(errText(e)); }
+  return false;
+}
+
+// Groepschat: iedereen met een account ziet dezelfde ene chat.
+function groupChatCard(messages, meId) {
+  return `
+    <div class="card">
+      <div class="chat-messages" id="chat-messages">
+        ${messages.length ? messages.map((m) => `
+          <div class="chat-msg ${m.sender_id === meId ? "me" : "them"}">
+            ${m.sender_id !== meId ? `<div style="font-size:11.5px;font-weight:600;opacity:.7;margin-bottom:2px">${esc(m.sender?.display_name || "?")}</div>` : ""}
+            ${esc(m.body)}
+            <span class="chat-time">${esc(fmtDate(m.created_at))}</span>
+          </div>`).join("")
+          : `<p class="muted" style="font-size:13px;margin:0">No messages yet. Send the first one!</p>`}
+      </div>
+      <div class="chat-emojis">
+        ${CHAT_EMOJIS.map((e) => `<button type="button" class="chat-emoji-btn" onclick="insertChatEmoji('${e}')">${e}</button>`).join("")}
+      </div>
+      <form class="chat-input-row" onsubmit="return sendGroupChatMessage(event)">
+        <input id="chat-input" placeholder="Type a message..." maxlength="1000" autocomplete="off">
+        <button class="btn sm" type="submit">Send</button>
+      </form>
+    </div>`;
+}
+
+async function viewGroupChat() {
+  setView(`
+    <h1>Chat</h1>
+    <p class="sub">One shared chat for everyone - all players and the organizer</p>
+    ${loadingView()}
+  `);
+  try {
+    const messages = await db.groupChatMessages();
+    setView(`
+      <h1>Chat</h1>
+      <p class="sub">One shared chat for everyone - all players and the organizer</p>
+      ${groupChatCard(messages, state.profile.id)}
+    `);
+    document.getElementById("chat-messages")?.scrollTo(0, 999999);
+  } catch (e) { setView(errorView(e)); }
+}
+
+async function sendGroupChatMessage(event) {
+  event.preventDefault();
+  const input = document.getElementById("chat-input");
+  const body = input?.value.trim();
+  if (!body) return false;
+  try {
+    await db.sendGroupChatMessage(body);
+    input.value = "";
+    await viewGroupChat();
   } catch (e) { toast(errText(e)); }
   return false;
 }

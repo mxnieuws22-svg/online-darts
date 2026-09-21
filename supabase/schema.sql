@@ -4805,6 +4805,65 @@ $$;
 grant execute on function public.assign_player_to_league(uuid, uuid, uuid) to authenticated;
 
 
+-- ============================================================================
+-- 36. Group chat: one shared chat visible/writable to everyone with an
+--     account (all players and the organizer) - unlike match_chat_messages
+--     (section 15), which is a private 1-on-1 chat between two match
+--     participants only.
+-- ============================================================================
+
+create table if not exists public.group_chat_messages (
+  id         uuid primary key default gen_random_uuid(),
+  sender_id  uuid not null references public.profiles (id) on delete cascade,
+  body       text not null check (char_length(trim(body)) > 0 and char_length(body) <= 1000),
+  created_at timestamptz not null default now()
+);
+
+create index if not exists idx_group_chat_messages_created on public.group_chat_messages (created_at);
+
+alter table public.group_chat_messages enable row level security;
+
+drop policy if exists "group_chat_messages_select_authenticated" on public.group_chat_messages;
+create policy "group_chat_messages_select_authenticated"
+  on public.group_chat_messages for select
+  to authenticated
+  using (true);
+
+-- Let op: bewust geen insert-policy - uitsluitend via de functie hieronder,
+-- die het bericht opschoont en valideert.
+create or replace function public.send_group_chat_message(p_body text)
+returns public.group_chat_messages
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_body text;
+  v_row public.group_chat_messages;
+begin
+  if auth.uid() is null then
+    raise exception 'You must be logged in.';
+  end if;
+
+  v_body := trim(p_body);
+  if v_body = '' then
+    raise exception 'Type a message first.';
+  end if;
+  if char_length(v_body) > 1000 then
+    raise exception 'Message is too long (max 1000 characters).';
+  end if;
+
+  insert into public.group_chat_messages (sender_id, body)
+  values (auth.uid(), v_body)
+  returning * into v_row;
+
+  return v_row;
+end;
+$$;
+
+grant execute on function public.send_group_chat_message(text) to authenticated;
+
+
 -- ----------------------------------------------------------------------------
 -- TODO's voor een volgende migratie
 -- ----------------------------------------------------------------------------

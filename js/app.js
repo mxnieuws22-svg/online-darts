@@ -814,12 +814,13 @@ const db = {
 
   // Voegt een speler toe aan de league, of wijzigt zijn divisie als hij al
   // lid is (league_id + player_id is uniek).
+  // RPC (ipv rechtstreekse upsert) zodat de speler ook een "You've been
+  // placed!"-melding krijgt, net als bij auto-assign - alleen als dit een
+  // nieuwe of gewijzigde divisie-indeling is (zie assign_player_to_league).
   async assignPlayerToLeague(leagueId, playerId, divisionId) {
-    const { error } = await sb.from("league_players")
-      .upsert(
-        { league_id: leagueId, player_id: playerId, division_id: divisionId },
-        { onConflict: "league_id,player_id" }
-      );
+    const { error } = await sb.rpc("assign_player_to_league", {
+      p_league_id: leagueId, p_player_id: playerId, p_division_id: divisionId,
+    });
     if (error) throw error;
   },
 

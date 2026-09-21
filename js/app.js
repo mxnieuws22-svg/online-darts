@@ -3541,7 +3541,7 @@ async function viewManagePlayers() {
         return `
         <div class="card">
           <div class="row">
-            <input type="checkbox" class="playerCheck" value="${esc(p.id)}" onchange="updatePlayerSelection()" style="margin-right:2px;flex-shrink:0">
+            <input type="checkbox" class="playerCheck" value="${esc(p.id)}" onchange="updatePlayerSelection()" style="width:18px;height:18px;flex:none;margin-right:2px">
             ${avatar(p)}
             <div class="row-main">
               <div class="row-title">${esc(p.display_name)} ${placementBadge}</div>

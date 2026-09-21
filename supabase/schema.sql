@@ -5050,6 +5050,126 @@ $$;
 grant execute on function public.send_direct_message(uuid, text) to authenticated;
 
 
+-- ============================================================================
+-- 39. Reminder for a match that's been available for a while but still
+--     hasn't been played. Match deadlines were deliberately removed
+--     (section 22) - players no longer have a fixed play-by date - so this
+--     nudges based on available_at instead of a deadline, once per match.
+--     Re-issues notif_text again with a 'match_reminder' case added.
+-- ============================================================================
+
+alter table public.league_matches
+  add column if not exists stale_reminder_sent_at timestamptz;
+
+comment on column public.league_matches.stale_reminder_sent_at is 'Gezet zodra de "nog niet gespeeld"-herinnering voor deze wedstrijd is verstuurd (voor idempotentie).';
+
+create or replace function public.notif_text(p_key text, p_params jsonb default '{}'::jsonb)
+returns table(title text, body text)
+language plpgsql
+as $$
+begin
+  case p_key
+    when 'division_assigned' then
+      title := 'You''ve been placed!';
+      body := 'You''re playing in ' || (p_params->>'league_name') || '. Check the standings and your opponents.';
+    when 'league_started' then
+      title := 'The league has started: ' || (p_params->>'league_name');
+      body := 'Check out your matches.';
+    when 'match_schedule_proposed' then
+      title := 'New proposal for your match';
+      body := 'Respond: accept, counter-propose, or report a problem.';
+    when 'match_schedule_accepted' then
+      title := 'Proposal accepted';
+      body := 'Your match is scheduled.';
+    when 'match_schedule_countered' then
+      title := 'Counter-proposal received';
+      body := 'Respond to the newly proposed time.';
+    when 'match_schedule_disputed' then
+      title := 'Problem reported';
+      body := coalesce(p_params->>'note', 'A problem was reported with the proposed time.');
+    when 'match_schedule_withdrawn' then
+      title := 'Proposal withdrawn';
+      body := 'The proposed time for your match has been withdrawn.';
+    when 'match_chat_message' then
+      title := 'New message';
+    when 'direct_message' then
+      title := 'New direct message';
+    when 'tournament_payment_confirmed' then
+      title := 'Payment confirmed';
+      body := 'Your registration is final.';
+    when 'tournament_payment_rejected' then
+      title := 'Payment not found';
+      body := coalesce(p_params->>'reason', 'Your reported payment could not be confirmed. Your registration has lapsed.');
+    when 'tournament_refunded' then
+      title := 'Refund registered';
+      body := 'Your entry fee has been refunded.';
+    when 'tournament_payment_expired' then
+      title := 'Reservation expired';
+      body := 'You did not pay in time for ' || (p_params->>'tournament_name') || '. Your spot has been released.';
+    when 'match_scheduled' then
+      title := 'New match scheduled';
+      body := 'A match has been scheduled for you in ' || (p_params->>'league_name') || '.';
+    when 'match_available' then
+      title := 'New match available';
+      body := 'You have a new match to play in ' || (p_params->>'league_name') || '.';
+    when 'match_reminder' then
+      title := 'Reminder: unplayed match';
+      body := 'Your match in ' || (p_params->>'league_name') || ' has been available for a while and hasn''t been played yet. Get in touch with your opponent to schedule it.';
+    else
+      title := p_key;
+  end case;
+  return next;
+end;
+$$;
+
+revoke all on function public.notif_text(text, jsonb) from public, anon, authenticated;
+
+-- Cron-doel: herinnert spelers eenmalig per wedstrijd zodra die al 5 dagen
+-- beschikbaar is (available_at) maar nog niet bevestigd/geannuleerd is.
+-- Nooit direct aanroepbaar door gebruikers.
+create or replace function public.remind_stale_unplayed_matches()
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  with due as (
+    select m.id, m.player_a_id, m.player_b_id, l.name as league_name
+    from public.league_matches m
+    join public.leagues l on l.id = m.league_id
+    where m.status not in ('confirmed', 'cancelled')
+      and m.available_at is not null
+      and m.available_at <= now() - interval '5 days'
+      and m.stale_reminder_sent_at is null
+  )
+  insert into public.notifications (player_id, type, title, body, league_match_id)
+  select due.player_a_id, 'match_reminder', nt.title, nt.body, due.id
+  from due
+  cross join lateral public.notif_text('match_reminder', jsonb_build_object('league_name', due.league_name)) nt
+  union all
+  select due.player_b_id, 'match_reminder', nt.title, nt.body, due.id
+  from due
+  cross join lateral public.notif_text('match_reminder', jsonb_build_object('league_name', due.league_name)) nt;
+
+  update public.league_matches m
+    set stale_reminder_sent_at = now()
+    where m.status not in ('confirmed', 'cancelled')
+      and m.available_at is not null
+      and m.available_at <= now() - interval '5 days'
+      and m.stale_reminder_sent_at is null;
+end;
+$$;
+
+revoke execute on function public.remind_stale_unplayed_matches() from public, anon, authenticated;
+
+select cron.schedule(
+  'remind_stale_unplayed_matches',
+  '0 8 * * *',
+  $cron$select public.remind_stale_unplayed_matches();$cron$
+);
+
+
 -- ----------------------------------------------------------------------------
 -- TODO's voor een volgende migratie
 -- ----------------------------------------------------------------------------

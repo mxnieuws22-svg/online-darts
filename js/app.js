@@ -1496,6 +1496,26 @@ function busy(btn, on, label) {
   btn.innerHTML = on ? `<span class="spinner inline"></span>` : esc(label);
 }
 
+// Bewaart de bij registratie ingevulde spelersgegevens totdat er een
+// ingelogde sessie is (nodig voor de player_onboarding-insert-policy) - zie
+// storePendingOnboarding/readPendingOnboarding/clearPendingOnboarding.
+const PENDING_ONBOARDING_KEY = "pendingOnboarding";
+
+function storePendingOnboarding(fields) {
+  try { localStorage.setItem(PENDING_ONBOARDING_KEY, JSON.stringify(fields)); } catch {}
+}
+
+function readPendingOnboarding() {
+  try {
+    const raw = localStorage.getItem(PENDING_ONBOARDING_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
+function clearPendingOnboarding() {
+  try { localStorage.removeItem(PENDING_ONBOARDING_KEY); } catch {}
+}
+
 // Altijd het huidige origin gebruiken (nooit een hardcoded domein) zodat dit
 // vanzelf klopt op productie, Vercel-previews én lokaal - zolang die URL in
 // Supabase (Authentication -> URL Configuration -> Redirect URLs) staat.
@@ -1694,6 +1714,24 @@ function renderRegister() {
         <input id="pw" type="password" autocomplete="new-password" required>
         <div class="field-error" id="pwHint" style="color:var(--muted)">At least 8 characters</div>
       </div>
+      <div class="field">
+        <label for="ob-platform">Platform</label>
+        <select id="ob-platform" required>
+          <option value="scolia">Scolia</option>
+          <option value="dartcounter">DartCounter</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="ob-nick">Nickname (Scolia / DartCounter)</label>
+        <input id="ob-nick" required>
+      </div>
+      <div class="field">
+        <label for="ob-avg">Average (3 darts)</label>
+        <input id="ob-avg" type="number" step="0.01" min="0" max="180" placeholder="E.g. 53.08" required>
+        <div class="muted" style="font-size:12.5px;margin-top:6px">
+          Only visible to the organizer, used for the initial division placement.
+        </div>
+      </div>
       <button class="btn block" id="submit" type="submit">Create account</button>
     </form>`,
     `<div class="auth-alt">Already have an account?
@@ -1707,10 +1745,26 @@ function renderRegister() {
     const name = document.getElementById("name").value.trim();
     const email = document.getElementById("email").value.trim();
     const pw = document.getElementById("pw").value;
+    const platform = document.getElementById("ob-platform").value;
+    const nickname = document.getElementById("ob-nick").value.trim();
+    const average = document.getElementById("ob-avg").value;
 
     if (!name) return showAuthError("Enter your name.");
     if (!email.includes("@")) return showAuthError("Enter a valid email address.");
     if (pw.length < 8) return showAuthError("Choose a password of at least 8 characters.");
+    if (!nickname) return showAuthError("Enter your nickname.");
+    if (average === "" || isNaN(Number(average)) || Number(average) < 0) {
+      return showAuthError("Enter a valid average.");
+    }
+
+    const [firstName, ...rest] = name.split(" ");
+    const onboardingFields = {
+      first_name: firstName,
+      last_name: rest.join(" ") || firstName,
+      platform,
+      platform_nickname: nickname,
+      reported_average: Number(average),
+    };
 
     busy(btn, true);
     const { data, error } = await sb.auth.signUp({
@@ -1719,6 +1773,12 @@ function renderRegister() {
       options: { data: { display_name: name }, emailRedirectTo: signupRedirectTo() },
     });
     if (error) { busy(btn, false, "Create account"); return showAuthError(errText(error)); }
+
+    // Bewaard tot na e-mailbevestiging/eerste login (dan pas bestaat er een
+    // auth.uid()-context om player_onboarding te mogen invoegen) - zie
+    // onAuthStateChange, die dit oppikt en automatisch opslaat zodat de
+    // speler het niet nog een keer apart hoeft in te vullen.
+    storePendingOnboarding(onboardingFields);
 
     // Staat e-mailbevestiging aan, dan is er nog geen sessie.
     if (!data.session) {
@@ -4996,6 +5056,20 @@ function init() {
         db.myProfile(session.user.id).catch(() => null),
         db.myOnboarding(session.user.id).catch(() => null),
       ]);
+      if (!state.onboarding) {
+        const pending = readPendingOnboarding();
+        if (pending) {
+          try {
+            await db.saveOnboarding(session.user.id, pending);
+            state.onboarding = await db.myOnboarding(session.user.id);
+            clearPendingOnboarding();
+          } catch {
+            // Opslaan mislukt (bv. account op een ander toestel bevestigd
+            // dan waar dit in localStorage staat) - val terug op het
+            // aparte onboardingscherm, net als voorheen.
+          }
+        }
+      }
       if (awaitingSignupConfirmation) {
         awaitingSignupConfirmation = false;
         // De gebruiker moet zelf inloggen (zie de gewenste flow); niet

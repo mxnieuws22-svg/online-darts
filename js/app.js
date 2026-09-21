@@ -668,6 +668,15 @@ const db = {
     if (error) throw error;
   },
 
+  // Stuurt een herinnering (in-app + e-mail) naar elke speler die zijn
+  // onboarding-profiel (platform/nickname/gemiddelde) nog niet heeft
+  // ingevuld; geeft het aantal verstuurde herinneringen terug.
+  async remindPlayersMissingOnboarding() {
+    const { data, error } = await sb.rpc("remind_players_missing_onboarding");
+    if (error) throw error;
+    return data;
+  },
+
   // Eenmalig ingevulde spelersgegevens (voor initiële divisie-indeling).
   // Alleen de speler zelf en de organisator mogen dit lezen.
   async myOnboarding(playerId) {
@@ -3409,7 +3418,8 @@ async function viewManagePlayers() {
   setView(`
     <h1>Players</h1>
     <p class="sub">Everyone who has an account</p>
-    <div id="placedSummary" class="muted" style="font-size:13px;margin:-8px 0 12px"></div>
+    <button class="btn ghost sm mt8" onclick="remindPlayersMissingOnboarding()">${icon.bell} Remind players without details</button>
+    <div id="placedSummary" class="muted" style="font-size:13px;margin:8px 0 12px"></div>
     <div class="field"><input id="q" type="search" placeholder="Search by name"></div>
     <div id="list">${loadingView()}</div>
   `);
@@ -3473,6 +3483,13 @@ async function viewManagePlayers() {
     t = setTimeout(() => draw(v), 280);
   };
   draw("");
+}
+
+async function remindPlayersMissingOnboarding() {
+  try {
+    const count = await db.remindPlayersMissingOnboarding();
+    toast(count ? `Reminder sent to ${count} player(s)` : "Everyone has already filled in their details");
+  } catch (e) { toast(errText(e)); }
 }
 
 async function toggleRole(playerId, role) {

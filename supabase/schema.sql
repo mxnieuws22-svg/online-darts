@@ -4715,6 +4715,45 @@ end;
 $$;
 
 
+-- ============================================================================
+-- 34. Let the organizer send a reminder (in-app + email, via the existing
+--     notifications table and send-pending-emails cron) to every player who
+--     hasn't filled in their onboarding profile (platform/nickname/reported
+--     average) yet.
+-- ============================================================================
+
+create or replace function public.remind_players_missing_onboarding()
+returns int
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_count int;
+begin
+  if auth.uid() is null then
+    raise exception 'You must be logged in.';
+  end if;
+  if not public.is_organizer() then
+    raise exception 'Only the organizer can send reminders.';
+  end if;
+
+  insert into public.notifications (player_id, type, title, body)
+  select p.id, 'onboarding_reminder',
+    'Please fill in your player details',
+    'Please fill in your scoring platform, nickname and average so we can place you in a league. You can do this from your profile.'
+  from public.profiles p
+  left join public.player_onboarding po on po.player_id = p.id
+  where p.role = 'player' and po.player_id is null;
+
+  get diagnostics v_count = row_count;
+  return v_count;
+end;
+$$;
+
+grant execute on function public.remind_players_missing_onboarding() to authenticated;
+
+
 -- ----------------------------------------------------------------------------
 -- TODO's voor een volgende migratie
 -- ----------------------------------------------------------------------------

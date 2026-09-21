@@ -29,6 +29,7 @@ const state = {
   profile: null,     // profiel van de ingelogde gebruiker
   session: null,
   onboarding: null,  // ingevulde spelersgegevens (player_onboarding), of null als nog niet ingevuld
+  unreadChatCount: 0, // ongelezen directe berichten, voor de badge op de Chat-tab
 };
 
 const app = document.getElementById("app");
@@ -1099,6 +1100,27 @@ const db = {
     if (error) throw error;
   },
 
+  async unreadDirectMessageCount() {
+    const { data, error } = await sb
+      .from("notifications")
+      .select("id")
+      .eq("player_id", state.profile.id)
+      .eq("type", "direct_message")
+      .is("read_at", null);
+    if (error) throw error;
+    return data?.length || 0;
+  },
+
+  async markDirectMessageNotificationsRead() {
+    const { error } = await sb
+      .from("notifications")
+      .update({ read_at: new Date().toISOString() })
+      .eq("player_id", state.profile.id)
+      .eq("type", "direct_message")
+      .is("read_at", null);
+    if (error) throw error;
+  },
+
   async markPrizeNotificationsReadForClaim(claimId) {
     const { error } = await sb.from("prize_notifications")
       .update({ read_at: new Date().toISOString() })
@@ -1912,13 +1934,18 @@ function navActive(route, current) {
   return current === route || current.startsWith(route + "/");
 }
 
+function chatBadgeHtml() {
+  if (!state.unreadChatCount) return "";
+  return `<span class="chat-badge">${state.unreadChatCount > 9 ? "9+" : state.unreadChatCount}</span>`;
+}
+
 function renderShell() {
   const cur = currentRoute();
   const isOrg = state.profile?.role === "organizer";
 
   const links = NAV.map((n) => `
     <button class="navlink ${navActive(n.route, cur) ? "active" : ""}" onclick="go('${n.route}')">
-      ${icon[n.ico]}<span>${esc(n.label)}</span>
+      ${icon[n.ico]}<span>${esc(n.label)}</span>${n.route === "chat" ? chatBadgeHtml() : ""}
     </button>`).join("");
 
   const orgLink = isOrg ? `
@@ -1930,7 +1957,7 @@ function renderShell() {
 
   const tabs = NAV.map((n) => `
     <button class="${navActive(n.route, cur) ? "active" : ""}" onclick="go('${n.route}')">
-      ${icon[n.ico]}<span>${esc(n.label)}</span>
+      ${icon[n.ico]}<span>${esc(n.label)}</span>${n.route === "chat" ? chatBadgeHtml() : ""}
     </button>`).join("") + (isOrg ? `
     <button class="${cur.startsWith("beheer") ? "active" : ""}" onclick="go('beheer')">
       ${icon.shield}<span>Admin</span>
@@ -1946,6 +1973,17 @@ function renderShell() {
       <main class="main"><div class="page" id="view">${loadingView()}</div></main>
     </div>
     <nav class="bottomnav" aria-label="Main menu">${tabs}</nav>`;
+
+  db.unreadDirectMessageCount().then((n) => {
+    if (n === state.unreadChatCount) return;
+    state.unreadChatCount = n;
+    document.querySelectorAll(".navlink, .bottomnav button").forEach((el) => {
+      if (el.getAttribute("onclick") === "go('chat')") {
+        el.querySelector(".chat-badge")?.remove();
+        if (n) el.insertAdjacentHTML("beforeend", chatBadgeHtml());
+      }
+    });
+  }).catch(() => {});
 }
 
 function setView(html) {
@@ -3332,7 +3370,15 @@ function groupChatCard(messages, meId) {
     </div>`;
 }
 
+function markDirectMessagesReadAndClearBadge() {
+  db.markDirectMessageNotificationsRead().then(() => {
+    state.unreadChatCount = 0;
+    document.querySelectorAll(".chat-badge").forEach((el) => el.remove());
+  }).catch(() => {});
+}
+
 async function viewGroupChat() {
+  markDirectMessagesReadAndClearBadge();
   setView(`
     <h1>Chat</h1>
     <p class="sub">One shared chat for everyone - all players and the organizer</p>
@@ -3414,6 +3460,7 @@ function directChatCard(messages, meId, otherId) {
 }
 
 async function viewDirectChat(otherId) {
+  markDirectMessagesReadAndClearBadge();
   const backBtn = `
     <button class="linkbtn" onclick="go('chat')" style="display:flex;align-items:center;gap:4px;margin-bottom:12px">
       <span style="width:16px;height:16px;display:inline-flex">${icon.back}</span> Chat

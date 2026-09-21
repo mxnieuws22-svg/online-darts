@@ -4864,6 +4864,61 @@ $$;
 grant execute on function public.send_group_chat_message(text) to authenticated;
 
 
+-- ============================================================================
+-- 37. Let the organizer send a free-text notification (in-app + email, via
+--     the existing notifications table and send-pending-emails cron) to a
+--     chosen set of players - e.g. from a multi-select on the Players page.
+-- ============================================================================
+
+create or replace function public.send_custom_notification(p_player_ids uuid[], p_title text, p_body text)
+returns int
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_title text;
+  v_body text;
+  v_count int;
+begin
+  if auth.uid() is null then
+    raise exception 'You must be logged in.';
+  end if;
+  if not public.is_organizer() then
+    raise exception 'Only the organizer can send messages.';
+  end if;
+  if p_player_ids is null or array_length(p_player_ids, 1) is null then
+    raise exception 'Select at least one player.';
+  end if;
+
+  v_title := trim(p_title);
+  v_body := trim(p_body);
+  if v_title = '' then
+    raise exception 'Enter a title.';
+  end if;
+  if v_body = '' then
+    raise exception 'Enter a message.';
+  end if;
+  if char_length(v_title) > 200 then
+    raise exception 'Title is too long (max 200 characters).';
+  end if;
+  if char_length(v_body) > 1000 then
+    raise exception 'Message is too long (max 1000 characters).';
+  end if;
+
+  insert into public.notifications (player_id, type, title, body)
+  select p.id, 'organizer_message', v_title, v_body
+  from public.profiles p
+  where p.id = any(p_player_ids);
+
+  get diagnostics v_count = row_count;
+  return v_count;
+end;
+$$;
+
+grant execute on function public.send_custom_notification(uuid[], text, text) to authenticated;
+
+
 -- ----------------------------------------------------------------------------
 -- TODO's voor een volgende migratie
 -- ----------------------------------------------------------------------------

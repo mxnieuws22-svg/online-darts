@@ -2,10 +2,11 @@
 // nieuwe wedstrijd beschikbaar, alles rond een speelmoment-voorstel:
 // voorgesteld/geaccepteerd/tegenvoorstel/probleem/ingetrokken, een speler
 // die zijn onboarding-profiel heeft ingevuld, een herinnering aan spelers
-// die dat nog niet hebben gedaan, en een speler die in een divisie is
-// ingedeeld) via het eigen Gmail-account van de organisator. Wordt elke 5
-// minuten aangeroepen door een pg_cron-job (zie supabase/schema.sql,
-// sectie 20/21), niet rechtstreeks door de app.
+// die dat nog niet hebben gedaan, een speler die in een divisie is
+// ingedeeld, en een vrij bericht van de organisator aan gekozen spelers)
+// via het eigen Gmail-account van de organisator. Wordt elke 5 minuten
+// aangeroepen door een pg_cron-job (zie supabase/schema.sql, sectie
+// 20/21), niet rechtstreeks door de app.
 //
 // Vereiste secrets (Project Settings -> Edge Functions -> Secrets):
 //   GMAIL_USER           je Gmail-adres
@@ -55,6 +56,7 @@ Deno.serve(async (req: Request) => {
       "player_onboarding_completed",
       "onboarding_reminder",
       "division_assigned",
+      "organizer_message",
     ])
     .is("email_sent_at", null)
     .limit(50);

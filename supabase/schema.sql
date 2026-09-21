@@ -4754,6 +4754,57 @@ $$;
 grant execute on function public.remind_players_missing_onboarding() to authenticated;
 
 
+-- ============================================================================
+-- 35. Manual single-player placement (the "Place player" dialog) now goes
+--     through this RPC instead of a plain client-side upsert, so the player
+--     also gets the "division_assigned" notification that auto-assign
+--     already sends - only when this is a new placement or an actual
+--     division change (not on a no-op re-save).
+-- ============================================================================
+
+create or replace function public.assign_player_to_league(p_league_id uuid, p_player_id uuid, p_division_id uuid default null)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_league_name text;
+  v_old_division_id uuid;
+  v_existed boolean;
+begin
+  if auth.uid() is null then
+    raise exception 'You must be logged in.';
+  end if;
+  if not public.is_organizer() then
+    raise exception 'Only the organizer can place players.';
+  end if;
+
+  select name into v_league_name from public.leagues where id = p_league_id;
+  if v_league_name is null then
+    raise exception 'League not found.';
+  end if;
+
+  select division_id into v_old_division_id
+    from public.league_players
+    where league_id = p_league_id and player_id = p_player_id;
+  v_existed := found;
+
+  insert into public.league_players (league_id, player_id, division_id)
+  values (p_league_id, p_player_id, p_division_id)
+  on conflict (league_id, player_id) do update set division_id = excluded.division_id;
+
+  if p_division_id is not null and (not v_existed or v_old_division_id is distinct from p_division_id) then
+    insert into public.notifications (player_id, type, title, body, league_id)
+    select p_player_id, 'division_assigned', nt.title, nt.body, p_league_id
+    from public.notif_text('division_assigned', jsonb_build_object('league_name', v_league_name)) nt;
+  end if;
+end;
+$$;
+
+grant execute on function public.assign_player_to_league(uuid, uuid, uuid) to authenticated;
+
+
 -- ----------------------------------------------------------------------------
 -- TODO's voor een volgende migratie
 -- ----------------------------------------------------------------------------

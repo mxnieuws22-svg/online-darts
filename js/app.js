@@ -677,6 +677,15 @@ const db = {
     return data;
   },
 
+  // Stuurt een vrije, door de organisator geschreven melding (in-app + mail)
+  // naar een gekozen groep spelers.
+  async sendCustomNotification(playerIds, title, body) {
+    const { error } = await sb.rpc("send_custom_notification", {
+      p_player_ids: playerIds, p_title: title, p_body: body,
+    });
+    if (error) throw error;
+  },
+
   // Eenmalig ingevulde spelersgegevens (voor initiële divisie-indeling).
   // Alleen de speler zelf en de organisator mogen dit lezen.
   async myOnboarding(playerId) {
@@ -3494,6 +3503,9 @@ async function viewManagePlayers() {
     <button class="btn ghost sm mt8" onclick="remindPlayersMissingOnboarding()">${icon.bell} Remind players without details</button>
     <div id="placedSummary" class="muted" style="font-size:13px;margin:8px 0 12px"></div>
     <div class="field"><input id="q" type="search" placeholder="Search by name"></div>
+    <div id="bulkMsgBar" class="chips" style="display:none;margin:-4px 0 12px">
+      <button class="chip" onclick="openBulkMessageDialog()">${icon.bell} Message <span id="selCount">0</span> selected</button>
+    </div>
     <div id="list">${loadingView()}</div>
   `);
 
@@ -3529,6 +3541,7 @@ async function viewManagePlayers() {
         return `
         <div class="card">
           <div class="row">
+            <input type="checkbox" class="playerCheck" value="${esc(p.id)}" onchange="updatePlayerSelection()" style="margin-right:2px;flex-shrink:0">
             ${avatar(p)}
             <div class="row-main">
               <div class="row-title">${esc(p.display_name)} ${placementBadge}</div>
@@ -3563,6 +3576,31 @@ async function remindPlayersMissingOnboarding() {
     const count = await db.remindPlayersMissingOnboarding();
     toast(count ? `Reminder sent to ${count} player(s)` : "Everyone has already filled in their details");
   } catch (e) { toast(errText(e)); }
+}
+
+function updatePlayerSelection() {
+  const checked = document.querySelectorAll(".playerCheck:checked");
+  const bar = document.getElementById("bulkMsgBar");
+  const count = document.getElementById("selCount");
+  if (bar) bar.style.display = checked.length ? "flex" : "none";
+  if (count) count.textContent = checked.length;
+}
+
+function openBulkMessageDialog() {
+  const ids = [...document.querySelectorAll(".playerCheck:checked")].map((c) => c.value);
+  if (!ids.length) return;
+  openModal(`Message ${ids.length} player${ids.length > 1 ? "s" : ""}`, `
+    <div class="field"><label for="mt">Title</label><input id="mt" required maxlength="200" placeholder="E.g. Reminder"></div>
+    <div class="field"><label for="mb">Message</label><textarea id="mb" rows="4" required maxlength="1000" placeholder="Your message"></textarea></div>`,
+    async (bg) => {
+      const title = bg.querySelector("#mt").value.trim();
+      const body = bg.querySelector("#mb").value.trim();
+      if (!title) throw new Error("Enter a title.");
+      if (!body) throw new Error("Enter a message.");
+      await db.sendCustomNotification(ids, title, body);
+      toast(`Message sent to ${ids.length} player${ids.length > 1 ? "s" : ""}`);
+      viewManagePlayers();
+    }, "Send");
 }
 
 async function toggleRole(playerId, role) {

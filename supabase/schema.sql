@@ -4919,6 +4919,137 @@ $$;
 grant execute on function public.send_custom_notification(uuid[], text, text) to authenticated;
 
 
+-- ============================================================================
+-- 38. Direct messages: a private 1-on-1 chat between any two players, not
+--     tied to a match (unlike match_chat_messages, section 15). Re-issues
+--     notif_text (section unnumbered helper, first added alongside the
+--     match-scheduling notifications) with a 'direct_message' case added.
+-- ============================================================================
+
+create table if not exists public.direct_messages (
+  id           uuid primary key default gen_random_uuid(),
+  sender_id    uuid not null references public.profiles (id) on delete cascade,
+  recipient_id uuid not null references public.profiles (id) on delete cascade,
+  body         text not null check (char_length(trim(body)) > 0 and char_length(body) <= 1000),
+  created_at   timestamptz not null default now(),
+  constraint direct_messages_not_self check (sender_id <> recipient_id)
+);
+
+create index if not exists idx_direct_messages_sender on public.direct_messages (sender_id, created_at);
+create index if not exists idx_direct_messages_recipient on public.direct_messages (recipient_id, created_at);
+
+alter table public.direct_messages enable row level security;
+
+drop policy if exists "direct_messages_select_participants" on public.direct_messages;
+create policy "direct_messages_select_participants"
+  on public.direct_messages for select
+  to authenticated
+  using (sender_id = (select auth.uid()) or recipient_id = (select auth.uid()));
+
+-- Let op: bewust geen insert-policy - uitsluitend via de functie hieronder,
+-- die het bericht opschoont en valideert.
+
+create or replace function public.notif_text(p_key text, p_params jsonb default '{}'::jsonb)
+returns table(title text, body text)
+language plpgsql
+as $$
+begin
+  case p_key
+    when 'division_assigned' then
+      title := 'You''ve been placed!';
+      body := 'You''re playing in ' || (p_params->>'league_name') || '. Check the standings and your opponents.';
+    when 'league_started' then
+      title := 'The league has started: ' || (p_params->>'league_name');
+      body := 'Check out your matches.';
+    when 'match_schedule_proposed' then
+      title := 'New proposal for your match';
+      body := 'Respond: accept, counter-propose, or report a problem.';
+    when 'match_schedule_accepted' then
+      title := 'Proposal accepted';
+      body := 'Your match is scheduled.';
+    when 'match_schedule_countered' then
+      title := 'Counter-proposal received';
+      body := 'Respond to the newly proposed time.';
+    when 'match_schedule_disputed' then
+      title := 'Problem reported';
+      body := coalesce(p_params->>'note', 'A problem was reported with the proposed time.');
+    when 'match_schedule_withdrawn' then
+      title := 'Proposal withdrawn';
+      body := 'The proposed time for your match has been withdrawn.';
+    when 'match_chat_message' then
+      title := 'New message';
+    when 'direct_message' then
+      title := 'New direct message';
+    when 'tournament_payment_confirmed' then
+      title := 'Payment confirmed';
+      body := 'Your registration is final.';
+    when 'tournament_payment_rejected' then
+      title := 'Payment not found';
+      body := coalesce(p_params->>'reason', 'Your reported payment could not be confirmed. Your registration has lapsed.');
+    when 'tournament_refunded' then
+      title := 'Refund registered';
+      body := 'Your entry fee has been refunded.';
+    when 'tournament_payment_expired' then
+      title := 'Reservation expired';
+      body := 'You did not pay in time for ' || (p_params->>'tournament_name') || '. Your spot has been released.';
+    when 'match_scheduled' then
+      title := 'New match scheduled';
+      body := 'A match has been scheduled for you in ' || (p_params->>'league_name') || '.';
+    when 'match_available' then
+      title := 'New match available';
+      body := 'You have a new match to play in ' || (p_params->>'league_name') || '.';
+    else
+      title := p_key;
+  end case;
+  return next;
+end;
+$$;
+
+revoke all on function public.notif_text(text, jsonb) from public, anon, authenticated;
+
+create or replace function public.send_direct_message(p_recipient_id uuid, p_body text)
+returns public.direct_messages
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_body text;
+  v_row public.direct_messages;
+begin
+  if auth.uid() is null then
+    raise exception 'You must be logged in.';
+  end if;
+  if p_recipient_id = auth.uid() then
+    raise exception 'You cannot message yourself.';
+  end if;
+  if not exists (select 1 from public.profiles where id = p_recipient_id) then
+    raise exception 'Player not found.';
+  end if;
+
+  v_body := trim(p_body);
+  if v_body = '' then
+    raise exception 'Type a message first.';
+  end if;
+  if char_length(v_body) > 1000 then
+    raise exception 'Message is too long (max 1000 characters).';
+  end if;
+
+  insert into public.direct_messages (sender_id, recipient_id, body)
+  values (auth.uid(), p_recipient_id, v_body)
+  returning * into v_row;
+
+  insert into public.notifications (player_id, type, title, body)
+  select p_recipient_id, 'direct_message', nt.title, left(v_body, 120)
+  from public.notif_text('direct_message') nt;
+
+  return v_row;
+end;
+$$;
+
+grant execute on function public.send_direct_message(uuid, text) to authenticated;
+
+
 -- ----------------------------------------------------------------------------
 -- TODO's voor een volgende migratie
 -- ----------------------------------------------------------------------------

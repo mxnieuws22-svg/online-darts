@@ -1047,6 +1047,58 @@ const db = {
     if (error) throw error;
   },
 
+  // Privéchat 1-op-1, los van wedstrijden - elke speler kan elke andere
+  // speler een bericht sturen.
+  async playerDirectory(search) {
+    let q = sb.from("profiles").select("id, display_name, avatar_url");
+    if (search?.trim()) q = q.ilike("display_name", `%${search.trim()}%`);
+    const { data, error } = await q.order("display_name").limit(50);
+    if (error) throw error;
+    return data || [];
+  },
+
+  async directMessageThreads() {
+    const me = state.profile.id;
+    const { data, error } = await sb
+      .from("direct_messages")
+      .select("sender_id, recipient_id, body, created_at, sender:sender_id(display_name, avatar_url), recipient:recipient_id(display_name, avatar_url)")
+      .or(`sender_id.eq.${me},recipient_id.eq.${me}`)
+      .order("created_at", { ascending: false })
+      .limit(200);
+    if (error) throw error;
+    const threads = new Map();
+    for (const m of data || []) {
+      const otherId = m.sender_id === me ? m.recipient_id : m.sender_id;
+      if (!threads.has(otherId)) {
+        const other = m.sender_id === me ? m.recipient : m.sender;
+        threads.set(otherId, {
+          otherId,
+          otherName: other?.display_name || "?",
+          otherAvatar: other?.avatar_url,
+          lastBody: m.body,
+          lastAt: m.created_at,
+        });
+      }
+    }
+    return [...threads.values()];
+  },
+
+  async directMessages(otherId) {
+    const me = state.profile.id;
+    const { data, error } = await sb
+      .from("direct_messages")
+      .select("*")
+      .or(`and(sender_id.eq.${me},recipient_id.eq.${otherId}),and(sender_id.eq.${otherId},recipient_id.eq.${me})`)
+      .order("created_at", { ascending: true });
+    if (error) throw error;
+    return data || [];
+  },
+
+  async sendDirectMessage(otherId, body) {
+    const { error } = await sb.rpc("send_direct_message", { p_recipient_id: otherId, p_body: body });
+    if (error) throw error;
+  },
+
   async markPrizeNotificationsReadForClaim(claimId) {
     const { error } = await sb.from("prize_notifications")
       .update({ read_at: new Date().toISOString() })
@@ -1940,6 +1992,9 @@ async function router() {
     }
     if (route.startsWith("toernooien/")) {
       return await viewTournamentDetail(route.split("/")[1]);
+    }
+    if (route.startsWith("chat/")) {
+      return await viewDirectChat(route.split("/")[1]);
     }
     if (route.startsWith("beheer/prijs/")) {
       if (state.profile?.role !== "organizer") {
@@ -3284,11 +3339,27 @@ async function viewGroupChat() {
     ${loadingView()}
   `);
   try {
-    const messages = await db.groupChatMessages();
+    const [messages, threads] = await Promise.all([db.groupChatMessages(), db.directMessageThreads()]);
     setView(`
       <h1>Chat</h1>
       <p class="sub">One shared chat for everyone - all players and the organizer</p>
       ${groupChatCard(messages, state.profile.id)}
+
+      ${sectionHead("Direct messages")}
+      <button class="btn ghost sm mt8" onclick="openNewDirectMessageDialog()">${icon.plus} New message</button>
+      <div class="mt16">
+        ${threads.length ? threads.map((t) => `
+          <button class="card clickable" onclick="go('chat/${esc(t.otherId)}')">
+            <div class="row">
+              ${avatar({ display_name: t.otherName, avatar_url: t.otherAvatar })}
+              <div class="row-main">
+                <div class="row-title">${esc(t.otherName)}</div>
+                <div class="row-sub">${esc(t.lastBody)}</div>
+              </div>
+            </div>
+          </button>`).join("")
+          : `<p class="muted" style="font-size:13px">No direct messages yet.</p>`}
+      </div>
     `);
     document.getElementById("chat-messages")?.scrollTo(0, 999999);
   } catch (e) { setView(errorView(e)); }
@@ -3303,6 +3374,71 @@ async function sendGroupChatMessage(event) {
     await db.sendGroupChatMessage(body);
     input.value = "";
     await viewGroupChat();
+  } catch (e) { toast(errText(e)); }
+  return false;
+}
+
+async function openNewDirectMessageDialog() {
+  try {
+    const players = (await db.playerDirectory()).filter((p) => p.id !== state.profile.id);
+    if (!players.length) return toast("No other players yet.");
+    openModal("New message", `
+      <div class="field"><label for="dmp">Player</label>
+        <select id="dmp">${players.map((p) => `<option value="${esc(p.id)}">${esc(p.display_name)}</option>`).join("")}</select>
+      </div>`, async (bg) => {
+      go("chat/" + bg.querySelector("#dmp").value);
+    }, "Start chat");
+  } catch (e) { toast(errText(e)); }
+}
+
+// Privéchat 1-op-1 tussen twee spelers, los van een wedstrijd.
+function directChatCard(messages, meId, otherId) {
+  return `
+    <div class="card">
+      <div class="chat-messages" id="chat-messages">
+        ${messages.length ? messages.map((m) => `
+          <div class="chat-msg ${m.sender_id === meId ? "me" : "them"}">
+            ${esc(m.body)}
+            <span class="chat-time">${esc(fmtDate(m.created_at))}</span>
+          </div>`).join("")
+          : `<p class="muted" style="font-size:13px;margin:0">No messages yet. Send the first one!</p>`}
+      </div>
+      <div class="chat-emojis">
+        ${CHAT_EMOJIS.map((e) => `<button type="button" class="chat-emoji-btn" onclick="insertChatEmoji('${e}')">${e}</button>`).join("")}
+      </div>
+      <form class="chat-input-row" onsubmit="return sendDirectChatMessage(event, '${esc(otherId)}')">
+        <input id="chat-input" placeholder="Type a message..." maxlength="1000" autocomplete="off">
+        <button class="btn sm" type="submit">Send</button>
+      </form>
+    </div>`;
+}
+
+async function viewDirectChat(otherId) {
+  const backBtn = `
+    <button class="linkbtn" onclick="go('chat')" style="display:flex;align-items:center;gap:4px;margin-bottom:12px">
+      <span style="width:16px;height:16px;display:inline-flex">${icon.back}</span> Chat
+    </button>`;
+  setView(`${backBtn}${loadingView()}`);
+  try {
+    const [messages, other] = await Promise.all([db.directMessages(otherId), db.myProfile(otherId)]);
+    setView(`
+      ${backBtn}
+      <h1>${esc(other?.display_name || "Player")}</h1>
+      ${directChatCard(messages, state.profile.id, otherId)}
+    `);
+    document.getElementById("chat-messages")?.scrollTo(0, 999999);
+  } catch (e) { setView(`${backBtn}${errorView(e)}`); }
+}
+
+async function sendDirectChatMessage(event, otherId) {
+  event.preventDefault();
+  const input = document.getElementById("chat-input");
+  const body = input?.value.trim();
+  if (!body) return false;
+  try {
+    await db.sendDirectMessage(otherId, body);
+    input.value = "";
+    await viewDirectChat(otherId);
   } catch (e) { toast(errText(e)); }
   return false;
 }

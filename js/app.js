@@ -3591,7 +3591,7 @@ function openBulkMessageDialog() {
   if (!ids.length) return;
   openModal(`Message ${ids.length} player${ids.length > 1 ? "s" : ""}`, `
     <div class="field"><label for="mt">Title</label><input id="mt" required maxlength="200" placeholder="E.g. Reminder"></div>
-    <div class="field"><label for="mb">Message</label><textarea id="mb" rows="4" required maxlength="1000" placeholder="Your message"></textarea></div>`,
+    <div class="field"><label for="mb">Message</label><textarea id="mb" rows="2" required maxlength="1000" placeholder="Your message"></textarea></div>`,
     async (bg) => {
       const title = bg.querySelector("#mt").value.trim();
       const body = bg.querySelector("#mb").value.trim();

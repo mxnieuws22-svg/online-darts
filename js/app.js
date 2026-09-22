@@ -276,6 +276,10 @@ function matchCard(m) {
           <span class="score ${bWin ? "win" : ""}">${m.player_b_legs}</span>
         </div>
         ${isDraw ? `<div class="center muted" style="font-size:12.5px;margin-top:4px">Draw</div>` : ""}` : ""}
+      ${m.result_photo_url ? `
+        <a href="${esc(m.result_photo_url)}" target="_blank" rel="noopener" class="linkbtn" style="display:flex;align-items:center;gap:4px;margin-top:8px;font-size:12.5px">
+          <span style="width:14px;height:14px;display:inline-flex">${icon.camera}</span> View photo
+        </a>` : ""}
       ${m.scheduled_at ? `<div class="match-meta">${icon.clock}<span>${esc(fmtDate(m.scheduled_at))}</span></div>` : ""}
       ${!played && m.status !== "cancelled" ? matchAvailabilityLine(m, status) : ""}
     </div>`;
@@ -1403,8 +1407,20 @@ const db = {
       p_player_b_highest_checkout: r.bCheckout,
       p_extra_a: r.extraA || {},
       p_extra_b: r.extraB || {},
+      p_photo_url: r.photoUrl || null,
     });
     if (error) throw error;
+  },
+
+  // Bewijsfoto (bv. scorebord) bij een doorgegeven uitslag - eigen map per
+  // gebruiker, net als avatars, publiek leesbaar.
+  async uploadMatchPhoto(matchId, file) {
+    const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
+    const path = `${state.profile.id}/${matchId}-${Date.now()}.${ext}`;
+    const { error } = await sb.storage.from("match-photos").upload(path, file);
+    if (error) throw error;
+    const { data } = sb.storage.from("match-photos").getPublicUrl(path);
+    return data.publicUrl;
   },
 
   // Confirm telt de wedstrijd mee in player_statistics (in de database).
@@ -3393,6 +3409,15 @@ function insertChatEmoji(emoji) {
   input.focus();
 }
 
+function previewSelectedPhoto(event) {
+  const file = event.target.files?.[0];
+  const wrap = document.getElementById("photoPreviewWrap");
+  const img = document.getElementById("photoPreview");
+  if (!file || !wrap || !img) return;
+  img.src = URL.createObjectURL(file);
+  wrap.style.display = "block";
+}
+
 async function sendMatchChatMessage(event, matchId) {
   event.preventDefault();
   const input = document.getElementById("chat-input");
@@ -4634,6 +4659,14 @@ async function openResultDialog(matchId) {
     </div>
 
     <div class="field">
+      <label for="photo">Photo <span class="muted" style="font-weight:400">(optional, e.g. the scoreboard)</span></label>
+      <input id="photo" type="file" accept="image/*" capture="environment" onchange="previewSelectedPhoto(event)">
+      <div id="photoPreviewWrap" style="display:none;margin-top:8px">
+        <img id="photoPreview" style="max-width:100%;border-radius:10px;display:block">
+      </div>
+    </div>
+
+    <div class="field">
       <label>Average</label>
       <div class="field-pair">
         <input id="avga" type="number" step="0.1" min="0" max="180" placeholder="${esc(aName)}" required>
@@ -4755,9 +4788,12 @@ async function openResultDialog(matchId) {
     if (requiredIds.some((sel) => num(sel) === null)) {
       throw new Error("Fill in all statistics for both players (Average, 180s, Highest checkout, Scoring, First 9 avg., Checkouts, Darts thrown, Best leg, 60+/80+/100+/140+).");
     }
+    const photoFile = bg.querySelector("#photo").files?.[0];
+    const photoUrl = photoFile ? await db.uploadMatchPhoto(matchId, photoFile) : null;
     await db.reportResult(matchId, {
       winnerId: winner === "draw" ? null : winner,
       aLegs, bLegs,
+      photoUrl,
       aAverage: num("#avga"), bAverage: num("#avgb"),
       a180s: num("#s180a"), b180s: num("#s180b"),
       aCheckout: num("#coa"), bCheckout: num("#cob"),
@@ -4833,6 +4869,10 @@ async function openConfirmDialog(matchId) {
         ${rowIf("140+", m.player_a_score_140_plus, m.player_b_score_140_plus)}
         ${row("180's", m.player_a_180s, m.player_b_180s)}
       </div>
+      ${m.result_photo_url ? `
+        <a href="${esc(m.result_photo_url)}" target="_blank" rel="noopener" style="display:block;margin-bottom:20px">
+          <img src="${esc(m.result_photo_url)}" alt="Photo of the result" style="max-width:100%;border-radius:10px;display:block">
+        </a>` : ""}
       <div id="confirmError"></div>
       <div class="modal-actions" style="justify-content:space-between">
         <button type="button" class="btn ghost" id="rejectBtn">Reject</button>

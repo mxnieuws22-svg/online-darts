@@ -5279,7 +5279,6 @@ end;
 $$;
 
 
--- ----------------------------------------------------------------------------
 -- ============================================================================
 -- 41. Optional proof photo (e.g. the scoreboard) attached when reporting a
 --     league match result. New match-photos storage bucket, same pattern as

@@ -5446,6 +5446,169 @@ grant execute on function public.report_league_match_result(
 ) to authenticated;
 
 
+-- ============================================================================
+-- 42. Season overview / awards mail. Once a league is 'finished', the
+--     organizer can send every participant a recap: final standings per
+--     division plus a few fun season awards (highest average, most 180s,
+--     best checkout, most wins), computed from that league's own confirmed
+--     matches. Reuses the existing notifications table + send-pending-emails
+--     cron, same as send_custom_notification (section 37).
+-- ============================================================================
+
+alter table public.leagues
+  add column if not exists season_recap_sent_at timestamptz;
+
+create or replace function public.send_season_recap(p_league_id uuid)
+returns int
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_league public.leagues%rowtype;
+  v_standings_text text := '';
+  v_awards_text text := '';
+  v_body text;
+  v_count int;
+  rec record;
+  v_division_lines text;
+  v_name text;
+  v_num numeric;
+  v_int int;
+begin
+  if auth.uid() is null then
+    raise exception 'You must be logged in.';
+  end if;
+  if not public.is_organizer() then
+    raise exception 'Only the organizer can send the season overview.';
+  end if;
+
+  select * into v_league from public.leagues where id = p_league_id;
+  if v_league.id is null then
+    raise exception 'League not found.';
+  end if;
+  if v_league.status <> 'finished' then
+    raise exception 'The season overview can only be sent once the league is finished.';
+  end if;
+
+  -- Final standings, one block per division.
+  for rec in
+    select division_id, coalesce(division_name, 'No division') as dname, division_rank
+    from public.league_standings(p_league_id)
+    group by division_id, division_name, division_rank
+    order by division_rank nulls last
+  loop
+    select string_agg(
+      s.position_in_division || '. ' || s.display_name || ' - ' || s.points || ' pts',
+      e'\n' order by s.position_in_division
+    )
+    into v_division_lines
+    from public.league_standings(p_league_id) s
+    where s.division_id is not distinct from rec.division_id;
+
+    v_standings_text := v_standings_text || rec.dname || ':' || e'\n' || coalesce(v_division_lines, '(no matches played)') || e'\n\n';
+  end loop;
+
+  -- Highest average.
+  select p.display_name, round(x.avg_average, 2)
+  into v_name, v_num
+  from (
+    select player_id, avg(player_average) as avg_average
+    from (
+      select player_a_id as player_id, player_a_average as player_average
+      from public.league_matches where league_id = p_league_id and status = 'confirmed'
+      union all
+      select player_b_id, player_b_average
+      from public.league_matches where league_id = p_league_id and status = 'confirmed'
+    ) m
+    group by player_id
+  ) x
+  join public.profiles p on p.id = x.player_id
+  order by x.avg_average desc nulls last, x.player_id
+  limit 1;
+
+  if v_num is not null and v_num > 0 then
+    v_awards_text := v_awards_text || '- Highest average: ' || v_name || ' (' || v_num || ')' || e'\n';
+  end if;
+
+  -- Most 180s.
+  select p.display_name, x.total_180s
+  into v_name, v_int
+  from (
+    select player_id, sum(c180) as total_180s
+    from (
+      select player_a_id as player_id, player_a_180s as c180
+      from public.league_matches where league_id = p_league_id and status = 'confirmed'
+      union all
+      select player_b_id, player_b_180s
+      from public.league_matches where league_id = p_league_id and status = 'confirmed'
+    ) m
+    group by player_id
+  ) x
+  join public.profiles p on p.id = x.player_id
+  order by x.total_180s desc, x.player_id
+  limit 1;
+
+  if v_int is not null and v_int > 0 then
+    v_awards_text := v_awards_text || '- Most 180s: ' || v_name || ' (' || v_int || 'x)' || e'\n';
+  end if;
+
+  -- Best checkout.
+  select p.display_name, x.best_checkout
+  into v_name, v_int
+  from (
+    select player_id, max(checkout) as best_checkout
+    from (
+      select player_a_id as player_id, player_a_highest_checkout as checkout
+      from public.league_matches where league_id = p_league_id and status = 'confirmed'
+      union all
+      select player_b_id, player_b_highest_checkout
+      from public.league_matches where league_id = p_league_id and status = 'confirmed'
+    ) m
+    group by player_id
+  ) x
+  join public.profiles p on p.id = x.player_id
+  order by x.best_checkout desc, x.player_id
+  limit 1;
+
+  if v_int is not null and v_int > 0 then
+    v_awards_text := v_awards_text || '- Best checkout: ' || v_name || ' (' || v_int || ')' || e'\n';
+  end if;
+
+  -- Most wins.
+  select s.display_name, s.wins
+  into v_name, v_int
+  from public.league_standings(p_league_id) s
+  order by s.wins desc, s.points desc, s.player_id
+  limit 1;
+
+  if v_int is not null and v_int > 0 then
+    v_awards_text := v_awards_text || '- Most wins: ' || v_name || ' (' || v_int || ')' || e'\n';
+  end if;
+
+  v_body :=
+    'The season "' || v_league.name || '"' || coalesce(' (' || v_league.season || ')', '') ||
+    ' has finished! Here is the recap.' || e'\n\n' ||
+    'Final standings' || e'\n' || v_standings_text ||
+    'Season awards' || e'\n' || coalesce(nullif(v_awards_text, ''), '(not enough data yet)') || e'\n' ||
+    'Thanks for playing this season!';
+
+  insert into public.notifications (player_id, league_id, type, title, body)
+  select lp.player_id, p_league_id, 'season_recap', 'Season overview: ' || v_league.name, v_body
+  from public.league_players lp
+  where lp.league_id = p_league_id;
+
+  get diagnostics v_count = row_count;
+
+  update public.leagues set season_recap_sent_at = now() where id = p_league_id;
+
+  return v_count;
+end;
+$$;
+
+grant execute on function public.send_season_recap(uuid) to authenticated;
+
+
 -- ----------------------------------------------------------------------------
 -- TODO's voor een volgende migratie
 -- ----------------------------------------------------------------------------

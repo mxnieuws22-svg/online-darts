@@ -5170,6 +5170,115 @@ select cron.schedule(
 );
 
 
+-- ============================================================================
+-- 40. Allow auto-assign while a league is 'scheduled', not just 'draft'.
+--     Matches are only generated once the league actually goes 'active'
+--     (on_league_activated, section 11), so re-ranking divisions while
+--     merely 'scheduled' is exactly as safe as while 'draft' - the earlier
+--     'draft'-only restriction was unnecessarily strict.
+-- ============================================================================
+
+create or replace function public.auto_assign_divisions(p_league_id uuid)
+returns table(
+  player_id uuid,
+  display_name text,
+  division_name text,
+  effective_average numeric,
+  low_confidence boolean
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_status text;
+  v_total int;
+  v_league_name text;
+  v_season text;
+  v_div_id uuid;
+  rec record;
+begin
+  if auth.uid() is null then
+    raise exception 'You must be logged in.';
+  end if;
+  if not public.is_organizer() then
+    raise exception 'Only the organizer can auto-assign.';
+  end if;
+
+  select status, name, season into v_status, v_league_name, v_season
+    from public.leagues where id = p_league_id;
+  if v_status is null then
+    raise exception 'League not found.';
+  end if;
+  if v_status not in ('draft', 'scheduled') then
+    raise exception 'Auto-assigning is only possible while the league is not active yet.';
+  end if;
+
+  select count(*) into v_total from public.league_players where league_id = p_league_id;
+  if v_total = 0 then
+    raise exception 'There are no players in this league yet.';
+  end if;
+  if v_total > 12 then
+    raise exception 'Too many players for this league (% players, max 12).', v_total;
+  end if;
+
+  insert into public.league_divisions (league_id, name, rank)
+  values (p_league_id, '1st division', 1)
+  on conflict (league_id, rank) do nothing
+  returning id into v_div_id;
+
+  if v_div_id is null then
+    select id into v_div_id from public.league_divisions
+      where league_id = p_league_id and rank = 1;
+  end if;
+
+  for rec in
+    select
+      lp.player_id as p_id,
+      p.display_name as p_name,
+      lp.division_id as old_division_id,
+      coalesce(
+        case when ps.average_sample_count >= 5 then ps.average_score end,
+        po.reported_average,
+        0
+      ) as eff_avg,
+      (po.player_id is null) as no_onboarding
+    from public.league_players lp
+    join public.profiles p on p.id = lp.player_id
+    left join public.player_statistics ps on ps.player_id = lp.player_id
+    left join public.player_onboarding po on po.player_id = lp.player_id
+    where lp.league_id = p_league_id
+    order by
+      coalesce(case when ps.average_sample_count >= 5 then ps.average_score end, po.reported_average, 0) desc,
+      po.reported_average desc nulls last,
+      p.display_name
+  loop
+    update public.league_players lp
+      set division_id = v_div_id
+      where lp.league_id = p_league_id and lp.player_id = rec.p_id;
+
+    if rec.old_division_id is distinct from v_div_id then
+      insert into public.league_division_history
+        (player_id, league_id, league_name, season, division_id, division_name, division_rank, reason)
+      values
+        (rec.p_id, p_league_id, v_league_name, v_season, v_div_id, '1st division', 1, 'initial');
+
+      insert into public.notifications (player_id, type, title, body, league_id)
+      select rec.p_id, 'division_assigned', nt.title, nt.body, p_league_id
+      from public.notif_text('division_assigned', jsonb_build_object('league_name', v_league_name)) nt;
+    end if;
+
+    player_id := rec.p_id;
+    display_name := rec.p_name;
+    division_name := '1st division';
+    effective_average := rec.eff_avg;
+    low_confidence := rec.no_onboarding;
+    return next;
+  end loop;
+end;
+$$;
+
+
 -- ----------------------------------------------------------------------------
 -- TODO's voor een volgende migratie
 -- ----------------------------------------------------------------------------

@@ -894,6 +894,14 @@ const db = {
     return (data || []).map((w) => ({ ...w, claim: Array.isArray(w.claim) ? w.claim[0] : w.claim }));
   },
 
+  // Stuurt elke deelnemer van een afgeronde league het seizoensoverzicht
+  // (eindstand + awards) via de bestaande notifications-tabel + e-mail cron.
+  async sendSeasonRecap(leagueId) {
+    const { data, error } = await sb.rpc("send_season_recap", { p_league_id: leagueId });
+    if (error) throw error;
+    return data;
+  },
+
   // Welke league promotie-/degradatiespelers (positie 1-2 / 11-12) naartoe
   // gaan zodra deze league is afgerond - los te zetten van elkaar.
   async setLeaguePromotionLinks(id, { promotesToLeagueId, relegatesToLeagueId }) {
@@ -2505,6 +2513,21 @@ async function viewLeagueDetail(id) {
       `}
     ` : ""}
 
+    ${isOrg && league.status === "finished" ? `
+      ${sectionHead("Season overview & awards")}
+      ${league.season_recap_sent_at ? `
+        <p class="muted" style="font-size:12.5px;margin:-6px 0 10px">
+          Sent on ${fmtDate(league.season_recap_sent_at)}.
+        </p>
+        <button class="btn ghost sm" onclick="sendSeasonRecapAction('${esc(id)}')">${icon.star} Resend</button>
+      ` : `
+        <button class="btn" onclick="sendSeasonRecapAction('${esc(id)}')">${icon.star} Send season overview</button>
+        <p class="muted" style="font-size:12.5px;margin:8px 0 0">
+          Emails every participant the final standings plus a few season awards (highest average, most 180s, best checkout, most wins).
+        </p>
+      `}
+    ` : ""}
+
     ${isOrg && league.status === "finished" && (league.promotes_to_league_id || league.relegates_to_league_id) ? `
       ${sectionHead("Promotion & relegation")}
       <button class="btn" onclick="applyPromotionRelegationAction('${esc(id)}')">${icon.target} Apply promotion/relegation</button>
@@ -2550,6 +2573,17 @@ async function determineDivisionWinners(leagueId) {
       : "No winner: no match has been played yet.");
     router();
   } catch (e) { toast(errText(e)); }
+}
+
+function sendSeasonRecapAction(leagueId) {
+  openModal("Send season overview", `
+    <p style="margin:0 0 4px">Send the final standings and season awards to every participant?</p>
+    <p class="muted" style="font-size:13px;margin:0">Goes out by e-mail as well, via the usual notifications.</p>`,
+    async () => {
+      const count = await db.sendSeasonRecap(leagueId);
+      toast(`Season overview sent to ${count} player(s).`);
+      router();
+    }, "Send");
 }
 
 async function saveLeaguePromotionLinks(leagueId) {

@@ -2457,11 +2457,11 @@ async function viewLeagueDetail(id) {
     ${isOrg ? `
       ${sectionHead("Players")}
       <div class="chips" style="margin-bottom:14px">
-        ${league.status === "draft" ? `
+        ${["draft", "scheduled"].includes(league.status) ? `
           <button class="chip" onclick="autoAssignDivisions('${esc(id)}')">${icon.target} Auto-assign</button>` : ""}
         <button class="chip" onclick="openAssignPlayerDialog('${esc(id)}')">${icon.plus} Place player</button>
       </div>
-      ${league.status === "draft" ? `
+      ${["draft", "scheduled"].includes(league.status) ? `
         <p class="muted" style="font-size:12.5px;margin:-6px 0 14px">
           Auto-assign: ranks players by average (max 12 players per league).
         </p>` : ""}

@@ -4693,8 +4693,8 @@ async function openResultDialog(matchId) {
     </div>
 
     <div class="field">
-      <label for="photo">Photo <span class="muted" style="font-weight:400">(optional, e.g. the scoreboard)</span></label>
-      <input id="photo" type="file" accept="image/*" capture="environment" onchange="previewSelectedPhoto(event)">
+      <label for="photo">Photo <span class="muted" style="font-weight:400">(optional, e.g. a screenshot of the final score)</span></label>
+      <input id="photo" type="file" accept="image/*" onchange="previewSelectedPhoto(event)">
       <div id="photoPreviewWrap" style="display:none;margin-top:8px">
         <img id="photoPreview" style="max-width:100%;border-radius:10px;display:block">
       </div>

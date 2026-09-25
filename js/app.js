@@ -90,6 +90,83 @@ function esc(v) {
     .replace(/'/g, "&#39;");
 }
 
+// ISO 3166-1 alpha-2 landcodes + Engelse naam, voor de landkeuze op het
+// profiel. Vlag wordt client-side afgeleid (flagEmoji), dus geen losse
+// afbeeldingen nodig.
+const COUNTRIES = [
+  ["AF", "Afghanistan"], ["AX", "Åland Islands"], ["AL", "Albania"], ["DZ", "Algeria"],
+  ["AS", "American Samoa"], ["AD", "Andorra"], ["AO", "Angola"], ["AI", "Anguilla"],
+  ["AQ", "Antarctica"], ["AG", "Antigua & Barbuda"], ["AR", "Argentina"], ["AM", "Armenia"],
+  ["AW", "Aruba"], ["AU", "Australia"], ["AT", "Austria"], ["AZ", "Azerbaijan"],
+  ["BS", "Bahamas"], ["BH", "Bahrain"], ["BD", "Bangladesh"], ["BB", "Barbados"],
+  ["BY", "Belarus"], ["BE", "Belgium"], ["BZ", "Belize"], ["BJ", "Benin"],
+  ["BM", "Bermuda"], ["BT", "Bhutan"], ["BO", "Bolivia"], ["BA", "Bosnia & Herzegovina"],
+  ["BW", "Botswana"], ["BV", "Bouvet Island"], ["BR", "Brazil"], ["IO", "British Indian Ocean Territory"],
+  ["VG", "British Virgin Islands"], ["BN", "Brunei"], ["BG", "Bulgaria"], ["BF", "Burkina Faso"],
+  ["BI", "Burundi"], ["KH", "Cambodia"], ["CM", "Cameroon"], ["CA", "Canada"],
+  ["CV", "Cape Verde"], ["BQ", "Caribbean Netherlands"], ["KY", "Cayman Islands"], ["CF", "Central African Republic"],
+  ["TD", "Chad"], ["CL", "Chile"], ["CN", "China"], ["CX", "Christmas Island"],
+  ["CC", "Cocos (Keeling) Islands"], ["CO", "Colombia"], ["KM", "Comoros"], ["CG", "Congo - Brazzaville"],
+  ["CD", "Congo - Kinshasa"], ["CK", "Cook Islands"], ["CR", "Costa Rica"], ["CI", "Côte d’Ivoire"],
+  ["HR", "Croatia"], ["CU", "Cuba"], ["CW", "Curaçao"], ["CY", "Cyprus"],
+  ["CZ", "Czechia"], ["DK", "Denmark"], ["DJ", "Djibouti"], ["DM", "Dominica"],
+  ["DO", "Dominican Republic"], ["EC", "Ecuador"], ["EG", "Egypt"], ["SV", "El Salvador"],
+  ["GQ", "Equatorial Guinea"], ["ER", "Eritrea"], ["EE", "Estonia"], ["SZ", "Eswatini"],
+  ["ET", "Ethiopia"], ["FK", "Falkland Islands"], ["FO", "Faroe Islands"], ["FJ", "Fiji"],
+  ["FI", "Finland"], ["FR", "France"], ["GF", "French Guiana"], ["PF", "French Polynesia"],
+  ["TF", "French Southern Territories"], ["GA", "Gabon"], ["GM", "Gambia"], ["GE", "Georgia"],
+  ["DE", "Germany"], ["GH", "Ghana"], ["GI", "Gibraltar"], ["GR", "Greece"],
+  ["GL", "Greenland"], ["GD", "Grenada"], ["GP", "Guadeloupe"], ["GU", "Guam"],
+  ["GT", "Guatemala"], ["GG", "Guernsey"], ["GN", "Guinea"], ["GW", "Guinea-Bissau"],
+  ["GY", "Guyana"], ["HT", "Haiti"], ["HM", "Heard & McDonald Islands"], ["HN", "Honduras"],
+  ["HK", "Hong Kong SAR China"], ["HU", "Hungary"], ["IS", "Iceland"], ["IN", "India"],
+  ["ID", "Indonesia"], ["IR", "Iran"], ["IQ", "Iraq"], ["IE", "Ireland"],
+  ["IM", "Isle of Man"], ["IL", "Israel"], ["IT", "Italy"], ["JM", "Jamaica"],
+  ["JP", "Japan"], ["JE", "Jersey"], ["JO", "Jordan"], ["KZ", "Kazakhstan"],
+  ["KE", "Kenya"], ["KI", "Kiribati"], ["KW", "Kuwait"], ["KG", "Kyrgyzstan"],
+  ["LA", "Laos"], ["LV", "Latvia"], ["LB", "Lebanon"], ["LS", "Lesotho"],
+  ["LR", "Liberia"], ["LY", "Libya"], ["LI", "Liechtenstein"], ["LT", "Lithuania"],
+  ["LU", "Luxembourg"], ["MO", "Macao SAR China"], ["MG", "Madagascar"], ["MW", "Malawi"],
+  ["MY", "Malaysia"], ["MV", "Maldives"], ["ML", "Mali"], ["MT", "Malta"],
+  ["MH", "Marshall Islands"], ["MQ", "Martinique"], ["MR", "Mauritania"], ["MU", "Mauritius"],
+  ["YT", "Mayotte"], ["MX", "Mexico"], ["FM", "Micronesia"], ["MD", "Moldova"],
+  ["MC", "Monaco"], ["MN", "Mongolia"], ["ME", "Montenegro"], ["MS", "Montserrat"],
+  ["MA", "Morocco"], ["MZ", "Mozambique"], ["MM", "Myanmar (Burma)"], ["NA", "Namibia"],
+  ["NR", "Nauru"], ["NP", "Nepal"], ["NL", "Netherlands"], ["NC", "New Caledonia"],
+  ["NZ", "New Zealand"], ["NI", "Nicaragua"], ["NE", "Niger"], ["NG", "Nigeria"],
+  ["NU", "Niue"], ["NF", "Norfolk Island"], ["KP", "North Korea"], ["MK", "North Macedonia"],
+  ["MP", "Northern Mariana Islands"], ["NO", "Norway"], ["OM", "Oman"], ["PK", "Pakistan"],
+  ["PW", "Palau"], ["PS", "Palestinian Territories"], ["PA", "Panama"], ["PG", "Papua New Guinea"],
+  ["PY", "Paraguay"], ["PE", "Peru"], ["PH", "Philippines"], ["PN", "Pitcairn Islands"],
+  ["PL", "Poland"], ["PT", "Portugal"], ["PR", "Puerto Rico"], ["QA", "Qatar"],
+  ["RE", "Réunion"], ["RO", "Romania"], ["RU", "Russia"], ["RW", "Rwanda"],
+  ["WS", "Samoa"], ["SM", "San Marino"], ["ST", "São Tomé & Príncipe"], ["SA", "Saudi Arabia"],
+  ["SN", "Senegal"], ["RS", "Serbia"], ["SC", "Seychelles"], ["SL", "Sierra Leone"],
+  ["SG", "Singapore"], ["SX", "Sint Maarten"], ["SK", "Slovakia"], ["SI", "Slovenia"],
+  ["SB", "Solomon Islands"], ["SO", "Somalia"], ["ZA", "South Africa"], ["GS", "South Georgia & South Sandwich Islands"],
+  ["KR", "South Korea"], ["SS", "South Sudan"], ["ES", "Spain"], ["LK", "Sri Lanka"],
+  ["BL", "St. Barthélemy"], ["SH", "St. Helena"], ["KN", "St. Kitts & Nevis"], ["LC", "St. Lucia"],
+  ["MF", "St. Martin"], ["PM", "St. Pierre & Miquelon"], ["VC", "St. Vincent & Grenadines"], ["SD", "Sudan"],
+  ["SR", "Suriname"], ["SJ", "Svalbard & Jan Mayen"], ["SE", "Sweden"], ["CH", "Switzerland"],
+  ["SY", "Syria"], ["TW", "Taiwan"], ["TJ", "Tajikistan"], ["TZ", "Tanzania"],
+  ["TH", "Thailand"], ["TL", "Timor-Leste"], ["TG", "Togo"], ["TK", "Tokelau"],
+  ["TO", "Tonga"], ["TT", "Trinidad & Tobago"], ["TN", "Tunisia"], ["TR", "Türkiye"],
+  ["TM", "Turkmenistan"], ["TC", "Turks & Caicos Islands"], ["TV", "Tuvalu"], ["VI", "U.S. Virgin Islands"],
+  ["UG", "Uganda"], ["UA", "Ukraine"], ["AE", "United Arab Emirates"], ["GB", "United Kingdom"],
+  ["US", "United States"], ["UY", "Uruguay"], ["UZ", "Uzbekistan"], ["VU", "Vanuatu"],
+  ["VA", "Vatican City"], ["VE", "Venezuela"], ["VN", "Vietnam"], ["WF", "Wallis & Futuna"],
+  ["EH", "Western Sahara"], ["YE", "Yemen"], ["ZM", "Zambia"], ["ZW", "Zimbabwe"],
+];
+const COUNTRY_NAMES = Object.fromEntries(COUNTRIES);
+
+// Vlagemoji uit een ISO-landcode: elke letter wordt het bijbehorende
+// "regional indicator symbol" (Unicode-blok dat samen een vlag rendert),
+// dus geen aparte vlag-afbeeldingen nodig.
+function flagEmoji(code) {
+  if (!code || code.length !== 2) return "";
+  return String.fromCodePoint(...[...code.toUpperCase()].map((c) => 127397 + c.charCodeAt(0)));
+}
+
 function fmtDate(iso, withTime = true) {
   if (!iso) return "";
   const d = new Date(iso);
@@ -577,7 +654,7 @@ function divisionStandingsCard(group, opts = {}) {
                   <td>${!isUnassigned && i === 0 ? `<span style="display:inline-flex;width:13px;height:13px;color:#F47B20;vertical-align:-2px;margin-right:3px">${icon.trophy}</span>` : ""}${i + 1}</td>
                   <td class="player-cell">
                     ${avatar(r.player, "sm")}
-                    <span>${esc(r.player?.display_name || "?")}${isMe ? ` <span class="muted" style="font-weight:400">(you)</span>` : ""}</span>
+                    <span>${r.player?.country ? `${flagEmoji(r.player.country)} ` : ""}${esc(r.player?.display_name || "?")}${isMe ? ` <span class="muted" style="font-weight:400">(you)</span>` : ""}</span>
                   </td>
                   <td style="font-weight:700">${r.points}</td>
                   <td>${r.played}</td>
@@ -858,7 +935,7 @@ const db = {
       divisionId: r.division_id,
       divisionName: r.division_name,
       divisionRank: r.division_rank ?? Infinity,
-      player: { id: r.player_id, display_name: r.display_name },
+      player: { id: r.player_id, display_name: r.display_name, country: r.country },
       played: r.played,
       wins: r.wins,
       draws: r.draws,
@@ -3694,12 +3771,19 @@ async function viewProfile() {
         </button>
         <input type="file" id="avatarInput" accept="image/*" class="sr">
       </div>
-      <div class="mt16" style="font-size:20px;font-weight:700">${esc(p.display_name)}</div>
+      <div class="mt16" style="font-size:20px;font-weight:700">
+        ${p.country ? `<span style="margin-right:6px">${flagEmoji(p.country)}</span>` : ""}${esc(p.display_name)}
+      </div>
       <div class="muted" style="font-size:14px">${esc(p.email)}</div>
       <div class="mt8">${p.role === "organizer"
         ? `<span class="badge" style="color:#F47B20;border-color:#F47B2066;background:#F47B2022">Admin</span>`
         : `<span class="badge" style="color:#D9DEE8;border-color:#22346099;background:#22346055">Player</span>`}</div>
-      <button class="btn ghost sm mt16" onclick="openNameDialog()">Change name</button>
+      <div class="chips center" style="justify-content:center;margin-top:16px">
+        <button class="btn ghost sm" onclick="openNameDialog()">Change name</button>
+        <button class="btn ghost sm" onclick="openCountryDialog()">
+          ${p.country ? `${flagEmoji(p.country)} ${esc(COUNTRY_NAMES[p.country] || p.country)}` : "Set country"}
+        </button>
+      </div>
     </div>
 
     ${sectionHead("Quick overview")}
@@ -3853,7 +3937,7 @@ async function viewManagePlayers() {
             <input type="checkbox" class="playerCheck" value="${esc(p.id)}" onchange="updatePlayerSelection()" style="width:18px;height:18px;flex:none;margin-right:2px">
             ${avatar(p)}
             <div class="row-main">
-              <div class="row-title">${esc(p.display_name)} ${placementBadge}</div>
+              <div class="row-title">${p.country ? `${flagEmoji(p.country)} ` : ""}${esc(p.display_name)} ${placementBadge}</div>
               <div class="row-sub"><a href="mailto:${esc(p.email)}">${esc(p.email)}</a>${parts.length ? ` · ${esc(parts.join(" · "))}` : ""}</div>
             </div>
             ${p.id === state.profile.id
@@ -4112,6 +4196,24 @@ function openNameDialog() {
     await db.updateProfile(state.profile.id, { display_name: name });
     state.profile = await db.myProfile(state.profile.id);
     toast("Name changed");
+    router();
+  });
+}
+
+function openCountryDialog() {
+  const current = state.profile.country || "";
+  openModal("Change country", `
+    <div class="field">
+      <label for="dc">Country</label>
+      <select id="dc">
+        <option value="">Not set</option>
+        ${COUNTRIES.map(([code, name]) => `<option value="${esc(code)}" ${code === current ? "selected" : ""}>${esc(name)}</option>`).join("")}
+      </select>
+    </div>`, async (bg) => {
+    const country = bg.querySelector("#dc").value || null;
+    await db.updateProfile(state.profile.id, { country });
+    state.profile = await db.myProfile(state.profile.id);
+    toast("Country changed");
     router();
   });
 }

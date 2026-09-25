@@ -5609,6 +5609,152 @@ $$;
 grant execute on function public.send_season_recap(uuid) to authenticated;
 
 
+-- ============================================================================
+-- 43. Self-reported country per player, shown as a flag next to their name.
+--     Lives on profiles (public to every authenticated user, like
+--     display_name/avatar_url) rather than player_onboarding (organizer-only),
+--     since a flag next to a name is meant to be visible to everyone.
+--     ISO 3166-1 alpha-2 code so the flag emoji can be derived client-side
+--     without a lookup table.
+-- ============================================================================
+
+alter table public.profiles
+  add column if not exists country text;
+
+alter table public.profiles
+  drop constraint if exists profiles_country_check,
+  add constraint profiles_country_check check (country is null or country ~ '^[A-Z]{2}$');
+
+comment on column public.profiles.country is 'Self-reported ISO 3166-1 alpha-2 country code, shown as a flag next to the player name.';
+
+
+-- ============================================================================
+-- 44. Show the player's flag (section 43) in the standings table too.
+--     league_standings' return type changes, so drop it first - PostgREST/
+--     Postgres won't let create-or-replace change an OUT column list.
+-- ============================================================================
+
+drop function if exists public.league_standings(uuid);
+
+create or replace function public.league_standings(p_league_id uuid)
+returns table(
+  division_id uuid,
+  division_name text,
+  division_rank int,
+  player_id uuid,
+  display_name text,
+  country text,
+  played bigint,
+  wins bigint,
+  draws bigint,
+  losses bigint,
+  legs_for bigint,
+  legs_against bigint,
+  points bigint,
+  display_average numeric,
+  position_in_division bigint,
+  form text[]
+)
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'You must be logged in.';
+  end if;
+
+  return query
+  with results as (
+    select
+      lp.division_id,
+      lp.player_id,
+      case when m.winner_id = lp.player_id then 1 else 0 end as win,
+      case when m.winner_id is null then 1 else 0 end as draw,
+      case when m.winner_id is not null and m.winner_id <> lp.player_id then 1 else 0 end as loss,
+      case when m.player_a_id = lp.player_id then m.player_a_legs
+           when m.player_b_id = lp.player_id then m.player_b_legs else 0 end as lw,
+      case when m.player_a_id = lp.player_id then m.player_b_legs
+           when m.player_b_id = lp.player_id then m.player_a_legs else 0 end as ll
+    from public.league_players lp
+    join public.league_matches m
+      on m.league_id = lp.league_id
+     and m.status = 'confirmed'
+     and (m.player_a_id = lp.player_id or m.player_b_id = lp.player_id)
+    where lp.league_id = p_league_id
+  ),
+  agg as (
+    select
+      lp.division_id,
+      lp.player_id,
+      coalesce(sum(r.win), 0)  as wins,
+      coalesce(sum(r.draw), 0) as draws,
+      coalesce(sum(r.loss), 0) as losses,
+      coalesce(count(r.player_id), 0) as played,
+      coalesce(sum(r.lw), 0)   as legs_for,
+      coalesce(sum(r.ll), 0)   as legs_against,
+      coalesce(sum(r.win), 0) * 2 + coalesce(sum(r.draw), 0) as points,
+      coalesce(
+        case when ps.average_sample_count >= 5 then ps.average_score end,
+        po.reported_average, 0
+      ) as sort_avg,
+      coalesce(ps.average_score, 0) as pub_avg
+    from public.league_players lp
+    left join results r on r.player_id = lp.player_id and r.division_id is not distinct from lp.division_id
+    left join public.player_statistics ps on ps.player_id = lp.player_id
+    left join public.player_onboarding po on po.player_id = lp.player_id
+    where lp.league_id = p_league_id
+    group by lp.division_id, lp.player_id, ps.average_sample_count, ps.average_score, po.reported_average
+  ),
+  form_calc as (
+    select
+      lp.player_id,
+      (
+        select array_agg(x.outcome order by x.confirmed_at)
+        from (
+          select
+            m.confirmed_at,
+            case when m.winner_id = lp.player_id then 'W'
+                 when m.winner_id is null then 'D'
+                 else 'L' end as outcome
+          from public.league_matches m
+          where m.league_id = p_league_id
+            and m.status = 'confirmed'
+            and (m.player_a_id = lp.player_id or m.player_b_id = lp.player_id)
+          order by m.confirmed_at desc
+          limit 5
+        ) x
+      ) as form
+    from public.league_players lp
+    where lp.league_id = p_league_id
+  )
+  select
+    a.division_id,
+    d.name,
+    d.rank,
+    a.player_id,
+    p.display_name,
+    p.country,
+    a.played, a.wins, a.draws, a.losses,
+    a.legs_for, a.legs_against, a.points,
+    a.pub_avg,
+    row_number() over (
+      partition by a.division_id
+      order by a.points desc, (a.legs_for - a.legs_against) desc, a.sort_avg desc, a.player_id
+    ),
+    coalesce(f.form, array[]::text[])
+  from agg a
+  join public.profiles p on p.id = a.player_id
+  left join public.league_divisions d on d.id = a.division_id
+  left join form_calc f on f.player_id = a.player_id
+  order by d.rank nulls last, 15;
+end;
+$$;
+
+grant execute on function public.league_standings(uuid) to authenticated;
+
+
 -- ----------------------------------------------------------------------------
 -- TODO's voor een volgende migratie
 -- ----------------------------------------------------------------------------

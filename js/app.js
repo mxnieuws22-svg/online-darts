@@ -276,10 +276,17 @@ function matchCard(m) {
           <span class="score ${bWin ? "win" : ""}">${m.player_b_legs}</span>
         </div>
         ${isDraw ? `<div class="center muted" style="font-size:12.5px;margin-top:4px">Draw</div>` : ""}` : ""}
-      ${m.result_photo_url ? `
-        <a href="${esc(m.result_photo_url)}" target="_blank" rel="noopener" class="linkbtn" style="display:flex;align-items:center;gap:4px;margin-top:8px;font-size:12.5px">
-          <span style="width:14px;height:14px;display:inline-flex">${icon.camera}</span> View photo
-        </a>` : ""}
+      ${played || m.result_photo_url ? `
+        <div style="display:flex;gap:14px;margin-top:8px">
+          ${played && state.profile?.role === "organizer" ? `
+            <button type="button" class="linkbtn" style="display:flex;align-items:center;gap:4px;font-size:12.5px;padding:0" onclick="openMatchStatsDialog('${esc(m.id)}')">
+              <span style="width:14px;height:14px;display:inline-flex">${icon.chart}</span> View details
+            </button>` : ""}
+          ${m.result_photo_url ? `
+            <a href="${esc(m.result_photo_url)}" target="_blank" rel="noopener" class="linkbtn" style="display:flex;align-items:center;gap:4px;font-size:12.5px">
+              <span style="width:14px;height:14px;display:inline-flex">${icon.camera}</span> View photo
+            </a>` : ""}
+        </div>` : ""}
       ${m.scheduled_at ? `<div class="match-meta">${icon.clock}<span>${esc(fmtDate(m.scheduled_at))}</span></div>` : ""}
       ${!played && m.status !== "cancelled" ? matchAvailabilityLine(m, status) : ""}
     </div>`;
@@ -4853,12 +4860,14 @@ async function openResultDialog(matchId) {
 
 // Toont de by de tegenstander (of jou) ingevulde uitslag ter controle,
 // met knoppen om te bevestigen of af te keuren.
-async function openConfirmDialog(matchId) {
-  const m = await db.matchById(matchId);
+// Kaart met de volledige ingevulde statistieken van een wedstrijd (legs,
+// gemiddelde, checkout%, 180's, ...) - gedeeld tussen het bevestig/afkeur-
+// scherm (openConfirmDialog) en het alleen-lezen detailscherm dat de
+// organisator op elk gespeeld duel kan openen (openMatchStatsDialog).
+function matchStatsCard(m) {
   const a = m.player_a, b = m.player_b;
   const isDraw = m.winner_id === null;
   const winnerName = isDraw ? null : (m.winner_id === m.player_a_id ? a?.display_name : b?.display_name);
-  const reporterName = m.reported_by === m.player_a_id ? a?.display_name : b?.display_name;
 
   const row = (label, av, bv) => `
     <div class="row" style="justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)">
@@ -4872,6 +4881,40 @@ async function openConfirmDialog(matchId) {
   const checkoutPct = (hit, attempts) => (hit != null && attempts) ? `${((hit / attempts) * 100).toFixed(2)}%` : null;
   const checkoutFraction = (hit, attempts) => (hit != null || attempts != null) ? `${hit ?? "–"}/${attempts ?? "–"}` : null;
 
+  return `
+    <div class="card" style="margin-bottom:20px">
+      <div style="display:flex;align-items:center;justify-content:center;gap:8px;font-weight:700;margin-bottom:10px">
+        ${isDraw ? "Draw" : `
+          <span style="width:18px;height:18px;color:var(--accent)">${icon.trophy}</span>
+          ${esc(winnerName || "?")} wins
+        `}
+      </div>
+      ${row("Legs", m.player_a_legs, m.player_b_legs)}
+      ${row("Average", m.player_a_average, m.player_b_average)}
+      ${rowIf("Scoring", m.player_a_scoring_average, m.player_b_scoring_average)}
+      ${rowIf("First 9 avg.", m.player_a_first9_average, m.player_b_first9_average)}
+      ${rowIf("Checkout %", checkoutPct(m.player_a_checkouts_hit, m.player_a_checkout_attempts), checkoutPct(m.player_b_checkouts_hit, m.player_b_checkout_attempts))}
+      ${rowIf("Checkouts", checkoutFraction(m.player_a_checkouts_hit, m.player_a_checkout_attempts), checkoutFraction(m.player_b_checkouts_hit, m.player_b_checkout_attempts))}
+      ${row("Hoogste finish", m.player_a_highest_checkout, m.player_b_highest_checkout)}
+      ${rowIf("Darts thrown", m.player_a_darts_thrown, m.player_b_darts_thrown)}
+      ${rowIf("Best leg", m.player_a_best_leg_darts, m.player_b_best_leg_darts)}
+      ${rowIf("60+", m.player_a_score_60_plus, m.player_b_score_60_plus)}
+      ${rowIf("80+", m.player_a_score_80_plus, m.player_b_score_80_plus)}
+      ${rowIf("100+", m.player_a_score_100_plus, m.player_b_score_100_plus)}
+      ${rowIf("140+", m.player_a_score_140_plus, m.player_b_score_140_plus)}
+      ${row("180's", m.player_a_180s, m.player_b_180s)}
+    </div>
+    ${m.result_photo_url ? `
+      <a href="${esc(m.result_photo_url)}" target="_blank" rel="noopener" style="display:block;margin-bottom:20px">
+        <img src="${esc(m.result_photo_url)}" alt="Photo of the result" style="max-width:100%;border-radius:10px;display:block">
+      </a>` : ""}`;
+}
+
+async function openConfirmDialog(matchId) {
+  const m = await db.matchById(matchId);
+  const a = m.player_a, b = m.player_b;
+  const reporterName = m.reported_by === m.player_a_id ? a?.display_name : b?.display_name;
+
   const bg = document.createElement("div");
   bg.className = "modal-bg";
   bg.innerHTML = `
@@ -4881,32 +4924,7 @@ async function openConfirmDialog(matchId) {
         ${esc(reporterName || "Your opponent")} submitted this result for
         ${esc(a?.display_name)} &ndash; ${esc(b?.display_name)}. Is this correct?
       </p>
-      <div class="card" style="margin-bottom:20px">
-        <div style="display:flex;align-items:center;justify-content:center;gap:8px;font-weight:700;margin-bottom:10px">
-          ${isDraw ? "Draw" : `
-            <span style="width:18px;height:18px;color:var(--accent)">${icon.trophy}</span>
-            ${esc(winnerName || "?")} wins
-          `}
-        </div>
-        ${row("Legs", m.player_a_legs, m.player_b_legs)}
-        ${row("Average", m.player_a_average, m.player_b_average)}
-        ${rowIf("Scoring", m.player_a_scoring_average, m.player_b_scoring_average)}
-        ${rowIf("First 9 avg.", m.player_a_first9_average, m.player_b_first9_average)}
-        ${rowIf("Checkout %", checkoutPct(m.player_a_checkouts_hit, m.player_a_checkout_attempts), checkoutPct(m.player_b_checkouts_hit, m.player_b_checkout_attempts))}
-        ${rowIf("Checkouts", checkoutFraction(m.player_a_checkouts_hit, m.player_a_checkout_attempts), checkoutFraction(m.player_b_checkouts_hit, m.player_b_checkout_attempts))}
-        ${row("Hoogste finish", m.player_a_highest_checkout, m.player_b_highest_checkout)}
-        ${rowIf("Darts thrown", m.player_a_darts_thrown, m.player_b_darts_thrown)}
-        ${rowIf("Best leg", m.player_a_best_leg_darts, m.player_b_best_leg_darts)}
-        ${rowIf("60+", m.player_a_score_60_plus, m.player_b_score_60_plus)}
-        ${rowIf("80+", m.player_a_score_80_plus, m.player_b_score_80_plus)}
-        ${rowIf("100+", m.player_a_score_100_plus, m.player_b_score_100_plus)}
-        ${rowIf("140+", m.player_a_score_140_plus, m.player_b_score_140_plus)}
-        ${row("180's", m.player_a_180s, m.player_b_180s)}
-      </div>
-      ${m.result_photo_url ? `
-        <a href="${esc(m.result_photo_url)}" target="_blank" rel="noopener" style="display:block;margin-bottom:20px">
-          <img src="${esc(m.result_photo_url)}" alt="Photo of the result" style="max-width:100%;border-radius:10px;display:block">
-        </a>` : ""}
+      ${matchStatsCard(m)}
       <div id="confirmError"></div>
       <div class="modal-actions" style="justify-content:space-between">
         <button type="button" class="btn ghost" id="rejectBtn">Reject</button>
@@ -4951,6 +4969,34 @@ async function openConfirmDialog(matchId) {
       showError(e);
     }
   };
+}
+
+// Alleen-lezen kijkje voor de organisator in de volledig ingevulde
+// statistieken van een gespeelde wedstrijd (ook na bevestiging) - zonder
+// de bevestig/afkeur-acties uit openConfirmDialog.
+async function openMatchStatsDialog(matchId) {
+  const m = await db.matchById(matchId);
+  const a = m.player_a, b = m.player_b;
+
+  const bg = document.createElement("div");
+  bg.className = "modal-bg";
+  bg.innerHTML = `
+    <div class="modal" role="dialog" aria-modal="true">
+      <h2>Match details</h2>
+      <p class="sub" style="margin-bottom:16px">${esc(a?.display_name)} &ndash; ${esc(b?.display_name)}</p>
+      ${matchStatsCard(m)}
+      <div class="modal-actions">
+        <button type="button" class="btn ghost" id="closeBtn">Close</button>
+      </div>
+    </div>`;
+  document.body.appendChild(bg);
+
+  const close = () => bg.remove();
+  bg.querySelector("#closeBtn").onclick = close;
+  bg.onclick = (e) => { if (e.target === bg) close(); };
+  document.addEventListener("keydown", function onEsc(e) {
+    if (e.key === "Escape") { close(); document.removeEventListener("keydown", onEsc); }
+  });
 }
 
 async function signOut() {

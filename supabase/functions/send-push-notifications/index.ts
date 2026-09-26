@@ -40,6 +40,7 @@ const NOTIFY_TYPES = [
   "division_assigned",
   "organizer_message",
   "match_reminder",
+  "schedule_reminder",
   "season_recap",
   "direct_message",
   "match_chat_message",

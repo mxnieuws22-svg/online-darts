@@ -5,7 +5,8 @@
 // die dat nog niet hebben gedaan, een speler die in een divisie is
 // ingedeeld, een vrij bericht van de organisator aan gekozen spelers, een
 // herinnering voor een al langer beschikbare maar nog niet gespeelde
-// wedstrijd, en het seizoensoverzicht/awards-bericht na afloop van een
+// wedstrijd, een eerdere herinnering als er nog geen speelmoment is
+// voorgesteld, en het seizoensoverzicht/awards-bericht na afloop van een
 // league) via het eigen Gmail-account van de organisator. Wordt elke 5
 // minuten aangeroepen door een pg_cron-job (zie supabase/schema.sql,
 // sectie 20/21), niet rechtstreeks door de app.
@@ -60,6 +61,7 @@ Deno.serve(async (req: Request) => {
       "division_assigned",
       "organizer_message",
       "match_reminder",
+      "schedule_reminder",
       "season_recap",
     ])
     .is("email_sent_at", null)

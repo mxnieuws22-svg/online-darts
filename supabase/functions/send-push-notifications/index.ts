@@ -1,8 +1,15 @@
-// Verstuurt pushmeldingen (Web Push) voor openstaande meldingen (nieuwe
-// wedstrijd ingepland/beschikbaar, speelmoment-voorstel) naar elk toestel
-// waarop een speler pushmeldingen heeft ingeschakeld. Derde kanaal naast de
-// pop-up en e-mail. Wordt elke 5 minuten aangeroepen door een pg_cron-job
-// (zie supabase/schema.sql, sectie 21), niet rechtstreeks door de app.
+// Verstuurt pushmeldingen (Web Push) voor openstaande meldingen naar elk
+// toestel waarop een speler pushmeldingen heeft ingeschakeld - alle types
+// die ook in-app en (voor de meeste) per mail gemeld worden: wedstrijd
+// ingepland/beschikbaar, alles rond een speelmoment-voorstel, een speler
+// die is ingedeeld of zijn onboarding heeft afgerond (of daaraan
+// herinnerd wordt), een vrij bericht van de organisator, een
+// wedstrijdherinnering, het seizoensoverzicht, en - als enige twee types
+// die bewust NIET per mail gaan (zie send-pending-emails, om spam per
+// bericht te voorkomen) - een nieuw wedstrijdchat- of privébericht, juist
+// omdat een pop-up daar wel het geschikte kanaal voor is. Wordt elke 5
+// minuten aangeroepen door een pg_cron-job (zie supabase/schema.sql,
+// sectie 21), niet rechtstreeks door de app.
 //
 // Vereiste secrets (Project Settings -> Edge Functions -> Secrets):
 //   VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY   sleutelpaar specifiek voor Web
@@ -28,6 +35,14 @@ const NOTIFY_TYPES = [
   "match_schedule_countered",
   "match_schedule_disputed",
   "match_schedule_withdrawn",
+  "player_onboarding_completed",
+  "onboarding_reminder",
+  "division_assigned",
+  "organizer_message",
+  "match_reminder",
+  "season_recap",
+  "direct_message",
+  "match_chat_message",
 ];
 
 Deno.serve(async (req: Request) => {

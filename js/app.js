@@ -2464,6 +2464,7 @@ async function viewLeagues() {
         <p>A league is a single group of up to 12 players, ranked by points: 1st, 2nd, 3rd, and so on. Want multiple levels (e.g. a 1st and 2nd division)? Create separate leagues for those.</p>
         <p>You can link two leagues together (in a league's page, under "Promotion & relegation"): once a league is finished, positions 1-2 move up to the linked league and positions 11-12 move down.</p>
         <p>Matches are scheduled automatically, one round per week. As soon as a match becomes available, both players are notified. From the match, tap "Propose a time" to suggest when to play - your opponent can accept it, make a counter-proposal, or report a problem. If nobody has proposed a time after 2 days, you'll both get a reminder - and if the match still hasn't been played after a week, another one follows.</p>
+        <p>A league's own start date and time is shown in its configured timezone (Europe/Amsterdam by default). Every other time you see - match times, proposed times, reminders - is shown in your own device's local time.</p>
         <p>The league winner receives a champion title and a personalized prize, provided by LWPrints. This could for example be a printed T-shirt, hoodie or polo.</p>
       </div>
     </details>

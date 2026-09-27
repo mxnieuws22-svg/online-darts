@@ -2466,6 +2466,12 @@ async function viewLeagues() {
         <p>Matches are scheduled automatically, one round per week. As soon as a match becomes available, both players are notified. From the match, tap "Propose a time" to suggest when to play - your opponent can accept it, make a counter-proposal, or report a problem. If nobody has proposed a time after 2 days, you'll both get a reminder - and if the match still hasn't been played after a week, another one follows.</p>
         <p>A league's own start date and time is shown in its configured timezone (Europe/Amsterdam by default). Every other time you see - match times, proposed times, reminders - is shown in your own device's local time.</p>
         <p>The league winner receives a champion title and a personalized prize, provided by LWPrints. This could for example be a printed T-shirt, hoodie or polo.</p>
+        <p style="font-weight:600;color:var(--white);margin-top:18px">In het Nederlands</p>
+        <p>Een league is één groep van maximaal 12 spelers, gerangschikt op punten: 1e, 2e, 3e, enzovoort. Wil je meerdere niveaus (bijv. een 1e en 2e divisie)? Maak daar aparte leagues voor aan.</p>
+        <p>Je kan twee leagues aan elkaar koppelen (op de pagina van een league, onder "Promotion &amp; relegation"): zodra een league afgelopen is, gaan plaats 1-2 naar de gekoppelde league en gaan plaats 11-12 naar beneden.</p>
+        <p>Wedstrijden worden automatisch ingepland, één ronde per week. Zodra een wedstrijd speelbaar wordt, krijgen beide spelers een melding. Klik bij de wedstrijd op "Propose a time" om een tijdstip voor te stellen - je tegenstander kan dat accepteren, een tegenvoorstel doen, of een probleem melden. Heeft niemand na 2 dagen een tijdstip voorgesteld, dan krijgen jullie allebei een herinnering - en is de wedstrijd na een week nog steeds niet gespeeld, dan volgt er nog een.</p>
+        <p>De startdatum en -tijd van een league wordt getoond in de ingestelde tijdzone (standaard Europe/Amsterdam). Alle andere tijden die je ziet - wedstrijdtijden, voorgestelde tijdstippen, herinneringen - worden getoond in de lokale tijd van je eigen toestel.</p>
+        <p>De winnaar van de league krijgt een kampioenstitel en een gepersonaliseerde prijs, aangeboden door LWPrints. Dit kan bijvoorbeeld een bedrukt T-shirt, hoodie of polo zijn.</p>
       </div>
     </details>
 

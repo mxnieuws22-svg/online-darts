@@ -2463,7 +2463,7 @@ async function viewLeagues() {
       <div class="muted" style="font-size:13.5px;line-height:1.6;margin-top:14px">
         <p>A league is a single group of up to 12 players, ranked by points: 1st, 2nd, 3rd, and so on. Want multiple levels (e.g. a 1st and 2nd division)? Create separate leagues for those.</p>
         <p>You can link two leagues together (in a league's page, under "Promotion & relegation"): once a league is finished, positions 1-2 move up to the linked league and positions 11-12 move down.</p>
-        <p>Matches are scheduled automatically, one round per week.</p>
+        <p>Matches are scheduled automatically, one round per week. As soon as a match becomes available, both players are notified. From the match, tap "Propose a time" to suggest when to play - your opponent can accept it, make a counter-proposal, or report a problem. If nobody has proposed a time after 2 days, you'll both get a reminder - and if the match still hasn't been played after a week, another one follows.</p>
         <p>The league winner receives a champion title and a personalized prize, provided by LWPrints. This could for example be a printed T-shirt, hoodie or polo.</p>
       </div>
     </details>
@@ -3721,31 +3721,10 @@ async function viewMatches() {
   setView(`
     <h1>Your matches</h1>
     <p class="sub">Everything you're taking part in</p>
-
-    <details class="card info-card" style="margin-bottom:16px">
-      <summary>
-        <div class="row">
-          <div class="row-ico">${icon.clock}</div>
-          <div class="row-main"><div class="row-title" style="white-space:normal">How do match reminders work?</div></div>
-          <span class="muted toggle-label" style="font-size:13px;flex-shrink:0">More info &darr;</span>
-        </div>
-      </summary>
-      <div class="muted" style="font-size:13.5px;line-height:1.6;margin-top:14px">
-        <p>As soon as one of your matches becomes available, you're notified right away.</p>
-        <p>From the match, tap "Propose a time" to suggest when to play - your opponent can accept it, make a counter-proposal, or report a problem. Once accepted, the time is locked in.</p>
-        <p>If nobody has proposed a time after 2 days, you'll both get a reminder - and if the match still hasn't been played after a week, another one follows.</p>
-        <p>Want these as a pop-up on your phone too? Enable it under Profile &rarr; "Enable on this device".</p>
-      </div>
-    </details>
-
     ${matches.length === 0 ? emptyView("No matches yet", "Once you're placed, they'll show up here.", "darts") : ""}
     ${open.length ? `${sectionHead("Open")}${open.map(openItem).join("")}` : ""}
     ${done.length ? `${sectionHead("Played")}${done.map(matchCard).join("")}` : ""}
   `);
-  const infoCard = document.querySelector(".info-card");
-  infoCard?.addEventListener("toggle", () => {
-    infoCard.querySelector(".toggle-label").innerHTML = infoCard.open ? "Less info &uarr;" : "More info &darr;";
-  });
 }
 
 async function viewStats() {
